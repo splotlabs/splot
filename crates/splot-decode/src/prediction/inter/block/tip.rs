@@ -3,8 +3,9 @@
 
 use super::*;
 use crate::DecodeHeaderStateError;
+use splot_core::headers::frame::RESTRICTED_ORDER_HINT;
 use splot_core::headers::sequence::ChromaFormatIdc;
-use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
+use splot_recon::{CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, ReconError};
 
 use super::super::mv_scaling::PlaneScaling;
 use super::super::reference::ReferenceSamples;
@@ -48,7 +49,7 @@ fn tip_prediction_controls(
 struct TipUnit {
     rect: mc::McBlockRect,
     has_chroma: bool,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -170,7 +171,7 @@ impl<'a, T: ReconSample> TipHeldReferences<'a, T> {
 
 #[derive(Debug, Default)]
 pub(super) struct TipReconstructScratch {
-    unit_mvs: Vec<[Mv; 2]>,
+    unit_mvs: Vec<[MotionVector; 2]>,
     tip_units: mc::TipUnits,
 }
 
@@ -282,7 +283,7 @@ fn tip_references_unscaled(
                 };
                 ref_order_hint
                     .get(slot)
-                    .is_some_and(|&order_hint| order_hint != u32::MAX)
+                    .is_some_and(|&order_hint| order_hint != RESTRICTED_ORDER_HINT)
                     && scale(ref_frame_width, frame_size.width)
                     && scale(ref_frame_height, frame_size.height)
             })
@@ -340,7 +341,8 @@ fn output_interpolation_filter(
     }
 }
 
-pub(super) fn prepare_motion_field(
+pub(super) fn prepare_motion_field<B: splot_core::simd::SimdBackend>(
+    backend: B,
     temporal: &mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -363,7 +365,13 @@ pub(super) fn prepare_motion_field(
     let fill_holes = inter
         .allow_tip_hole_fill
         .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
-    temporal.prepare_tip(references, projection_step, tmvp_unit_size8, fill_holes)?;
+    temporal.prepare_tip(
+        backend,
+        references,
+        projection_step,
+        tmvp_unit_size8,
+        fill_holes,
+    )?;
     Ok(())
 }
 
@@ -470,7 +478,7 @@ impl TipBlockPlan {
     }
 
     /// The whole block predicted with `mvs`, its first unit's candidates.
-    const fn batch_unit(&self, mvs: [Mv; 2]) -> TipUnit {
+    const fn batch_unit(&self, mvs: [MotionVector; 2]) -> TipUnit {
         TipUnit {
             rect: self.batch_rect,
             has_chroma: self.batch_has_chroma,
@@ -483,7 +491,7 @@ impl TipBlockPlan {
         &self,
         frame: &TipFramePlan,
         rect: &mc::McBlockRect,
-        stored_mvs: [Mv; 2],
+        stored_mvs: [MotionVector; 2],
     ) -> TemporalMotionBlock {
         TemporalMotionBlock::new(
             rect.luma_y / 4,
@@ -662,7 +670,7 @@ impl TipFramePlan {
 /// Fills `unit_mvs` with the § 7.13.3.2 `get_tip_cand` candidates of a
 /// block's units, read at each unit's top-left 8x8 cell.
 fn batch_candidates(
-    unit_mvs: &mut Vec<[Mv; 2]>,
+    unit_mvs: &mut Vec<[MotionVector; 2]>,
     plan: &TipBlockPlan,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
@@ -695,10 +703,11 @@ fn batch_candidates(
 /// `RefineMvs`), and every other unit the § 7.11.3 candidate it was built
 /// with. A compound block goes through the plane pass of [`mc::predict_tip_units`];
 /// a single-reference block (§ 7.13.3.1 weight 16) puts each unit.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn predict_block<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn predict_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut TipReconstructScratch,
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     mut records: Option<&mut Vec<TemporalMotionBlock>>,
     predict: bool,
     placed: &PlacedInterBlock,
@@ -734,6 +743,7 @@ pub(super) fn predict_block<T: ReconSample>(
             for (index, mvs) in candidates.iter().enumerate() {
                 let rect = plan.unit_rect(index);
                 mc::motion_compensate_single_block_into(
+                    backend,
                     sink,
                     prediction.reference0,
                     rect,
@@ -747,12 +757,21 @@ pub(super) fn predict_block<T: ReconSample>(
         return Ok(());
     };
     let units = &mut scratch.tip_units;
-    mc::refine_tip_units(sink, &block, &scratch.unit_mvs, units, grid, tile_offset)?;
+    mc::refine_tip_units(
+        backend,
+        sink,
+        &block,
+        &scratch.unit_mvs,
+        units,
+        grid,
+        tile_offset,
+    )?;
     if let Some(records) = records {
         push_batch_records(records, &plan, frame, |index| units.stored_mvs(index))?;
     }
     if predict {
         mc::predict_tip_units(
+            backend,
             sink,
             &block,
             &mut scratch.unit_mvs,
@@ -770,7 +789,7 @@ fn push_batch_records(
     records: &mut Vec<TemporalMotionBlock>,
     plan: &TipBlockPlan,
     frame: &TipFramePlan,
-    stored_mvs: impl Fn(usize) -> Option<[Mv; 2]>,
+    stored_mvs: impl Fn(usize) -> Option<[MotionVector; 2]>,
 ) -> Result<()> {
     let stored = |index| {
         stored_mvs(index).ok_or(ReconError::ArithmeticOverflow {
@@ -819,7 +838,12 @@ const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 
 const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
-pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(in crate::prediction::inter) fn reconstruct_output<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     decode_scratch: &mut super::InterDecodeScratch<T>,
     mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
@@ -843,6 +867,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )?,
     );
     let stages = TipOutputStages::init(
+        backend,
         &spares,
         Arc::clone(&progress),
         sequence,
@@ -855,15 +880,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let mut motion_field = None;
     for band in 0..stages.band_count() {
         motion_field = stages
-            .band(band, sequence, core, reference)?
+            .band(backend, band, sequence, core, reference)?
             .or(motion_field);
     }
     let motion_field = motion_field.ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
     let (output, temporal) = stages.finish()?;
     let mut progress =
         Arc::into_inner(progress).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
-    progress
-        .with_unpublished_workspace(|workspace| deblock_output(workspace, sequence, core))??;
+    progress.with_unpublished_workspace(|workspace| {
+        deblock_output(backend, workspace, sequence, core)
+    })??;
     let frame = progress.freeze()?;
     lease.temporal = temporal;
     decode_scratch.tip_output = output;
@@ -902,8 +928,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the header, projection or workspace diagnostic.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn init(
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn init<B: splot_core::simd::SimdBackend>(
+        backend: B,
         spares: &TipSpares,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: &SequenceHeader,
@@ -983,6 +1010,7 @@ impl<T: ReconSample> TipOutputStages<T> {
         } else {
             let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
             temporal.refresh_from_references(
+                backend,
                 (mi_rows, mi_cols),
                 current_order_hint,
                 config,
@@ -991,7 +1019,7 @@ impl<T: ReconSample> TipOutputStages<T> {
                 &reference.ref_order_hint,
                 &ref_motion_fields,
             )?;
-            prepare_motion_field(&mut temporal, core, sb_h4, tip_pair)?;
+            prepare_motion_field(backend, &mut temporal, core, sb_h4, tip_pair)?;
             None
         };
         let global_mv = inter
@@ -1015,11 +1043,11 @@ impl<T: ReconSample> TipOutputStages<T> {
             block: InterBlock {
                 ref_frame0: TIP_REF_FRAME,
                 ref_frame1: None,
-                mv: Mv {
+                mv: MotionVector {
                     row: global_mv.row,
                     col: global_mv.col,
                 },
-                mv1: Mv::ZERO,
+                mv1: MotionVector::ZERO,
                 interp: ReconInterpolationFilter::EightTapSharp,
                 warp_params: [None, None],
                 bawp: BawpSyntax::default(),
@@ -1125,8 +1153,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the projection's own diagnostic.
-    pub(crate) fn project(
+    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1137,6 +1166,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             .as_ref()
             .ok_or(DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
         super::tile::project_temporal_band(
+            backend,
             plan,
             &self.temporal,
             &reference.ref_motion_fields,
@@ -1184,8 +1214,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the prediction's own diagnostic.
-    pub(crate) fn band(
+    pub(crate) fn band<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
@@ -1211,8 +1242,10 @@ impl<T: ReconSample> TipOutputStages<T> {
             })
         });
         let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
-        let mut sink = mc::WorkspaceSink::Rect(&mut surface);
-        self.predict_band(&mut band, rect, &mut sink, sequence, core, reference)?;
+        let mut sink = CurrentFrameSurface::Rect(&mut surface);
+        self.predict_band(
+            backend, &mut band, rect, &mut sink, sequence, core, reference,
+        )?;
         self.fold(index, &mut band.records)?;
         Ok(
             (self.folded.load(core::sync::atomic::Ordering::Acquire) == self.output.rects.len())
@@ -1238,11 +1271,13 @@ impl<T: ReconSample> TipOutputStages<T> {
         Ok((rect, band))
     }
 
-    fn predict_band(
+    #[expect(clippy::too_many_arguments)]
+    fn predict_band<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         band: &mut TipOutputBand,
         rect: splot_recon::PlaneRect,
-        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1274,6 +1309,7 @@ impl<T: ReconSample> TipOutputStages<T> {
             placed.chroma_luma[0] = band_x as u32;
             placed.chroma_luma[2] = cols as u32;
             predict_block(
+                backend,
                 &mut band.scratch,
                 sink,
                 Some(&mut band.records),
@@ -1314,7 +1350,8 @@ impl<T: ReconSample> TipOutputStages<T> {
 ///
 /// # Errors
 /// Returns the deblock diagnostic.
-pub(crate) fn deblock_output<T: ReconSample>(
+pub(crate) fn deblock_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1339,6 +1376,7 @@ pub(crate) fn deblock_output<T: ReconSample>(
             .as_ref()
             .is_some_and(|tools| tools.enable_tip_refinemv);
         crate::filters::deblock::deblock_tip_frame(
+            backend,
             workspace,
             output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
             quant,
@@ -1375,8 +1413,8 @@ mod tests {
     };
     use splot_parallel::ThreadCount;
     use splot_recon::{
-        BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-        PixelFormat, PlaneRect, PlaneSize,
+        BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo,
+        InterpolationFilter, OutputIndex, PixelFormat, PlaneRect, PlaneSize,
     };
 
     const TIP_FAMILIES_FIXTURE: &[u8] = include_bytes!(
@@ -1519,7 +1557,7 @@ mod tests {
             search_refinemv: false,
             optflow_sad_threshold: Some(6),
         };
-        let zero = [crate::prediction::inter::Mv::ZERO; 2];
+        let zero = [crate::prediction::inter::MotionVector::ZERO; 2];
         let unit = super::TipUnit {
             rect: mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
             has_chroma: false,
@@ -1535,9 +1573,11 @@ mod tests {
             .ok_or("compound TIP block")?;
         let mut units = mc::TipUnits::default();
         let mut workspace = tip_workspace()?;
-        let sink = mc::WorkspaceSink::Frame(&mut workspace);
+        let sink = CurrentFrameSurface::Frame(&mut workspace);
         let offset = splot_core::span::ByteOffset::new(0);
-        mc::refine_tip_units(&sink, &block, &[zero], &mut units, (1, 8), offset)?;
+        crate::test_support::with_auto_backend!(backend => {
+            mc::refine_tip_units(backend, &sink, &block, &[zero], &mut units, (1, 8), offset)
+        })?;
         assert_eq!(units.stored_mvs(0), Some(zero));
         Ok(())
     }

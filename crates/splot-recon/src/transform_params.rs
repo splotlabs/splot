@@ -273,7 +273,6 @@ pub const fn dpcm_direction(use_dpcm: bool, mode_is_v_pred: bool) -> Option<Dpcm
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

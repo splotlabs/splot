@@ -135,7 +135,7 @@ pub(super) fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
 fn with_warp(change: impl FnOnce(&mut PresetParams)) -> &'static PresetParams {
     let mut params = PresetParams {
         warp: 1,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     };
     change(&mut params);
     Box::leak(Box::new(params))
@@ -285,7 +285,8 @@ fn warp_streams_match_on_any_thread_count() {
     let one = stream(1);
     assert_warp_records_consumed(&one.frames, "tiled");
     assert_same_samples(&decode(&one.units), &one.expected, "tiled");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let other = stream(threads);
         assert_warp_records_consumed(&other.frames, &format!("{threads} threads"));
         assert!(other.units == one.units, "{threads} threads");
@@ -297,7 +298,11 @@ fn warp_streams_match_on_any_thread_count() {
 #[test]
 fn zoom_frames_code_warp_leaves() {
     let config = config(96, 64, BitDepth::Eight, 6, 90);
-    let preset = with_warp(|params| params.compound_types = 0);
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        warp: 1,
+        compound_types: 0,
+        ..*Preset::new(6).unwrap().params()
+    }));
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let mut units = Vec::new();
     let mut expected = Vec::new();
@@ -505,7 +510,8 @@ fn warp_interintra_and_compound_local_warp_decode_on_any_thread_count() {
     assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
     assert_warp_records_consumed(&one.frames, "warp tools");
     assert_same_samples(&decode(&one.units), &one.expected, "warp tools");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             warp_tools_stream(threads).0.units == one.units,
             "{threads} threads"

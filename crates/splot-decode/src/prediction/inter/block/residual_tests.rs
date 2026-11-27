@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used, clippy::unwrap_used)]
-
 use super::*;
 
 use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};

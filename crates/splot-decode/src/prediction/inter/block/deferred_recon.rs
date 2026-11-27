@@ -8,16 +8,22 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, DecodedFrameInfo, PlaneId, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameSurface, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::find_mv_stack::{MvBlockContext, NeighbourFlagSyntax};
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
-use super::super::mc::{self, WorkspaceSink};
+use super::super::mc;
 use super::super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, PlacedInterBlock,
 };
+#[cfg(feature = "block-evidence")]
+use super::super::{
+    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, block_reference_slot,
+};
 use super::compound_path::{FrameRefFacts, append_compound_temporal_motion};
+#[cfg(feature = "block-evidence")]
+use super::resolve::WarpModelSource;
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, SingleMotionSyntax,
     predict_by_translation_under_integer_mv, resolve_inter_block,
@@ -26,6 +32,12 @@ use super::temporal::temporal_motion_block;
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{
+    BlockCompoundBlend, BlockEvidenceTree, BlockInterMode, BlockInterMotion, BlockInterPrediction,
+    BlockMotion, BlockMotionPrecision, BlockMotionRefinement, BlockPrediction, BlockReference,
+    BlockWarpSource, InterMode,
+};
 
 #[derive(Default)]
 pub(super) struct ParsedInterBlock {
@@ -119,6 +131,91 @@ impl PendingInterCommand {
         self.syntax.flag_syntax(self.placed.block.ref_frame0)
     }
 
+    #[cfg(feature = "block-evidence")]
+    #[cold]
+    pub(super) fn prediction(
+        &self,
+        core: &FrameHeaderCore,
+        facts: &FrameRefFacts,
+    ) -> BlockPrediction {
+        let parsed = &self.placed.block;
+        let names = core
+            .inter
+            .as_ref()
+            .map_or(&[][..], |inter| &inter.ref_frame_idx[..]);
+        let reference = |index| {
+            Some(BlockReference::Frame {
+                list_index: u8::try_from(index).ok()?,
+                slot: block_reference_slot(names, index).ok()?,
+                scaled: facts.scaled(index).ok(),
+            })
+        };
+        let mut references = [None; 2];
+        let mut motion_differences = [None; 2];
+        let mut skip_mode = false;
+        let mode = match &self.syntax.motion {
+            InterMotionSyntax::Single(single) => {
+                let single_mode = match single.mode {
+                    SINGLE_MODE_NEARMV => InterMode::Near,
+                    SINGLE_MODE_GLOBALMV => InterMode::Global,
+                    SINGLE_MODE_NEWMV => {
+                        motion_differences[0] = Some(single.mvd);
+                        InterMode::New
+                    }
+                    _ => return BlockPrediction::Unavailable,
+                };
+                references[0] = if single.tip_ref {
+                    Some(BlockReference::Tip)
+                } else {
+                    reference(parsed.ref_frame0)
+                };
+                BlockInterMode::Single(single_mode)
+            }
+            InterMotionSyntax::Warp(warp) => {
+                references[0] = reference(parsed.ref_frame0);
+                motion_differences[0] = warp.mvd;
+                BlockInterMode::Warp(match warp.source {
+                    WarpModelSource::LocalSamples => BlockWarpSource::Local,
+                    WarpModelSource::Extended => BlockWarpSource::Extended,
+                    WarpModelSource::Delta(_) => BlockWarpSource::Delta,
+                    WarpModelSource::Candidate => BlockWarpSource::Candidate,
+                })
+            }
+            InterMotionSyntax::Compound(compound) => {
+                references = [reference(parsed.ref_frame0), reference(compound.ref_frame1)];
+                motion_differences = if let Some(joint) = compound.joint {
+                    if joint.base_list == 0 {
+                        [Some(compound.mvd[0]), None]
+                    } else {
+                        [None, Some(compound.mvd[0])]
+                    }
+                } else {
+                    [
+                        compound.y_mode.list0_is_newmv().then_some(compound.mvd[0]),
+                        compound.y_mode.list1_is_newmv().then_some(compound.mvd[1]),
+                    ]
+                };
+                skip_mode = compound.skip_mode;
+                BlockInterMode::Compound(compound.y_mode)
+            }
+            InterMotionSyntax::Bru => {
+                references[0] = reference(parsed.ref_frame0);
+                BlockInterMode::BlockRefresh
+            }
+        };
+        BlockPrediction::Inter(BlockInterPrediction {
+            mode,
+            references,
+            precision: BlockMotionPrecision::from_decoder(self.syntax.precision.mv_precision),
+            motion_differences,
+            interpolation: self.syntax.interp,
+            inter_intra: parsed.interintra.map(InterIntraPrediction::mode),
+            bawp: parsed.bawp.enabled,
+            skip_mode,
+            adaptive_mvd: self.syntax.use_amvd,
+        })
+    }
+
     /// Resolves the leaf's § 7.12 motion. A warp block of a
     /// `force_integer_mv` frame keeps its stored warp model but predicts by
     /// translation (`useWarp = 0`, § 7.13.3.14).
@@ -154,6 +251,17 @@ impl PendingInterCommand {
         };
         let mut resolved = resolve_inter_block(&block, &self.syntax, self.leaf, state)?;
         predict_by_translation_under_integer_mv(&self.syntax, state.core, &mut resolved);
+        #[cfg(feature = "block-evidence")]
+        if let Some(evidence) = &state.evidence {
+            evidence.record_motion(
+                BlockEvidenceTree::Shared,
+                placed.luma_x(),
+                placed.luma_y(),
+                placed.luma_w(),
+                placed.luma_h(),
+                inter_motion_evidence(&kind, &resolved, parsed.optflow_distances.is_some()),
+            );
+        }
         let placed = placed.with_block(InterBlock {
             ref_frame0: parsed.ref_frame0,
             ref_frame1,
@@ -175,6 +283,45 @@ impl PendingInterCommand {
             kind,
         })
     }
+}
+
+#[cfg(feature = "block-evidence")]
+#[cold]
+fn inter_motion_evidence(
+    kind: &InterReconKind,
+    resolved: &super::resolve::ResolvedInterBlock,
+    optical_flow: bool,
+) -> BlockMotion {
+    let compound = matches!(kind, InterReconKind::Compound { .. });
+    let refinement = match *kind {
+        InterReconKind::Tip { .. } => BlockMotionRefinement::Tip,
+        InterReconKind::Compound { use_refinemv, .. } if use_refinemv || optical_flow => {
+            BlockMotionRefinement::Compound {
+                refine_mv: use_refinemv,
+                optical_flow,
+            }
+        }
+        _ => BlockMotionRefinement::None,
+    };
+    let blend = compound.then_some(match resolved.blend {
+        mc::CompoundBlend::Average {
+            implicit_mask,
+            cwp_weight,
+        } => BlockCompoundBlend::Average {
+            implicit_mask,
+            weight: cwp_weight,
+        },
+        mc::CompoundBlend::DiffWeighted { inverse } => {
+            BlockCompoundBlend::DifferenceWeighted { inverse }
+        }
+        mc::CompoundBlend::Wedge { index, sign } => BlockCompoundBlend::Wedge { index, sign },
+    });
+    BlockMotion::Inter(BlockInterMotion {
+        vectors: [Some(resolved.mv[0]), compound.then_some(resolved.mv[1])],
+        warp: resolved.warp_params,
+        refinement,
+        blend,
+    })
 }
 
 impl InterReconCommand {
@@ -340,13 +487,15 @@ impl InterReconCommand {
 
     /// Appends the § 7.22 temporal records of a compound block, from the
     /// refined `motion` of its units when it refines.
-    fn compound_records<T: ReconSample>(
+    fn compound_records<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         append_compound_temporal_motion(
+            backend,
             temporal_records,
             shared.reference,
             shared.ref_frame_idx,
@@ -363,9 +512,10 @@ impl InterReconCommand {
     ///
     /// This reads reference samples and writes none, so it is the half a motion
     /// resolution pass runs ahead of reconstruction.
-    fn derive_motion<T: ReconSample>(
+    fn derive_motion<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        backend: B,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
         (tip_scratch, refined): (&mut TipReconstructScratch, &mut mc::RefinedUnits),
@@ -373,6 +523,7 @@ impl InterReconCommand {
         if self.is_tip() {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 Some(temporal_records),
@@ -387,6 +538,7 @@ impl InterReconCommand {
         }
         if let Some(flags) = self.refined() {
             return super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -397,20 +549,22 @@ impl InterReconCommand {
                 ),
                 false,
                 shared.tile_offset,
-                |units| self.compound_records(temporal_records, shared, Some(units)),
+                |units| self.compound_records(backend, temporal_records, shared, Some(units)),
             );
         }
         if let InterReconKind::Compound { .. } = self.kind {
-            return self.compound_records(temporal_records, shared, None);
+            return self.compound_records(backend, temporal_records, shared, None);
         }
         temporal_records.push(self.single_temporal_record(shared));
         Ok(())
     }
 
     /// Reconstructs the samples of a block that does not refine its motion.
-    fn reconstruct_from_motion<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    fn reconstruct_from_motion<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        backend: B,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
@@ -419,24 +573,28 @@ impl InterReconCommand {
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         match sink {
-            WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
-                interintra_scratch,
-                workspace,
-                &self.placed,
-                residual_blocks,
-                residual_coeffs,
-                block_decoded,
-                (shared.ref_frame_idx, shared.ref_facts, &shared.held),
-                shared.reference,
-                self.qindex,
-                shared.luma_use_tcq,
-                shared.residual_use_ddt,
-                shared.bit_depth,
-                super::sequence_enables_ibp(shared.sequence),
-                shared.tile_offset,
-            )?,
-            sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
+            CurrentFrameSurface::Frame(workspace) => {
+                super::prediction::reconstruct_placed_inter_block(
+                    backend,
+                    interintra_scratch,
+                    workspace,
+                    &self.placed,
+                    residual_blocks,
+                    residual_coeffs,
+                    block_decoded,
+                    (shared.ref_frame_idx, shared.ref_facts, &shared.held),
+                    shared.reference,
+                    self.qindex,
+                    shared.luma_use_tcq,
+                    shared.residual_use_ddt,
+                    shared.bit_depth,
+                    super::sequence_enables_ibp(shared.sequence),
+                    shared.tile_offset,
+                )?;
+            }
+            sink @ (CurrentFrameSurface::Rect(_) | CurrentFrameSurface::OwnedRect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
+                    backend,
                     sink,
                     &self.placed,
                     residual_blocks,
@@ -456,9 +614,10 @@ impl InterReconCommand {
 
     /// Reconstructs a § 7.13.3.2 TIP block or a refined compound block in
     /// one pass, deriving its § 7.22 records unless a motion pass already did.
-    fn reconstruct_unit_block<T: ReconSample>(
+    fn reconstruct_unit_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        backend: B,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual: (&[InterResidualBlock], &[i32]),
         shared: &ReconShared<'_, T>,
@@ -468,6 +627,7 @@ impl InterReconCommand {
         let records = (!self.motion_derived).then_some(temporal_records);
         if let Some(flags) = self.refined() {
             super::prediction::predict_refined_inter_block(
+                backend,
                 sink,
                 refined,
                 &self.placed,
@@ -480,13 +640,14 @@ impl InterReconCommand {
                 shared.tile_offset,
                 |units| {
                     records.map_or(Ok(()), |records| {
-                        self.compound_records(records, shared, Some(units))
+                        self.compound_records(backend, records, shared, Some(units))
                     })
                 },
             )?;
         } else {
             let frame = shared.tip(sink.info())?;
             tip::predict_block(
+                backend,
                 tip_scratch,
                 sink,
                 records,
@@ -498,10 +659,15 @@ impl InterReconCommand {
                 shared.tile_offset,
             )?;
         }
+        #[cfg(feature = "block-evidence")]
+        if !self.is_tip() {
+            super::prediction::capture_inter_prediction(sink, &self.placed);
+        }
         let Some(block_residual) = self.placed.block.residual.as_ref() else {
             return Ok(());
         };
         super::super::add_inter_residual_to_workspace(
+            backend,
             sink,
             block_residual,
             residual.0,
@@ -513,10 +679,11 @@ impl InterReconCommand {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn reconstruct_ordered<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    fn reconstruct_ordered<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &mut self,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        backend: B,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
@@ -527,6 +694,7 @@ impl InterReconCommand {
     ) -> Result<()> {
         if self.is_tip() || self.refined().is_some() {
             return self.reconstruct_unit_block(
+                backend,
                 sink,
                 temporal_records,
                 (residual_blocks, residual_coeffs),
@@ -535,9 +703,16 @@ impl InterReconCommand {
             );
         }
         if !self.motion_derived {
-            self.derive_motion(sink, temporal_records, shared, (tip_scratch, refined))?;
+            self.derive_motion(
+                backend,
+                sink,
+                temporal_records,
+                shared,
+                (tip_scratch, refined),
+            )?;
         }
         self.reconstruct_from_motion(
+            backend,
             sink,
             block_decoded,
             residual_blocks,
@@ -565,14 +740,16 @@ impl<T: ReconSample> InterReconScratch<T> {
         &mut self.general_intra
     }
 
-    pub(super) fn derive_motion_logged(
+    pub(super) fn derive_motion_logged<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         command: &mut InterReconCommand,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         command.derive_motion(
+            backend,
             sink,
             temporal_records,
             shared,
@@ -582,11 +759,12 @@ impl<T: ReconSample> InterReconScratch<T> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct(
+    #[expect(clippy::too_many_arguments)]
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         command: &mut InterReconCommand,
-        sink: &mut WorkspaceSink<'_, '_, T>,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
@@ -594,6 +772,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         shared: &ReconShared<'_, T>,
     ) -> Result<()> {
         command.reconstruct_ordered(
+            backend,
             sink,
             block_decoded,
             temporal_records,
@@ -606,7 +785,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn clipped_rect_is_inside_band(
     x: usize,
     y: usize,
@@ -643,7 +822,6 @@ fn clipped_rect_is_inside_band(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
     use splot_recon::{
@@ -654,7 +832,8 @@ mod tests {
     use super::{InterReconCommand, InterReconScratch};
     use crate::bitstream::tile_payload::LumaCoeffBlock;
     use crate::prediction::inter::{
-        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, Mv, PlacedInterBlock, mc,
+        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, MotionVector, PlacedInterBlock,
+        mc,
     };
 
     fn assert_send<T: Send>() {}
@@ -701,8 +880,8 @@ mod tests {
                 block: InterBlock {
                     ref_frame0: 0,
                     ref_frame1: None,
-                    mv: Mv::ZERO,
-                    mv1: Mv::ZERO,
+                    mv: MotionVector::ZERO,
+                    mv1: MotionVector::ZERO,
                     interp: InterpolationFilter::EightTap,
                     warp_params: [None, None],
                     bawp: BawpSyntax::default(),

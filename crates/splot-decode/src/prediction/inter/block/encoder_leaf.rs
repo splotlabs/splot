@@ -10,12 +10,13 @@
 //! reconstruction and filter records, so the facade never derives motion,
 //! prediction or residual geometry itself.
 
-use super::super::compound::CompoundYMode;
+use super::super::compound::CompoundMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank,
     WarpParamBank, reference_order_hints, restricted_reference_mask,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
+use splot_recon::CurrentFrameSurface;
 
 use super::filter_records::InterDeblockLeaf;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
@@ -25,8 +26,8 @@ use super::resolve::{
     single_mode_mv, single_mv_stack, warp_motion,
 };
 use super::temporal::temporal_motion_block;
-#[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::encoder_syntax::SingleMvs;
 
 mod blend;
 mod compound;
@@ -83,7 +84,7 @@ pub(crate) struct EncoderSingleMotion {
     /// `RefMvIdx`.
     pub(crate) ref_mv_idx: usize,
     /// The signed motion vector difference in 1/8 samples.
-    pub(crate) mvd: Mv,
+    pub(crate) mvd: MotionVector,
     /// `interp_filter`, where the decoder reads it.
     pub(crate) interp: ReconInterpolationFilter,
     /// The block `MvPrecision` of a `NEWMV` coded with
@@ -119,15 +120,6 @@ const fn is_tip(motion: EncoderMotion) -> bool {
         motion,
         EncoderMotion::Single(EncoderSingleMotion { tip: true, .. })
     )
-}
-
-/// The single-reference vectors of one leaf and reference, see
-/// [`EncoderInterTile::single_mvs`].
-pub(crate) struct EncoderSingleMvs {
-    pub(crate) global: Mv,
-    pub(crate) near: Vec<Mv>,
-    pub(crate) new_bases: Vec<Mv>,
-    pub(crate) stack: Vec<Mv>,
 }
 
 /// The § 8.3.2 contexts of one inter leaf's syntax.
@@ -477,7 +469,7 @@ impl EncoderInterTile {
         &mut self,
         frontier: &DecodeBlockFrontier,
         motion: EncoderSingleMotion,
-    ) -> Result<Mv> {
+    ) -> Result<MotionVector> {
         Ok(self.motion_vectors(frontier, EncoderMotion::Single(motion))?[0])
     }
 
@@ -486,7 +478,7 @@ impl EncoderInterTile {
         &mut self,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
-    ) -> Result<[Mv; 2]> {
+    ) -> Result<[MotionVector; 2]> {
         let (block, syntax, _) = self.inter_syntax(frontier, motion, true)?;
         Ok(self.resolve_motion(&block, &syntax)?.mv)
     }
@@ -499,7 +491,7 @@ impl EncoderInterTile {
         &mut self,
         frontier: &DecodeBlockFrontier,
         motions: &[EncoderCompoundMotion],
-    ) -> Vec<Option<[Mv; 2]>> {
+    ) -> Vec<Option<[MotionVector; 2]>> {
         let parsed: Vec<_> = motions
             .iter()
             .map(|&motion| {
@@ -526,7 +518,7 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         ref_frame: i8,
         drls: usize,
-    ) -> Result<EncoderSingleMvs> {
+    ) -> Result<SingleMvs> {
         let block = self.block(frontier, (ref_frame, None))?;
         let precision = BlockPrecisionRecord::most_probable(self.precision);
         let tip = ref_frame == TIP_REF_FRAME;
@@ -535,7 +527,7 @@ impl EncoderInterTile {
                 ref_frame,
                 mode,
                 ref_mv_idx,
-                mvd: Mv::ZERO,
+                mvd: MotionVector::ZERO,
                 interp: ReconInterpolationFilter::EightTap,
                 precision: None,
                 use_amvd: false,
@@ -557,7 +549,7 @@ impl EncoderInterTile {
         let mv = |single: &SingleMotionSyntax| {
             single_mode_mv(single, &stack, (precision, false), &block, &state)
         };
-        Ok(EncoderSingleMvs {
+        Ok(SingleMvs {
             global: mv(&global),
             near: near.iter().map(mv).collect(),
             new_bases: new.iter().map(mv).collect(),
@@ -567,13 +559,14 @@ impl EncoderInterTile {
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
     /// returns its motion vectors.
-    pub(crate) fn predict(
+    pub(crate) fn predict<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
         (block_decoded, enable_ibp): (&TileBlockDecodedState, bool),
-    ) -> Result<[Mv; 2]> {
+    ) -> Result<[MotionVector; 2]> {
         let (block, syntax, parsed) = self.inter_syntax(frontier, motion, true)?;
         let refine = refinemv_flags(&syntax.motion);
         let mut resolved = self.resolve_motion(&block, &syntax)?;
@@ -583,13 +576,14 @@ impl EncoderInterTile {
         if is_tip(motion) {
             let mut records = core::mem::take(&mut self.tip_trial_records);
             records.clear();
-            let predicted = self.tip_motion(&placed, workspace, &mut records, true);
+            let predicted = self.tip_motion(backend, &placed, workspace, &mut records, true);
             self.tip_trial_records = records;
             predicted?;
             return Ok(mvs);
         }
         if placed.block.interintra.is_some() || placed.block.bawp.enabled {
             prediction::reconstruct_placed_inter_block(
+                backend,
                 &mut self.interintra_scratch,
                 workspace,
                 &placed,
@@ -609,13 +603,15 @@ impl EncoderInterTile {
         }
         if refine.0 || placed.block.optflow_distances.is_some() {
             let mut units = core::mem::take(&mut self.refined);
-            let predicted = self.predict_refined(&placed, refine, workspace, &mut units, true);
+            let predicted =
+                self.predict_refined(backend, &placed, refine, workspace, &mut units, true);
             self.refined = units;
             predicted?;
             return Ok(mvs);
         }
         prediction::reconstruct_pure_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            backend,
+            &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],
             &[],
@@ -632,14 +628,16 @@ impl EncoderInterTile {
 
     /// Adds `residual` to the predicted samples of `frontier` in `workspace`;
     /// an IntraBC block (`use_intrabc`) transforms without DDT.
-    pub(crate) fn add_residual(
+    pub(crate) fn add_residual<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         residual: &EncoderInterResidual,
         use_intrabc: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            backend,
+            &mut CurrentFrameSurface::Frame(workspace),
             &residual.range(),
             &residual.blocks,
             &residual.coeffs,
@@ -655,13 +653,14 @@ impl EncoderInterTile {
 
     /// Publishes a coded inter leaf: its flags, then its § 7.12 resolution.
     /// Returns the motion vectors the decoder resolves.
-    pub(crate) fn publish(
+    pub(crate) fn publish<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         skip: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
-    ) -> Result<[Mv; 2]> {
+    ) -> Result<[MotionVector; 2]> {
         let (block, syntax, parsed) = self.inter_syntax(frontier, motion, skip)?;
         let leaf = self.grid.record_flags(
             block.mi_row,
@@ -685,7 +684,7 @@ impl EncoderInterTile {
         if is_tip(motion) {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
-            let derived = self.tip_motion(&placed, workspace, &mut records, false);
+            let derived = self.tip_motion(backend, &placed, workspace, &mut records, false);
             self.tip_records = records;
             derived?;
         } else if let Some(compound) = refined {
@@ -698,25 +697,27 @@ impl EncoderInterTile {
             if refine.0 || placed.block.optflow_distances.is_some() {
                 let mut units = core::mem::take(&mut self.refined);
                 let derived = self
-                    .predict_refined(&placed, refine, workspace, &mut units, false)
-                    .and_then(|()| self.append_compound_records(&placed, Some(&units)));
+                    .predict_refined(backend, &placed, refine, workspace, &mut units, false)
+                    .and_then(|()| self.append_compound_records(backend, &placed, Some(&units)));
                 self.refined = units;
                 derived?;
             }
         } else if wedge {
             let placed = self.placed(frontier, &syntax, parsed, &resolved)?;
-            self.append_compound_records(&placed, None)?;
+            self.append_compound_records(backend, &placed, None)?;
         }
         Ok(resolved.mv)
     }
 
     /// Appends the § 7.22 temporal records of a refined or wedge compound block.
-    fn append_compound_records(
+    fn append_compound_records<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         placed: &PlacedInterBlock,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
         super::compound_path::append_compound_temporal_motion(
+            backend,
             &mut self.tip_records,
             &self.reference,
             &self.ref_frame_idx,
@@ -739,8 +740,9 @@ impl EncoderInterTile {
     /// The decoder's refined motion of the compound block `placed` with
     /// `(use_refinemv, refinemv_switchable, _)` into `units`; with `predict`,
     /// also its prediction into `workspace`.
-    fn predict_refined(
+    fn predict_refined<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         placed: &PlacedInterBlock,
         (use_refinemv, switchable, _): (bool, bool, bool),
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -748,7 +750,8 @@ impl EncoderInterTile {
         predict: bool,
     ) -> Result<()> {
         prediction::predict_refined_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            backend,
+            &mut CurrentFrameSurface::Frame(workspace),
             units,
             placed,
             (use_refinemv, switchable),
@@ -765,8 +768,9 @@ impl EncoderInterTile {
     /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
     /// appends to `records`; with `predict`, also its prediction into
     /// `workspace`.
-    fn tip_motion(
+    fn tip_motion<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         placed: &PlacedInterBlock,
         workspace: &mut CurrentFrameWorkspace<u16>,
         records: &mut Vec<TemporalMotionBlock>,
@@ -776,7 +780,7 @@ impl EncoderInterTile {
             .temporal
             .clone()
             .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
-        let mut sink = mc::WorkspaceSink::Frame(workspace);
+        let mut sink = CurrentFrameSurface::Frame(workspace);
         let frame = super::tip::TipFramePlan::new(
             sink.info(),
             &temporal,
@@ -786,6 +790,7 @@ impl EncoderInterTile {
             &self.reference,
         )?;
         super::tip::predict_block(
+            backend,
             &mut self.tip_scratch,
             &mut sink,
             Some(records),
@@ -812,7 +817,7 @@ impl EncoderInterTile {
             }
             InterMotionSyntax::Warp(warp) => warp_motion(block, syntax, warp, &state),
             InterMotionSyntax::Bru => Ok(ResolvedInterBlock {
-                mv: [Mv::ZERO, Mv::ZERO],
+                mv: [MotionVector::ZERO, MotionVector::ZERO],
                 warp_params: [None, None],
                 blend: syntax.blend,
             }),
@@ -824,9 +829,12 @@ impl EncoderInterTile {
     fn resolution_state(&mut self, block: &MvBlockContext) -> MvResolutionState<'_> {
         self.reset_banks(block);
         MvResolutionState {
+            #[cfg(feature = "block-evidence")]
+            evidence: None,
             grid: &mut self.grid,
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,
+            ibc_local: None,
             core: &self.core,
             temporal: self.temporal.as_deref(),
             order_hints: OrderHintMvContext::new(
@@ -891,7 +899,7 @@ impl EncoderInterTile {
                         self.mi_cols,
                         self.current_order_hint,
                         [None, None],
-                        [Mv::ZERO; 2],
+                        [MotionVector::ZERO; 2],
                         [None, None],
                     );
                 }
@@ -1042,7 +1050,7 @@ impl EncoderInterTile {
         &self,
         ref_frame: i8,
         rect: (usize, usize, usize, usize),
-        (mv, filter): (Mv, ReconInterpolationFilter),
+        (mv, filter): (MotionVector, ReconInterpolationFilter),
         read: impl FnOnce(
             &splot_recon::ReferencePlaneView<'_, u16>,
             &splot_recon::SubpelPredictParams,
@@ -1218,7 +1226,8 @@ impl EncoderInterTile {
 /// The § 7.9 projected motion field of frame `core` of `sequence` over
 /// `reference`, which every tile of the frame shares; `None` without
 /// `use_ref_frame_mvs`.
-pub(crate) fn encoder_temporal_context(
+pub(crate) fn encoder_temporal_context<B: splot_core::simd::SimdBackend>(
+    backend: B,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &ReferenceMetadata,
@@ -1249,7 +1258,7 @@ pub(crate) fn encoder_temporal_context(
     let mut context = TemporalMvContext::empty();
     let plan = prelude.begin_scheduled(&mut context, core, ref_frame_idx, reference)?;
     for band in 0..plan.len() {
-        plan.project(&context, band, |slot, band| {
+        plan.project(backend, &context, band, |slot, band| {
             reference.ref_motion_fields.get(slot)?.as_ref()?.band(band)
         })?;
     }
@@ -1392,7 +1401,7 @@ fn chroma_tx_type_from(
         frontier.c,
         y / MI_SIZE,
         x / MI_SIZE,
-        chroma_subsampling(chroma),
+        chroma.subsampling(),
         current_block,
     ))
 }

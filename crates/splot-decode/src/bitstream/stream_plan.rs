@@ -8,6 +8,10 @@
 use core::fmt;
 
 use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope, PartialParse};
+use splot_core::bitio::BitReader;
+use splot_core::headers::sequence::{
+    MLayerDependencyMap, TLayerDependencyMap, parse_sequence_header_general,
+};
 use splot_core::ivf::{IvfError, IvfWarning};
 use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
@@ -17,6 +21,7 @@ use splot_core::types::{
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
+pub use crate::bitstream::ops_plan::{OperatingPointSelection, OperatingPointTracker};
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
@@ -56,27 +61,570 @@ impl<'a> DecodeStreamInput<'a> {
     }
 }
 
-/// The fixed base-layer selection supported by the first stream planner.
-#[allow(clippy::struct_field_names)]
+/// Caller-selected temporal enhancement layers to decode and emit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TemporalLayerSelection {
+    /// Decode and emit all temporal layers present in the stream (up to `max_tlayer_id`).
+    #[default]
+    All,
+    /// Decode and emit temporal layers `0..=target` along with their transitive
+    /// dependencies in `TLayerDependencyMap`.
+    Target(TemporalLayerId),
+    /// Decode all transitive temporal dependencies required to emit only the layers
+    /// whose bit (`1 << tlayer_id`, within `1..=0b1111`) is set in this mask.
+    OutputMask(u8),
+}
+
+impl TemporalLayerSelection {
+    /// Selects only the temporal base layer (`obu_tlayer_id == 0`).
+    pub const BASE_ONLY: Self = Self::Target(TemporalLayerId::BASE);
+
+    pub(crate) const fn validate(self) -> Result<()> {
+        match self {
+            Self::All => Ok(()),
+            Self::Target(target) => {
+                if target.get() > 3 {
+                    Err(DecodeError::InvalidTemporalSelection {
+                        reason: "temporal layer target must be within 0..=3",
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+            Self::OutputMask(mask) => {
+                if mask == 0 {
+                    Err(DecodeError::InvalidTemporalSelection {
+                        reason: "temporal output mask must select at least one temporal layer",
+                    })
+                } else if mask > 0x0F {
+                    Err(DecodeError::InvalidTemporalSelection {
+                        reason: "temporal output mask must only set bits within 0..=3",
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    pub(crate) const fn requested_output_mask(self) -> u8 {
+        match self {
+            Self::All => 0x0F,
+            Self::Target(target) => {
+                let id = target.get();
+                if id >= 3 { 0x0F } else { (1u8 << (id + 1)) - 1 }
+            }
+            Self::OutputMask(mask) => mask & 0x0F,
+        }
+    }
+}
+
+/// Caller-selected embedded enhancement layers to decode and emit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EmbeddedLayerSelection {
+    /// Decode and emit all embedded layers present in the stream (up to `max_mlayer_id`).
+    #[default]
+    All,
+    /// Decode transitive dependencies required to emit only embedded layer `target`.
+    Target(EmbeddedLayerId),
+    /// Decode all transitive embedded dependencies required to emit only the layers
+    /// whose bit (`1 << mlayer_id`, within `1..=0xFF`) is set in this mask.
+    OutputMask(u8),
+}
+
+impl EmbeddedLayerSelection {
+    /// Selects only the embedded base layer (`obu_mlayer_id == 0`).
+    pub const BASE_ONLY: Self = Self::Target(EmbeddedLayerId::BASE);
+
+    pub(crate) const fn validate(self) -> Result<()> {
+        match self {
+            Self::Target(target) if target.get() > 7 => {
+                Err(DecodeError::InvalidEmbeddedSelection {
+                    reason: "embedded layer target must be within 0..=7",
+                })
+            }
+            Self::OutputMask(0) => Err(DecodeError::InvalidEmbeddedSelection {
+                reason: "embedded output mask must select at least one embedded layer",
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) const fn requested_output_mask(self) -> u8 {
+        match self {
+            Self::All => u8::MAX,
+            Self::Target(target) => {
+                let id = target.get();
+                if id > 7 { 0 } else { 1u8 << id }
+            }
+            Self::OutputMask(mask) => mask,
+        }
+    }
+}
+
+/// Caller-selected extended enhancement layers to decode and emit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExtendedLayerSelection {
+    /// Decode and emit all active extended layers (`0..=30`) in the stream.
+    #[default]
+    All,
+    /// Decode and emit only extended layer `target` (`0..=30`) alongside global state.
+    Target(ExtendedLayerId),
+    /// Decode and emit only the extended layers whose bit (`1u32 << xlayer_id`,
+    /// within bits `0..=30`) is set in this mask.
+    OutputMask(u32),
+}
+
+impl ExtendedLayerSelection {
+    pub(crate) const fn validate(self) -> Result<()> {
+        match self {
+            Self::Target(target) if target.get() > 30 => {
+                Err(DecodeError::InvalidExtendedSelection {
+                    reason: "extended layer target must be within 0..=30",
+                })
+            }
+            Self::OutputMask(0) => Err(DecodeError::InvalidExtendedSelection {
+                reason: "extended output mask must select at least one extended layer",
+            }),
+            Self::OutputMask(mask) if (mask & (1u32 << 31)) != 0 => {
+                Err(DecodeError::InvalidExtendedSelection {
+                    reason: "extended output mask must not select global xlayer 31",
+                })
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Returns `true` when `xlayer` (`0..=30`) is selected for decode and emission.
+    #[must_use]
+    pub const fn is_xlayer_selected(self, xlayer: ExtendedLayerId) -> bool {
+        let id = xlayer.get();
+        if id > 30 {
+            return false;
+        }
+        match self {
+            Self::All => true,
+            Self::Target(target) => target.get() == id,
+            Self::OutputMask(mask) => (mask & (1u32 << id)) != 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerDependencyFilter {
+    temporal: TemporalLayerSelection,
+    embedded: EmbeddedLayerSelection,
+    max_mlayer_id: EmbeddedLayerId,
+    mlayer_dependency_map: MLayerDependencyMap,
+    max_tlayer_id: TemporalLayerId,
+    tlayer_dependency_map: TLayerDependencyMap,
+    decode_tlayer_masks: [u8; 8],
+    output_tlayer_masks: [u8; 8],
+}
+
+impl LayerDependencyFilter {
+    fn default_output_tlayer_masks(
+        temporal: TemporalLayerSelection,
+        embedded: EmbeddedLayerSelection,
+    ) -> [u8; 8] {
+        let output_m_mask = embedded.requested_output_mask();
+        let output_t_mask = temporal.requested_output_mask();
+        let mut masks = [0u8; 8];
+        for (m, slot) in masks.iter_mut().enumerate() {
+            if (output_m_mask & (1u8 << m)) != 0 {
+                *slot = output_t_mask;
+            }
+        }
+        masks
+    }
+
+    fn new(temporal: TemporalLayerSelection, embedded: EmbeddedLayerSelection) -> Self {
+        let max_mlayer_id = EmbeddedLayerId::from_bits(7);
+        let max_tlayer_id = TemporalLayerId::from_bits(3);
+        let mlayer_dependency_map = MLayerDependencyMap::default_for(max_mlayer_id);
+        let tlayer_dependency_map = TLayerDependencyMap::default_for(max_tlayer_id, max_mlayer_id);
+        let output_tlayer_masks = Self::default_output_tlayer_masks(temporal, embedded);
+        let mut filter = Self {
+            temporal,
+            embedded,
+            max_mlayer_id,
+            mlayer_dependency_map,
+            max_tlayer_id,
+            tlayer_dependency_map,
+            decode_tlayer_masks: [0; 8],
+            output_tlayer_masks,
+        };
+        filter.recompute_masks();
+        filter
+    }
+
+    pub(crate) fn set_output_tlayer_masks(&mut self, masks: [u8; 8]) {
+        self.output_tlayer_masks = masks;
+        self.recompute_masks();
+    }
+
+    fn reset_default_output_masks(&mut self) {
+        self.output_tlayer_masks = Self::default_output_tlayer_masks(self.temporal, self.embedded);
+        self.recompute_masks();
+    }
+
+    fn apply_sequence_general(
+        &mut self,
+        general: &splot_core::headers::sequence::SequenceHeaderGeneral,
+    ) {
+        self.max_mlayer_id = general.max_mlayer_id;
+        self.mlayer_dependency_map = general.mlayer_dependency_map;
+        self.max_tlayer_id = general.max_tlayer_id;
+        self.tlayer_dependency_map = general.tlayer_dependency_map;
+        self.recompute_masks();
+    }
+
+    fn recompute_masks(&mut self) {
+        let mut decode_masks = self.output_tlayer_masks;
+        let max_m = self.max_mlayer_id.get().min(7);
+        let max_t = self.max_tlayer_id.get().min(3);
+        loop {
+            let mut changed = false;
+            for curr_m in 0..=max_m {
+                let m_mask = decode_masks[usize::from(curr_m)];
+                if m_mask == 0 {
+                    continue;
+                }
+                let curr_m_id = EmbeddedLayerId::from_bits(curr_m);
+                for curr_t in 0..=max_t {
+                    if (m_mask & (1u8 << curr_t)) == 0 {
+                        continue;
+                    }
+                    let curr_t_id = TemporalLayerId::from_bits(curr_t);
+                    for ref_m in 0..=curr_m {
+                        if !self
+                            .mlayer_dependency_map
+                            .depends_on(curr_m_id, EmbeddedLayerId::from_bits(ref_m))
+                        {
+                            continue;
+                        }
+                        for ref_t in 0..=max_t {
+                            let ref_bit = 1u8 << ref_t;
+                            if (decode_masks[usize::from(ref_m)] & ref_bit) == 0
+                                && self.tlayer_dependency_map.depends_on(
+                                    curr_m_id,
+                                    curr_t_id,
+                                    TemporalLayerId::from_bits(ref_t),
+                                )
+                            {
+                                decode_masks[usize::from(ref_m)] |= ref_bit;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        self.decode_tlayer_masks = decode_masks;
+    }
+
+    const fn is_layer_selected(&self, mlayer: EmbeddedLayerId, tlayer: TemporalLayerId) -> bool {
+        let m = mlayer.get();
+        let t = tlayer.get();
+        m <= 7 && t <= 3 && (self.decode_tlayer_masks[m as usize] & (1u8 << t)) != 0
+    }
+
+    const fn is_layer_output(&self, mlayer: EmbeddedLayerId, tlayer: TemporalLayerId) -> bool {
+        let m = mlayer.get();
+        let t = tlayer.get();
+        m <= 7 && t <= 3 && (self.output_tlayer_masks[m as usize] & (1u8 << t)) != 0
+    }
+}
+
+/// Active temporal, embedded, and extended layer decode/output bitmasks derived
+/// from caller selections and each extended layer's active sequence header.
+#[derive(Clone, Debug)]
+pub(crate) struct ActiveLayerFilter {
+    extended: ExtendedLayerSelection,
+    default_filter: LayerDependencyFilter,
+    first: Option<(ExtendedLayerId, LayerDependencyFilter)>,
+    rest: Vec<(ExtendedLayerId, LayerDependencyFilter)>,
+    ops: Option<Box<OperatingPointTracker>>,
+}
+
+impl ActiveLayerFilter {
+    #[cfg(test)]
+    pub(crate) fn new(temporal: TemporalLayerSelection, embedded: EmbeddedLayerSelection) -> Self {
+        Self::new_with_extended(temporal, embedded, ExtendedLayerSelection::All)
+    }
+
+    pub(crate) fn new_with_extended(
+        temporal: TemporalLayerSelection,
+        embedded: EmbeddedLayerSelection,
+        extended: ExtendedLayerSelection,
+    ) -> Self {
+        Self::new_with_selections(temporal, embedded, extended, OperatingPointSelection::None)
+    }
+
+    pub(crate) fn new_with_selections(
+        temporal: TemporalLayerSelection,
+        embedded: EmbeddedLayerSelection,
+        extended: ExtendedLayerSelection,
+        operating_point: OperatingPointSelection,
+    ) -> Self {
+        Self {
+            extended,
+            default_filter: LayerDependencyFilter::new(temporal, embedded),
+            first: None,
+            rest: Vec::new(),
+            ops: (!operating_point.is_none())
+                .then(|| Box::new(OperatingPointTracker::from_valid_selection(operating_point))),
+        }
+    }
+
+    pub(crate) fn from_options(options: &DecodeOptions) -> Self {
+        Self::new_with_selections(
+            options.temporal_layer_selection(),
+            options.embedded_layer_selection(),
+            options.extended_layer_selection(),
+            options.operating_point_selection(),
+        )
+    }
+
+    pub(crate) const fn selection(&self) -> TemporalLayerSelection {
+        self.default_filter.temporal
+    }
+
+    pub(crate) const fn embedded_selection(&self) -> EmbeddedLayerSelection {
+        self.default_filter.embedded
+    }
+
+    pub(crate) const fn extended_selection(&self) -> ExtendedLayerSelection {
+        self.extended
+    }
+
+    pub(crate) const fn extended_filtering_disabled(&self) -> bool {
+        matches!(self.extended, ExtendedLayerSelection::All) && self.ops.is_none()
+    }
+
+    pub(crate) fn is_xlayer_selected(&self, xlayer: ExtendedLayerId) -> bool {
+        if let Some(ops) = &self.ops {
+            ops.is_xlayer_selected(xlayer)
+        } else {
+            self.extended.is_xlayer_selected(xlayer)
+        }
+    }
+
+    fn filter_for(&self, xlayer: ExtendedLayerId) -> &LayerDependencyFilter {
+        if let Some((first_id, filter)) = &self.first {
+            if *first_id == xlayer {
+                return filter;
+            }
+            if let Some((_, filter)) = self.rest.iter().find(|(id, _)| *id == xlayer) {
+                return filter;
+            }
+        }
+        &self.default_filter
+    }
+
+    fn filter_for_mut(&mut self, xlayer: ExtendedLayerId) -> &mut LayerDependencyFilter {
+        let default = self.default_filter;
+        let first = self.first.get_or_insert((xlayer, default));
+        if first.0 == xlayer {
+            return &mut first.1;
+        }
+        if let Some(index) = self.rest.iter().position(|(id, _)| *id == xlayer) {
+            return &mut self.rest[index].1;
+        }
+        self.rest.push((xlayer, default));
+        let len = self.rest.len();
+        &mut self.rest[len - 1].1
+    }
+
+    pub(crate) fn observe_envelope(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+        if OperatingPointTracker::accepts(&envelope) && self.ops.is_some() {
+            if let Some(ops) = &mut self.ops {
+                ops.apply_obu(envelope)?;
+            }
+            self.sync_ops_masks();
+            return Ok(());
+        }
+        if envelope.header.obu_type != ObuType::SequenceHeader
+            || envelope.header.extended_layer_id == GLOBAL_XLAYER_ID
+            || envelope.header.temporal_layer_id != TemporalLayerId::BASE
+            || envelope.header.embedded_layer_id != EmbeddedLayerId::BASE
+        {
+            return Ok(());
+        }
+        let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+        if let Ok(general) = parse_sequence_header_general(&mut reader) {
+            let xlayer = envelope.header.extended_layer_id;
+            let masks = self.ops.as_ref().and_then(|ops| {
+                ops.resolved_entries()
+                    .iter()
+                    .find(|(id, _)| *id == xlayer)
+                    .map(|(_, masks)| *masks)
+            });
+            let filter = self.filter_for_mut(xlayer);
+            if let Some(masks) = masks {
+                filter.set_output_tlayer_masks(masks);
+            }
+            filter.apply_sequence_general(&general);
+        }
+        Ok(())
+    }
+
+    fn sync_ops_masks(&mut self) {
+        let Some(ops) = self.ops.as_deref() else {
+            return;
+        };
+        if !ops.is_resolved() {
+            if let Some((_, filter)) = &mut self.first {
+                filter.reset_default_output_masks();
+            }
+            for (_, filter) in &mut self.rest {
+                filter.reset_default_output_masks();
+            }
+            return;
+        }
+        for (id, filter) in self.first.iter_mut().chain(self.rest.iter_mut()) {
+            ops.apply_masks_to_filter(*id, filter);
+        }
+        let entries: Vec<(ExtendedLayerId, [u8; 8])> = ops.resolved_entries().to_vec();
+        for (xlayer, masks) in entries {
+            self.filter_for_mut(xlayer).set_output_tlayer_masks(masks);
+        }
+    }
+
+    pub(crate) fn check_operating_point_for_frame(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let Some(ops) = &mut self.ops else {
+            return Ok(());
+        };
+        if ops.should_fail_unavailable_frame(xlayer) {
+            return Err(ops.unavailable_error(offset));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_operating_point_at_eof(
+        &self,
+        saw_frame: bool,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let Some(ops) = &self.ops else {
+            return Ok(());
+        };
+        if saw_frame && !ops.ever_resolved() {
+            return Err(ops.unavailable_error(offset));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    const fn default_or_first(&self) -> &LayerDependencyFilter {
+        match &self.first {
+            Some((_, filter)) => filter,
+            None => &self.default_filter,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn is_layer_selected(
+        &self,
+        mlayer: EmbeddedLayerId,
+        tlayer: TemporalLayerId,
+    ) -> bool {
+        self.default_or_first().is_layer_selected(mlayer, tlayer)
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn is_layer_output(
+        &self,
+        mlayer: EmbeddedLayerId,
+        tlayer: TemporalLayerId,
+    ) -> bool {
+        self.default_or_first().is_layer_output(mlayer, tlayer)
+    }
+
+    #[must_use]
+    pub(crate) fn is_layer_selected_for(
+        &self,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+        tlayer: TemporalLayerId,
+    ) -> bool {
+        self.filter_for(xlayer).is_layer_selected(mlayer, tlayer)
+    }
+
+    #[must_use]
+    pub(crate) fn is_layer_output_for(
+        &self,
+        xlayer: ExtendedLayerId,
+        mlayer: EmbeddedLayerId,
+        tlayer: TemporalLayerId,
+    ) -> bool {
+        self.is_xlayer_selected(xlayer) && self.filter_for(xlayer).is_layer_output(mlayer, tlayer)
+    }
+
+    #[must_use]
+    pub(crate) fn is_obu_selected(&self, header: ObuHeader) -> bool {
+        if header.obu_type.is_reserved() || matches!(header.obu_type, ObuType::TemporalDelimiter) {
+            return true;
+        }
+        if header.extended_layer_id == GLOBAL_XLAYER_ID {
+            if !header.obu_type.permits_global_xlayer() {
+                return false;
+            }
+        } else if !self.is_xlayer_selected(header.extended_layer_id) {
+            return false;
+        }
+        if header.obu_type.requires_base_temporal_and_embedded_layer() {
+            true
+        } else {
+            self.is_layer_selected_for(
+                header.extended_layer_id,
+                header.embedded_layer_id,
+                header.temporal_layer_id,
+            )
+        }
+    }
+}
+
+/// The decoded layer selection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLayerSelection {
     temporal_layer_id: TemporalLayerId,
     embedded_layer_id: EmbeddedLayerId,
     extended_layer_id: ExtendedLayerId,
+    temporal_selection: TemporalLayerSelection,
+    embedded_selection: EmbeddedLayerSelection,
+    extended_selection: ExtendedLayerSelection,
 }
 
 impl Default for DecodeLayerSelection {
     fn default() -> Self {
-        Self::BASE
+        Self {
+            temporal_selection: TemporalLayerSelection::All,
+            embedded_selection: EmbeddedLayerSelection::All,
+            extended_selection: ExtendedLayerSelection::All,
+            ..Self::BASE
+        }
     }
 }
 
 impl DecodeLayerSelection {
-    /// The only selected layer in planner v1: temporal 0, embedded 0, extended 0.
+    /// The base layer: temporal 0, embedded 0, extended 0.
     pub const BASE: Self = Self {
         temporal_layer_id: TemporalLayerId::from_bits(0),
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
         extended_layer_id: ExtendedLayerId::from_bits(0),
+        temporal_selection: TemporalLayerSelection::BASE_ONLY,
+        embedded_selection: EmbeddedLayerSelection::BASE_ONLY,
+        extended_selection: ExtendedLayerSelection::Target(ExtendedLayerId::from_bits(0)),
     };
 
     /// Returns the planner's base-layer selection.
@@ -85,25 +633,53 @@ impl DecodeLayerSelection {
         Self::BASE
     }
 
-    /// The selection once `layer` is seen: `selected` if a stream layer was
-    /// already chosen, else `layer` when it is not the global one.
-    fn adopt(selected: &mut Option<Self>, layer: ExtendedLayerId) -> Self {
-        if selected.is_none() && layer != GLOBAL_XLAYER_ID {
-            *selected = Some(Self::of_stream(core::iter::once(layer)));
+    pub(crate) fn adopt_with_filter(
+        selected: &mut Option<Self>,
+        layer: ExtendedLayerId,
+        filter: &ActiveLayerFilter,
+    ) -> Self {
+        if selected.is_none() && layer != GLOBAL_XLAYER_ID && filter.is_xlayer_selected(layer) {
+            *selected = Some(
+                Self {
+                    extended_layer_id: layer,
+                    ..Self::BASE
+                }
+                .with_temporal_selection(filter.selection())
+                .with_embedded_selection(filter.embedded_selection())
+                .with_extended_selection(filter.extended_selection()),
+            );
         }
-        selected.unwrap_or_default()
+        selected.unwrap_or_else(|| {
+            Self::default()
+                .with_temporal_selection(filter.selection())
+                .with_embedded_selection(filter.embedded_selection())
+                .with_extended_selection(filter.extended_selection())
+        })
     }
 
-    /// The selection of a single-stream bitstream: the first extended layer
-    /// in `layers` that is not the global one, or layer 0 when there is none.
-    pub(crate) fn of_stream(mut layers: impl Iterator<Item = ExtendedLayerId>) -> Self {
+    /// The selection of a bitstream: the first selected non-global extended layer
+    /// in `layers`, or the target / layer 0 when there is none.
+    pub(crate) fn of_stream(
+        mut layers: impl Iterator<Item = ExtendedLayerId>,
+        temporal_selection: TemporalLayerSelection,
+        embedded_selection: EmbeddedLayerSelection,
+        extended_selection: ExtendedLayerSelection,
+    ) -> Self {
         let extended_layer_id = layers
-            .find(|&layer| layer != GLOBAL_XLAYER_ID)
-            .unwrap_or(Self::BASE.extended_layer_id);
+            .find(|&layer| {
+                layer != GLOBAL_XLAYER_ID && extended_selection.is_xlayer_selected(layer)
+            })
+            .unwrap_or(match extended_selection {
+                ExtendedLayerSelection::Target(target) => target,
+                _ => Self::BASE.extended_layer_id,
+            });
         Self {
             extended_layer_id,
             ..Self::BASE
         }
+        .with_temporal_selection(temporal_selection)
+        .with_embedded_selection(embedded_selection)
+        .with_extended_selection(extended_selection)
     }
 
     /// Selected temporal layer id.
@@ -112,16 +688,65 @@ impl DecodeLayerSelection {
         self.temporal_layer_id
     }
 
+    /// Configured temporal-layer selection policy.
+    #[must_use]
+    pub const fn temporal_selection(self) -> TemporalLayerSelection {
+        self.temporal_selection
+    }
+
+    /// Returns a copy with the configured temporal-layer selection policy.
+    #[must_use]
+    pub const fn with_temporal_selection(mut self, selection: TemporalLayerSelection) -> Self {
+        self.temporal_selection = selection;
+        self.temporal_layer_id = if let TemporalLayerSelection::Target(target) = selection {
+            target
+        } else {
+            TemporalLayerId::BASE
+        };
+        self
+    }
+
     /// Selected embedded layer id.
     #[must_use]
     pub const fn embedded_layer_id(self) -> EmbeddedLayerId {
         self.embedded_layer_id
     }
 
+    /// Configured embedded-layer selection policy.
+    #[must_use]
+    pub const fn embedded_selection(self) -> EmbeddedLayerSelection {
+        self.embedded_selection
+    }
+
+    /// Returns a copy with the configured embedded-layer selection policy.
+    #[must_use]
+    pub const fn with_embedded_selection(mut self, selection: EmbeddedLayerSelection) -> Self {
+        self.embedded_selection = selection;
+        self.embedded_layer_id = if let EmbeddedLayerSelection::Target(target) = selection {
+            target
+        } else {
+            EmbeddedLayerId::BASE
+        };
+        self
+    }
+
     /// Selected extended layer id.
     #[must_use]
     pub const fn extended_layer_id(self) -> ExtendedLayerId {
         self.extended_layer_id
+    }
+
+    /// Configured extended-layer selection policy.
+    #[must_use]
+    pub const fn extended_selection(self) -> ExtendedLayerSelection {
+        self.extended_selection
+    }
+
+    /// Returns a copy with the configured extended-layer selection policy.
+    #[must_use]
+    pub const fn with_extended_selection(mut self, selection: ExtendedLayerSelection) -> Self {
+        self.extended_selection = selection;
+        self
     }
 }
 
@@ -699,6 +1324,7 @@ pub(crate) fn plan_stream(
     input: DecodeStreamInput<'_>,
     options: &DecodeOptions,
 ) -> Result<DecodeStreamPlan> {
+    options.validate_selections()?;
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input.input_len_bytes)?;
 
@@ -708,7 +1334,7 @@ pub(crate) fn plan_stream(
         }
         ParsedBitstream::Ivf(ivf) => {
             let mut builder =
-                PlanBuilder::new(BitstreamFormat::Ivf, input.input_len_bytes, limits, true);
+                PlanBuilder::new(BitstreamFormat::Ivf, input.input_len_bytes, options, true);
             let mut planner = IvfPlanner::default();
             for frame in &ivf.frames {
                 planner.push_frame(&mut builder, frame.frame, &frame.obus, frame.error.as_ref());
@@ -724,21 +1350,18 @@ pub(crate) fn plan_annex_b(
     options: &DecodeOptions,
     keep_obus: bool,
 ) -> Result<DecodeStreamPlan> {
+    options.validate_selections()?;
     if let Some(error) = &partial.error {
         return Err(DecodeError::MalformedSource {
             issue: issue_from_core_error(DecodeSourceIssueKind::AnnexBParseError, None, error),
         });
     }
-    let mut builder = PlanBuilder::new(
-        BitstreamFormat::AnnexB,
-        input_len_bytes,
-        options.limits(),
-        keep_obus,
-    );
+    let mut builder =
+        PlanBuilder::new(BitstreamFormat::AnnexB, input_len_bytes, options, keep_obus);
     for &obu in &partial.obus {
         builder.push_obu(obu, DecodeObuSourceKind::AnnexB, None)?;
     }
-    Ok(builder.finish())
+    builder.finish()
 }
 
 /// Plans IVF frame records one at a time. A record's planning error waits for
@@ -826,13 +1449,14 @@ impl IvfPlanner {
         if let Some(unsupported) = self.first_unsupported {
             return Err(DecodeError::UnsupportedStructure { unsupported });
         }
-        Ok(builder.finish())
+        builder.finish()
     }
 }
 
 pub(crate) struct PlanBuilder {
     format: BitstreamFormat,
     selected_layer: Option<DecodeLayerSelection>,
+    layer_filter: ActiveLayerFilter,
     pub(crate) input_len_bytes: u64,
     limits: crate::DecodeLimits,
     keep_obus: bool,
@@ -840,6 +1464,7 @@ pub(crate) struct PlanBuilder {
     obu_count: u64,
     traversed_obu_count: u64,
     frame_candidate_count: u64,
+    saw_any_frame: bool,
     source_warnings: Vec<DecodeSourceIssue>,
 }
 
@@ -847,19 +1472,21 @@ impl PlanBuilder {
     pub(crate) fn new(
         format: BitstreamFormat,
         input_len_bytes: u64,
-        limits: crate::DecodeLimits,
+        options: &DecodeOptions,
         keep_obus: bool,
     ) -> Self {
         Self {
             format,
             selected_layer: None,
+            layer_filter: ActiveLayerFilter::from_options(options),
             input_len_bytes,
-            limits,
+            limits: options.limits(),
             keep_obus,
             obus: Vec::new(),
             obu_count: 0,
             traversed_obu_count: 0,
             frame_candidate_count: 0,
+            saw_any_frame: false,
             source_warnings: Vec::new(),
         }
     }
@@ -909,11 +1536,16 @@ impl PlanBuilder {
             .ensure(DecodeLimitName::MaxObus, next_obu_count)?;
         self.traversed_obu_count = next_obu_count;
 
-        let selected_layer = DecodeLayerSelection::adopt(
+        if is_coded_frame_obu(envelope.header.obu_type) {
+            self.saw_any_frame = true;
+        }
+        let selected_layer = self.selected_layer.unwrap_or_default();
+        let role = classify_obu(envelope, selected_layer, &mut self.layer_filter)?;
+        DecodeLayerSelection::adopt_with_filter(
             &mut self.selected_layer,
             envelope.header.extended_layer_id,
+            &self.layer_filter,
         );
-        let role = classify_obu(envelope, selected_layer)?;
         if role.is_frame_candidate() {
             let next_frame_count = self.frame_candidate_count.saturating_add(1);
             self.limits
@@ -943,29 +1575,49 @@ impl PlanBuilder {
         self.obu_count += 1;
     }
 
-    fn finish(self) -> DecodeStreamPlan {
-        DecodeStreamPlan {
+    fn finish(self) -> Result<DecodeStreamPlan> {
+        self.layer_filter.ensure_operating_point_at_eof(
+            self.saw_any_frame,
+            ByteOffset::new(self.input_len_bytes),
+        )?;
+        Ok(DecodeStreamPlan {
             format: self.format,
-            selected_layer: self.selected_layer.unwrap_or_default(),
+            selected_layer: self.selected_layer.unwrap_or_else(|| {
+                DecodeLayerSelection::default()
+                    .with_temporal_selection(self.layer_filter.selection())
+                    .with_embedded_selection(self.layer_filter.embedded_selection())
+                    .with_extended_selection(self.layer_filter.extended_selection())
+            }),
             input_len_bytes: self.input_len_bytes,
             obu_count: self.obu_count,
             obus: self.obus,
             frame_candidate_count: self.frame_candidate_count,
             source_warnings: self.source_warnings,
-        }
+        })
     }
 }
 
-pub(crate) fn ensure_supported_obu(
-    envelope: ObuEnvelope<'_>,
-    selected_layer: DecodeLayerSelection,
-) -> Result<()> {
-    classify_obu(envelope, selected_layer).map(|_| ())
+pub(crate) fn is_coded_frame_obu(obu_type: ObuType) -> bool {
+    matches!(
+        obu_type,
+        ObuType::ClosedLoopKey
+            | ObuType::OpenLoopKey
+            | ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup
+            | ObuType::Switch
+            | ObuType::LeadingSef
+            | ObuType::RegularSef
+            | ObuType::LeadingTip
+            | ObuType::RegularTip
+            | ObuType::BridgeFrame
+            | ObuType::RasFrame
+    )
 }
 
-fn classify_obu(
+pub(crate) fn classify_obu(
     envelope: ObuEnvelope<'_>,
-    selected_layer: DecodeLayerSelection,
+    _selected_layer: DecodeLayerSelection,
+    layer_filter: &mut ActiveLayerFilter,
 ) -> Result<DecodePlannedObuRole> {
     let header = envelope.header;
     let obu_type = header.obu_type;
@@ -990,29 +1642,38 @@ fn classify_obu(
             "this OBU type is not permitted to use the AV2 global extended layer id",
         );
     }
+    if obu_type == ObuType::Msdo
+        && (header.temporal_layer_id != TemporalLayerId::BASE
+            || header.embedded_layer_id != EmbeddedLayerId::BASE)
+    {
+        return unsupported(
+            DecodeUnsupportedReason::InvalidLayerScope,
+            envelope,
+            "6.6",
+            "OBU_MSDO must use obu_tlayer_id == 0 and obu_mlayer_id == 0",
+        );
+    }
     if obu_type == ObuType::TemporalDelimiter {
         return Ok(DecodePlannedObuRole::Global);
     }
 
-    if header.embedded_layer_id != selected_layer.embedded_layer_id {
-        return unsupported(
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-            envelope,
-            "6.2.2",
-            "only embedded layer 0 is selected by the initial decode stream planner",
-        );
+    layer_filter.observe_envelope(envelope)?;
+    if is_coded_frame_obu(obu_type) {
+        layer_filter.check_operating_point_for_frame(header.extended_layer_id, envelope.offset)?;
     }
-    if header.extended_layer_id != selected_layer.extended_layer_id
-        && header.extended_layer_id != GLOBAL_XLAYER_ID
+
+    if header.extended_layer_id != GLOBAL_XLAYER_ID
+        && !layer_filter.is_xlayer_selected(header.extended_layer_id)
     {
-        return unsupported(
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-            envelope,
-            "6.2.2",
-            "only one extended layer and global-scope OBUs are accepted by the initial decode stream planner",
-        );
+        return Ok(DecodePlannedObuRole::UnselectedLayer);
     }
-    if header.temporal_layer_id != selected_layer.temporal_layer_id {
+    if !obu_type.requires_base_temporal_and_embedded_layer()
+        && !layer_filter.is_layer_selected_for(
+            header.extended_layer_id,
+            header.embedded_layer_id,
+            header.temporal_layer_id,
+        )
+    {
         return Ok(DecodePlannedObuRole::UnselectedLayer);
     }
 
@@ -1047,13 +1708,7 @@ fn classify_obu(
         | ObuType::QuantizationMatrix
         | ObuType::FilmGrain
         | ObuType::ContentInterpretation => Ok(DecodePlannedObuRole::SelectedLayerState),
-        ObuType::Msdo => unsupported(
-            DecodeUnsupportedReason::MultistreamSelection,
-            envelope,
-            "7.1",
-            "multistream and external-HLS selection are outside the initial decode stream planner tier",
-        ),
-        ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter => {
+        ObuType::Msdo | ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter => {
             Ok(DecodePlannedObuRole::Global)
         }
     }
@@ -1062,15 +1717,16 @@ fn classify_obu(
 /// The OBUs of `bytes` from absolute offset `from` to `end`, planned again as
 /// the planner planned them; the first one gets plan index `index`.
 #[derive(Clone)]
-struct Replan<'a> {
+struct Replan<'a, F = ActiveLayerFilter> {
     cursor: AnnexBObuCursor<'a>,
     index: u64,
     source_kind: DecodeObuSourceKind,
     ivf_frame: Option<DecodeIvfFrameContext>,
     selected_layer: Option<DecodeLayerSelection>,
+    layer_filter: F,
 }
 
-impl<'a> Replan<'a> {
+impl<'a, F> Replan<'a, F> {
     fn new(
         bytes: SourceBytes<'a>,
         from: u64,
@@ -1078,9 +1734,11 @@ impl<'a> Replan<'a> {
         index: u64,
         ivf_frame: Option<DecodeIvfFrameContext>,
         selected_layer: Option<DecodeLayerSelection>,
+        layer_filter: F,
     ) -> Self {
         Self {
             selected_layer,
+            layer_filter,
             cursor: AnnexBObuCursor::new(
                 bytes.get(from, end).unwrap_or_default(),
                 ByteOffset::new(from),
@@ -1096,7 +1754,7 @@ impl<'a> Replan<'a> {
     }
 }
 
-impl Iterator for Replan<'_> {
+impl<F: core::borrow::BorrowMut<ActiveLayerFilter>> Iterator for Replan<'_, F> {
     type Item = Result<DecodePlannedObu>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -1115,27 +1773,80 @@ impl Iterator for Replan<'_> {
         };
         let index = self.index;
         self.index += 1;
-        let selected_layer = DecodeLayerSelection::adopt(
+        let filter = self.layer_filter.borrow_mut();
+        let selected_layer = self.selected_layer.unwrap_or_default();
+        let planned = classify_obu(envelope, selected_layer, filter).map(|role| {
+            DecodePlannedObu::new(index, self.source_kind, self.ivf_frame, envelope, role)
+        });
+        DecodeLayerSelection::adopt_with_filter(
             &mut self.selected_layer,
             envelope.header.extended_layer_id,
+            filter,
         );
-        Some(classify_obu(envelope, selected_layer).map(|role| {
-            DecodePlannedObu::new(index, self.source_kind, self.ivf_frame, envelope, role)
-        }))
+        Some(planned)
     }
 }
 
 /// Finds the planned frame candidates again, in order, in the bytes the decode
 /// pass reads. Scanning every OBU once reproduces their plan indices.
-#[derive(Default)]
 pub(crate) struct CandidateScan {
     resume: u64,
     index: u64,
     frames: u64,
+    saw_any_frame: bool,
     selected_layer: Option<DecodeLayerSelection>,
+    layer_filter: ActiveLayerFilter,
+}
+
+impl Default for CandidateScan {
+    fn default() -> Self {
+        Self::new(
+            TemporalLayerSelection::All,
+            EmbeddedLayerSelection::All,
+            ExtendedLayerSelection::All,
+        )
+    }
 }
 
 impl CandidateScan {
+    pub(crate) fn new(
+        temporal: TemporalLayerSelection,
+        embedded: EmbeddedLayerSelection,
+        extended: ExtendedLayerSelection,
+    ) -> Self {
+        Self::new_with_selections(temporal, embedded, extended, OperatingPointSelection::None)
+    }
+
+    pub(crate) fn new_with_selections(
+        temporal: TemporalLayerSelection,
+        embedded: EmbeddedLayerSelection,
+        extended: ExtendedLayerSelection,
+        operating_point: OperatingPointSelection,
+    ) -> Self {
+        Self {
+            resume: 0,
+            index: 0,
+            frames: 0,
+            saw_any_frame: false,
+            selected_layer: None,
+            layer_filter: ActiveLayerFilter::new_with_selections(
+                temporal,
+                embedded,
+                extended,
+                operating_point,
+            ),
+        }
+    }
+
+    pub(crate) const fn layer_filter(&self) -> &ActiveLayerFilter {
+        &self.layer_filter
+    }
+
+    pub(crate) fn finish_eof(&self, offset: ByteOffset) -> Result<()> {
+        self.layer_filter
+            .ensure_operating_point_at_eof(self.saw_any_frame, offset)
+    }
+
     /// The next frame candidate in `bytes`, one temporal unit, after the last
     /// candidate found, counting OBUs and candidates against `limits`.
     pub(crate) fn next(
@@ -1145,26 +1856,31 @@ impl CandidateScan {
         limits: crate::DecodeLimits,
     ) -> Result<Option<DecodePlannedObu>> {
         let from = self.resume.max(bytes.base());
-        let replan = Replan::new(
+        let mut replan = Replan::new(
             bytes,
             from,
             bytes.end(),
             self.index,
             ivf_frame,
             self.selected_layer,
+            &mut self.layer_filter,
         );
-        for planned in replan {
+        for planned in replan.by_ref() {
             let planned = planned?;
-            DecodeLayerSelection::adopt(&mut self.selected_layer, planned.header.extended_layer_id);
+            if is_coded_frame_obu(planned.header.obu_type) {
+                self.saw_any_frame = true;
+            }
             limits.ensure(DecodeLimitName::MaxObus, planned.index + 1)?;
             self.resume = planned.end();
             self.index = planned.index + 1;
             if planned.role.is_frame_candidate() {
                 self.frames += 1;
                 limits.ensure(DecodeLimitName::MaxFramesToDecode, self.frames)?;
+                self.selected_layer = replan.selected_layer;
                 return Ok(Some(planned));
             }
         }
+        self.selected_layer = replan.selected_layer;
         Ok(None)
     }
 }
@@ -1182,15 +1898,26 @@ pub(crate) fn tile_group_continuations<'a>(
             .saturating_add(u64::from(frame.frame_payload_size))
             .min(bytes.end())
     });
+    let temporal_selection = TemporalLayerSelection::Target(candidate.header.temporal_layer_id);
+    let embedded_selection = EmbeddedLayerSelection::Target(candidate.header.embedded_layer_id);
+    let extended_selection = ExtendedLayerSelection::Target(candidate.header.extended_layer_id);
     Replan::new(
         bytes,
         candidate.end(),
         end,
         candidate.index + 1,
         candidate.ivf_frame,
-        Some(DecodeLayerSelection::of_stream(core::iter::once(
-            candidate.header.extended_layer_id,
-        ))),
+        Some(DecodeLayerSelection::of_stream(
+            core::iter::once(candidate.header.extended_layer_id),
+            temporal_selection,
+            embedded_selection,
+            extended_selection,
+        )),
+        ActiveLayerFilter::new_with_extended(
+            temporal_selection,
+            embedded_selection,
+            extended_selection,
+        ),
     )
     .map_while(Result::ok)
     .filter(|planned| planned.obu_type() != ObuType::Padding)
@@ -1337,5 +2064,4 @@ fn core_error_offset(error: &splot_core::Error) -> Option<ByteOffset> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;

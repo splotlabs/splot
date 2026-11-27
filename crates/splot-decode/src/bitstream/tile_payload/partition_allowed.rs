@@ -116,7 +116,7 @@ pub(crate) struct PartitionAllowedInput {
 }
 
 impl PartitionAllowedInput {
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         r: usize,
         c: usize,
@@ -747,7 +747,6 @@ const fn partition_rect_type(partition: PartitionType) -> Option<RectPartitionTy
 
 #[cfg(test)]
 mod memo_tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

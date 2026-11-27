@@ -3,7 +3,6 @@
 
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::annexb::parse_annex_b_obus;

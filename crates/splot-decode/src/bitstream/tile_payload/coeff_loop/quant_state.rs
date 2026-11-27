@@ -143,7 +143,7 @@ impl CoeffQuantStateAccumulator {
     /// neither the DC nor parity-hidden; returns its magnitude.
     /// [`Self::ac_magnitude`] of a level below `maxLevel - allowTcq`, which
     /// read no remainder and so cannot leave the conforming range.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient quant step")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient quant step")]
     #[inline(always)]
     pub(crate) fn ac_magnitude(
         &mut self,

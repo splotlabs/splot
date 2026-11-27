@@ -28,7 +28,7 @@ pub(super) trait Lanes: Copy {
 }
 
 impl Lanes for u8 {
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     fn lanes<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
         match samples.get(at..).and_then(<[u8]>::first_chunk::<16>) {
@@ -37,7 +37,7 @@ impl Lanes for u8 {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     fn lanes16<S: Simd>(simd: S, samples: &[Self], at: usize) -> (i16x8<S>, i16x8<S>) {
         match samples.get(at..).and_then(<[u8]>::first_chunk::<16>) {
@@ -55,7 +55,7 @@ impl Lanes for u16 {
         Some(samples)
     }
 
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     fn lanes<S: Simd>(simd: S, samples: &[Self], at: usize) -> i16x8<S> {
         match samples.get(at..).and_then(<[u16]>::first_chunk::<8>) {
@@ -64,7 +64,7 @@ impl Lanes for u16 {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     fn lanes16<S: Simd>(simd: S, samples: &[Self], at: usize) -> (i16x8<S>, i16x8<S>) {
         (
@@ -87,13 +87,19 @@ macro_rules! with_pairs {
 }
 
 /// Predicts the block into `sink`; `stage` holds every intermediate row.
-pub(super) fn predict<T: Lanes>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
-    baseline_simd!(simd => run(simd, block, sink, stage));
+pub(super) fn predict<R: super::SubpelRunner, T: Lanes>(
+    runner: R,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
+) {
+    runner.portable_predict(block, sink, stage);
 }
 
 /// Predicts both blocks of a 16-bit compound cell (`w * h <= 64` or full-pel)
 /// and stores their COMPOUND_AVERAGE clipped to `max` into `output`.
-pub(super) fn compound_u16(
+pub(super) fn compound_u16<R: super::SubpelRunner>(
+    runner: R,
     blocks: [&Block<'_, u16>; 2],
     forward: i32,
     max: u16,
@@ -105,38 +111,49 @@ pub(super) fn compound_u16(
         .iter()
         .all(|b| b.horizontal.is_none() && b.vertical.is_none())
     {
-        baseline_simd!(simd => copy_compound_u16(simd, blocks, forward, max, output, stride));
+        runner.portable_copy_compound_u16(blocks, forward, max, output, stride);
         return;
     }
+    runner.portable_compound_u16(blocks, forward, max, stage, output, stride);
+}
+
+#[inline]
+pub(super) fn compound_u16_simd<S: Simd>(
+    simd: S,
+    blocks: [&Block<'_, u16>; 2],
+    forward: i32,
+    max: u16,
+    stage: &mut [i16],
+    output: &mut [u16],
+    stride: usize,
+) {
     let w = blocks[0].w;
     let mut pred0 = [0i32; 64];
-    baseline_simd!(simd => {
-        run(
-            simd,
-            blocks[0],
-            &mut Sink::Prep {
-                output: &mut pred0,
-                stride: w,
-            },
-            stage,
-        );
-        run(
-            simd,
-            blocks[1],
-            &mut Sink::AverageWide {
-                pred0: &pred0,
-                forward,
-                output,
-                stride,
-                max,
-            },
-            stage,
-        );
-    });
+    run(
+        simd,
+        blocks[0],
+        &mut Sink::Prep {
+            output: &mut pred0,
+            stride: w,
+        },
+        stage,
+    );
+    run(
+        simd,
+        blocks[1],
+        &mut Sink::AverageWide {
+            pred0: &pred0,
+            forward,
+            output,
+            stride,
+            max,
+        },
+        stage,
+    );
 }
 
 #[inline(never)]
-fn copy_compound_u16<S: Simd>(
+pub(super) fn copy_compound_u16<S: Simd>(
     simd: S,
     blocks: [&Block<'_, u16>; 2],
     forward: i32,
@@ -266,7 +283,12 @@ fn copy_compound_u16<S: Simd>(
 }
 
 #[inline]
-fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
+pub(super) fn run<S: Simd, T: Lanes>(
+    simd: S,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
+) {
     match (block.horizontal, block.vertical) {
         (None, None) => copy(simd, block, sink),
         (Some(taps), None) => with_pairs!(taps.count, horizontal::<S, T>(simd, block, taps, sink)),
@@ -286,7 +308,7 @@ fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, st
 }
 
 /// The active tap weights of `taps` splatted into eight-lane vectors.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn weights<S: Simd>(simd: S, taps: &Taps) -> [i16x8<S>; 8] {
     core::array::from_fn(|t| {
@@ -302,7 +324,7 @@ fn weights<S: Simd>(simd: S, taps: &Taps) -> [i16x8<S>; 8] {
 
 /// `Σ` over `2 * P` taps of `row(t) * weights[t]` into `i32` lanes `0..4` and
 /// `4..8`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn tap_sums<S: Simd, const P: usize>(
     weights: &[i16x8<S>; 8],
@@ -340,7 +362,7 @@ fn tap_sums<S: Simd, const P: usize>(
 }
 
 /// `Σ` over `2 * P` taps of the low four lanes of `row(t) * weights[t]`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn tap_sums4<S: Simd, const P: usize>(
     weights: &[i16x8<S>; 8],
@@ -364,7 +386,7 @@ fn tap_sums4<S: Simd, const P: usize>(
 }
 
 /// The horizontal sums of an 8-column window `(a, b)`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn horizontal_sums_ab<S: Simd, const P: usize>(
     a: i16x8<S>,
@@ -384,7 +406,7 @@ fn horizontal_sums_ab<S: Simd, const P: usize>(
 }
 
 /// The horizontal sums of a 4-column window starting at `start`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn horizontal_sums4<S: Simd, T: Lanes, const P: usize>(
     simd: S,
@@ -410,7 +432,7 @@ fn horizontal_sums4<S: Simd, T: Lanes, const P: usize>(
     })
 }
 
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn round<S: Simd>(
     (low, high): (i32x4<S>, i32x4<S>),
@@ -801,7 +823,7 @@ fn filter_stage<S: Simd, const P: usize>(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn load4_pred0<S: Simd, P: Copy + Into<i32>>(simd: S, pred0: &[P], at: usize) -> i32x4<S> {
     if let Some(lanes) = pred0.get(at..).and_then(<[P]>::first_chunk::<4>) {
@@ -813,7 +835,7 @@ fn load4_pred0<S: Simd, P: Copy + Into<i32>>(simd: S, pred0: &[P], at: usize) ->
 }
 
 /// Stores up to four values of output row `row` of a `w <= 4` block.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4<S>) {
     let blended = |first: i32x4<S>, forward: i32| {
@@ -892,7 +914,7 @@ fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn store4<T: Copy>(output: &mut [T], at: usize, count: usize, lanes: [T; 4]) {
     let slot = output.get_mut(at..).unwrap_or(&mut []);
@@ -916,7 +938,7 @@ fn store4<T: Copy>(output: &mut [T], at: usize, count: usize, lanes: [T; 4]) {
 
 /// Stores the eight values of output row `row`, columns `col..`, of a
 /// `w`-wide block; columns past `w` are dropped.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn emit<S: Simd>(
     simd: S,
@@ -1066,7 +1088,7 @@ fn emit<S: Simd>(
 }
 
 /// Stores the first `count` of `lanes` at `at`.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn store_wide<S: Simd>(output: &mut [u16], at: usize, count: usize, lanes: u16x8<S>) {
     match output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>) {
@@ -1077,7 +1099,7 @@ fn store_wide<S: Simd>(output: &mut [u16], at: usize, count: usize, lanes: u16x8
 
 /// Stores the first `count` of `lanes` at `at`: a whole vector or half of
 /// one in one store, else decomposed into 4/2/1 stores.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn store<T: Copy>(output: &mut [T], at: usize, count: usize, lanes: [T; 8]) {
     if count == 8 {

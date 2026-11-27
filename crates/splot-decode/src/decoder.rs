@@ -6,6 +6,9 @@
 //!
 //! Feature tracking: `DECODE-STREAMING-API`, `DECODE-ZERO-COPY-PICTURE`.
 
+mod composition;
+pub use composition::{AtlasComposite, AtlasCompositionError, AtlasCompositor};
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -14,16 +17,25 @@ use splot_core::headers::content_interpretation::ContentInterpretation;
 use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
+use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdBackend, SimdPolicy, SimdScope};
+use splot_core::span::ByteOffset;
+use splot_core::types::TemporalLayerId;
 use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
-    BitDepth, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool, PlaneRef,
-    ReconSample, SharedFrame,
+    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlaneSamples, PixelFormat, PlaneId, PlanePool,
+    PlaneRef, ReconSample, SharedFrame,
 };
 
 use crate::bitstream::byte_stream::{SourceUnit, UnitBytes, UnitSource, fill_buffer};
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{BlockEvidenceCapture, BlockEvidenceRequest, BlockEvidenceState};
 use crate::error::{DecodeError, DecoderStateError, Result};
+use crate::pipeline::frame_store::{CodedFrameObserver, DecodeObserver};
 use crate::pipeline::{ActiveFilmGrain, DecodeSession, PipelineDecodedFrame, PipelineFrame};
-use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
+use crate::{
+    DecodeLimitName, DecodeLimits, DecodeOptions, EmbeddedLayerId, EmbeddedLayerSelection,
+    ExtendedLayerId, ExtendedLayerSelection, OperatingPointSelection, TemporalLayerSelection,
+};
 
 /// How a [`Decoder`] runs.
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,6 +53,17 @@ pub struct DecoderSettings {
     /// Leaves film grain out of the pictures; [`Picture::apply_film_grain`]
     /// adds it to a picture later.
     pub skip_film_grain: bool,
+    /// Startup SIMD backend policy. Defaults to [`SimdPolicy::Auto`].
+    pub simd_policy: SimdPolicy,
+    /// Temporal enhancement layers to decode and emit. Defaults to [`TemporalLayerSelection::All`].
+    pub temporal_layer_selection: TemporalLayerSelection,
+    /// Embedded enhancement layers to decode and emit. Defaults to [`EmbeddedLayerSelection::All`].
+    pub embedded_layer_selection: EmbeddedLayerSelection,
+    /// Extended enhancement layers to decode and emit. Defaults to [`ExtendedLayerSelection::All`].
+    pub extended_layer_selection: ExtendedLayerSelection,
+    /// Operating-point selection within an `OBU_OPERATING_POINT_SET`. Defaults to
+    /// [`OperatingPointSelection::None`].
+    pub operating_point_selection: OperatingPointSelection,
 }
 
 impl DecoderSettings {
@@ -70,6 +93,53 @@ impl DecoderSettings {
     #[must_use]
     pub const fn with_skip_film_grain(mut self, skip: bool) -> Self {
         self.skip_film_grain = skip;
+        self
+    }
+
+    /// Returns a copy with the startup SIMD backend policy replaced.
+    #[must_use]
+    pub const fn with_simd_policy(mut self, simd_policy: SimdPolicy) -> Self {
+        self.simd_policy = simd_policy;
+        self
+    }
+
+    /// Returns a copy with the temporal-layer selection policy replaced.
+    #[must_use]
+    pub const fn with_temporal_layer_selection(
+        mut self,
+        temporal_layer_selection: TemporalLayerSelection,
+    ) -> Self {
+        self.temporal_layer_selection = temporal_layer_selection;
+        self
+    }
+
+    /// Returns a copy with the embedded-layer selection policy replaced.
+    #[must_use]
+    pub const fn with_embedded_layer_selection(
+        mut self,
+        embedded_layer_selection: EmbeddedLayerSelection,
+    ) -> Self {
+        self.embedded_layer_selection = embedded_layer_selection;
+        self
+    }
+
+    /// Returns a copy with the extended-layer selection policy replaced.
+    #[must_use]
+    pub const fn with_extended_layer_selection(
+        mut self,
+        extended_layer_selection: ExtendedLayerSelection,
+    ) -> Self {
+        self.extended_layer_selection = extended_layer_selection;
+        self
+    }
+
+    /// Returns a copy with the operating-point selection policy replaced.
+    #[must_use]
+    pub const fn with_operating_point_selection(
+        mut self,
+        operating_point_selection: OperatingPointSelection,
+    ) -> Self {
+        self.operating_point_selection = operating_point_selection;
         self
     }
 }
@@ -112,6 +182,102 @@ impl DataProps {
     }
 }
 
+/// The location of an OBU in a temporal unit submitted with [`Decoder::send_data`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ObuLocation {
+    /// The [`DataProps::user_data`] value of the unit.
+    pub user_data: u64,
+    /// The offset from the start of the unit to the OBU header after its length prefix.
+    pub offset: ByteOffset,
+}
+
+/// Where a coded frame obtains its base quantizer index.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum BaseQuantizerOrigin {
+    /// Read from `quantization_params()` (AV2 § 5.18.6.1).
+    Signaled,
+    /// Computed from TIP reference quantizers (AV2 § 5.18.2).
+    Derived,
+    /// Copied from the bridge or inactive BRU reference (AV2 § 5.18.2).
+    Inherited,
+}
+
+/// The coded frame's base quantizer index and its source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct BaseQuantizer {
+    /// The value of `base_q_idx` before segment or block deltas.
+    pub index: u32,
+    /// How the decoder obtained the value.
+    pub origin: BaseQuantizerOrigin,
+}
+
+/// A coded frame or one of its continuation OBUs admitted by the decoder.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CodedFrameEvent {
+    /// An admitted frame, including a frame that produces no picture.
+    #[non_exhaustive]
+    Frame {
+        /// The first coded OBU, also used by [`PictureProvenance::coded`].
+        coded: ObuLocation,
+        /// The active sequence header.
+        sequence_header: ObuLocation,
+        /// The coded extended layer.
+        extended_layer_id: ExtendedLayerId,
+        /// The coded embedded layer.
+        embedded_layer_id: EmbeddedLayerId,
+        /// The coded temporal layer.
+        temporal_layer_id: TemporalLayerId,
+        /// The known base quantizer, if available.
+        base_quantizer: Option<BaseQuantizer>,
+    },
+    /// A tile group that continues a frame reported by [`Self::Frame`].
+    #[non_exhaustive]
+    Continuation {
+        /// The first coded OBU of the frame.
+        coded: ObuLocation,
+        /// The continuation OBU.
+        obu: ObuLocation,
+    },
+}
+
+/// The AV2 input locations for a decoded picture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct PictureProvenance {
+    /// The frame OBU that coded the samples. This is the first tile group for a tiled frame.
+    pub coded: ObuLocation,
+    /// The frame OBU that caused display. This is `coded` unless a show-existing OBU caused display.
+    pub display: ObuLocation,
+    /// The sequence header in effect when the decoder decoded the coded frame.
+    pub sequence_header: ObuLocation,
+}
+
+impl PictureProvenance {
+    pub(crate) const fn direct(coded: ObuLocation, sequence_header: ObuLocation) -> Self {
+        Self {
+            coded,
+            display: coded,
+            sequence_header,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const TEST: Self = Self::direct(
+        ObuLocation {
+            user_data: 0,
+            offset: ByteOffset::new(0),
+        },
+        ObuLocation {
+            user_data: 0,
+            offset: ByteOffset::new(0),
+        },
+    );
+}
+
 /// What [`Decoder::send_data`] did with a temporal unit.
 #[must_use]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,13 +305,19 @@ pub struct Picture {
     samples: Option<Samples>,
     info: DecodedFrameInfo,
     props: DataProps,
+    provenance: PictureProvenance,
     content_interpretation: Option<ContentInterpretation>,
     metadata: Option<Arc<[MetadataUnit]>>,
+    atlas: Vec<crate::AtlasAssociation>,
     pool: Option<Arc<PlanePool>>,
     has_film_grain: bool,
     /// The grain the stream signals for this picture and the samples lack.
     pending_grain: Option<ActiveFilmGrain>,
     frame_type: Option<FrameType>,
+    extended_layer_id: ExtendedLayerId,
+    embedded_layer_id: EmbeddedLayerId,
+    temporal_layer_id: TemporalLayerId,
+    backend: splot_core::simd::ResolvedBackend,
 }
 
 #[derive(Debug)]
@@ -163,6 +335,15 @@ impl Samples {
     }
 }
 
+/// A decoded frame borrowed from a [`Picture`].
+#[derive(Clone, Copy, Debug)]
+pub enum PictureFrame<'a> {
+    /// Eight-bit decoded samples and their geometry.
+    Eight(&'a DecodedFrame<u8>),
+    /// Ten-bit decoded samples and their geometry.
+    Ten(&'a DecodedFrame<u16>),
+}
+
 /// The samples of one picture plane, cropped to the visible area.
 #[derive(Clone, Copy, Debug)]
 pub enum PictureSamples<'a> {
@@ -177,13 +358,17 @@ impl Picture {
         frame: &PipelineFrame,
         pool: Option<Arc<PlanePool>>,
         options: &DecodeOptions,
+        backend: impl SimdBackend,
+        resolved: ResolvedBackend,
     ) -> Result<Self> {
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
-                Samples::Eight(display(frame, grain, pool.as_ref())?)
+                Samples::Eight(display(backend, frame, grain, pool.as_ref())?)
             }
-            PipelineDecodedFrame::Ten(frame) => Samples::Ten(display(frame, grain, pool.as_ref())?),
+            PipelineDecodedFrame::Ten(frame) => {
+                Samples::Ten(display(backend, frame, grain, pool.as_ref())?)
+            }
         };
         let metadata = &frame.output_effects.metadata;
         Ok(Self {
@@ -191,10 +376,16 @@ impl Picture {
                 .ccso_header
                 .as_ref()
                 .and_then(|header| header.frame_type),
+            extended_layer_id: frame.extended_layer_id,
+            embedded_layer_id: frame.embedded_layer_id,
+            temporal_layer_id: frame.temporal_layer_id,
+            backend: resolved,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
+            provenance: frame.provenance,
             content_interpretation: frame.output_effects.content_interpretation,
+            atlas: frame.output_effects.atlas.clone(),
             metadata: (!metadata.is_empty()).then(|| Arc::from(metadata.as_slice())),
             pool,
             has_film_grain: frame.display_grain.is_some(),
@@ -220,25 +411,46 @@ impl Picture {
     /// # Errors
     /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
     pub fn apply_film_grain(&self) -> Result<Self> {
+        struct Apply<'a>(&'a Picture);
+        impl SimdScope<Result<Picture>> for Apply<'_> {
+            fn run<B: SimdBackend>(self, backend: B) -> Result<Picture> {
+                self.0.apply_film_grain_with(backend)
+            }
+        }
+        self.backend.enter(Apply(self))
+    }
+
+    fn apply_film_grain_with(&self, backend: impl SimdBackend) -> Result<Self> {
         let grain = self.pending_grain.as_ref();
         let pool = self.pool.as_ref();
-        let samples = match self.samples.as_ref() {
-            Some(Samples::Eight(frame)) => {
-                Some(Samples::Eight(display(frame.share(), grain, pool)?))
+        let samples = match &self.samples {
+            Some(Samples::Eight(frame)) => Some(Samples::Eight(display(
+                backend,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
+            Some(Samples::Ten(frame)) => {
+                Some(Samples::Ten(display(backend, frame.share(), grain, pool)?))
             }
-            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(frame.share(), grain, pool)?)),
             None => None,
         };
         Ok(Self {
             info: samples.as_ref().map_or(self.info, Samples::info),
             samples,
             props: self.props,
+            provenance: self.provenance,
             content_interpretation: self.content_interpretation,
             metadata: self.metadata.clone(),
+            atlas: self.atlas.clone(),
             pool: self.pool.clone(),
             has_film_grain: self.has_film_grain,
             pending_grain: None,
             frame_type: self.frame_type,
+            extended_layer_id: self.extended_layer_id,
+            embedded_layer_id: self.embedded_layer_id,
+            temporal_layer_id: self.temporal_layer_id,
+            backend: self.backend,
         })
     }
 
@@ -248,6 +460,27 @@ impl Picture {
     #[must_use]
     pub const fn frame_type(&self) -> Option<FrameType> {
         self.frame_type
+    }
+
+    /// Extended layer id (`obu_xlayer_id`, AV2 § 6.2.2) of the coded or
+    /// show-existing frame that produced this picture.
+    #[must_use]
+    pub const fn extended_layer_id(&self) -> ExtendedLayerId {
+        self.extended_layer_id
+    }
+
+    /// Embedded layer ID (`obu_mlayer_id`, AV2 § 6.2.2) of this output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
+    #[must_use]
+    pub const fn embedded_layer_id(&self) -> EmbeddedLayerId {
+        self.embedded_layer_id
+    }
+
+    /// Temporal layer ID (`obu_tlayer_id`, AV2 § 6.2.2) of this output picture.
+    /// A show-existing frame with a derived order hint uses the reference layer ID.
+    #[must_use]
+    pub const fn temporal_layer_id(&self) -> TemporalLayerId {
+        self.temporal_layer_id
     }
 
     /// Visible width in luma samples.
@@ -274,6 +507,19 @@ impl Picture {
         self.info.pixel_format()
     }
 
+    /// Borrows the decoded frame without a copy. The frame gives the coded
+    /// and storage sizes and the visible rectangle. It contains the same
+    /// samples as [`Self::plane`], with or without film grain.
+    ///
+    /// Use the order from [`Decoder::get_picture`] for display order.
+    #[must_use]
+    pub fn decoded_frame(&self) -> Option<PictureFrame<'_>> {
+        Some(match self.samples.as_ref()? {
+            Samples::Eight(frame) => PictureFrame::Eight(frame.get()),
+            Samples::Ten(frame) => PictureFrame::Ten(frame.get()),
+        })
+    }
+
     /// The visible samples of `plane`, or `None` for a chroma plane of a
     /// monochrome picture.
     #[must_use]
@@ -290,11 +536,25 @@ impl Picture {
         self.props
     }
 
+    /// The coded, display, and sequence header locations for this picture.
+    /// Submit a distinct [`DataProps::user_data`] value for each temporal unit
+    /// to distinguish locations in different units.
+    #[must_use]
+    pub const fn provenance(&self) -> PictureProvenance {
+        self.provenance
+    }
+
     /// The content interpretation (color description, timing) in effect for
     /// this picture, from AV2 § 5.15.
     #[must_use]
     pub const fn content_interpretation(&self) -> Option<&ContentInterpretation> {
         self.content_interpretation.as_ref()
+    }
+
+    /// Applicable global and local atlas associations in source order by scope (global first).
+    #[must_use]
+    pub fn atlas_associations(&self) -> &[crate::AtlasAssociation] {
+        &self.atlas
     }
 
     /// The metadata units (HDR, ITU-T T.35 and others) attached to this
@@ -320,6 +580,7 @@ impl Drop for Picture {
 /// The displayed form of `frame`: grain goes into planes from the decoder's
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
+    backend: impl SimdBackend,
     frame: SharedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
@@ -328,8 +589,7 @@ fn display<T: ReconSample>(
         return Ok(frame);
     };
     let spare = FramePlaneSamples::default().with_pool(pool);
-    let grained =
-        splot_recon::apply_film_grain_into(frame.get(), &grain.model, grain.grain_seed, spare)?;
+    let grained = crate::output::film_grain::apply(backend, frame.get(), grain, spare)?;
     Ok(SharedFrame::new(grained))
 }
 
@@ -376,6 +636,7 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 pub struct Decoder {
     shared: Arc<Shared>,
     limits: DecodeLimits,
+    selected_backend: SelectedBackend,
     /// Joined by [`Decoder::drop`], which waits for the driver to stop.
     driver: Option<std::thread::JoinHandle<()>>,
 }
@@ -478,12 +739,209 @@ impl Drop for DriverGuard {
     }
 }
 
+struct DriverLaunch {
+    observer: Option<Box<dyn DecodeObserver>>,
+    #[cfg(feature = "block-evidence")]
+    block_evidence: Option<Arc<BlockEvidenceState>>,
+    atlases: crate::ExternalAtlases,
+    shared: Arc<Shared>,
+    limits: DecodeLimits,
+    skip_film_grain: bool,
+    temporal_layer_selection: TemporalLayerSelection,
+    embedded_layer_selection: EmbeddedLayerSelection,
+    extended_layer_selection: ExtendedLayerSelection,
+    operating_point_selection: OperatingPointSelection,
+    frame_delay: core::num::NonZeroUsize,
+    rows: Option<Arc<crate::pipeline::DecoderRowScheduler>>,
+    resolved: ResolvedBackend,
+}
+
+impl SimdScope<Result<std::thread::JoinHandle<()>>> for DriverLaunch {
+    fn run<B: SimdBackend>(self, backend: B) -> Result<std::thread::JoinHandle<()>> {
+        splot_parallel::spawn_thread("splot-driver", move || {
+            run_driver_session(backend, self);
+        })
+        .map_err(Into::into)
+    }
+}
+
+fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
+    let options = DecodeOptions::new(launch.limits)
+        .with_skip_film_grain(launch.skip_film_grain)
+        .with_temporal_layer_selection(launch.temporal_layer_selection)
+        .with_embedded_layer_selection(launch.embedded_layer_selection)
+        .with_extended_layer_selection(launch.extended_layer_selection)
+        .with_operating_point_selection(launch.operating_point_selection);
+    let guard = DriverGuard(launch.shared);
+    let mut session =
+        DecodeSession::detaching_held(launch.frame_delay, launch.rows, launch.resolved);
+    session.external_atlases = launch.atlases;
+    session.observer = launch.observer;
+    #[cfg(feature = "block-evidence")]
+    {
+        session.block_evidence = launch.block_evidence;
+    }
+    loop {
+        let mut units = ChannelUnits(Arc::clone(&guard.0));
+        let result = crate::pipeline::emit_frames(
+            backend.narrow(),
+            &mut units,
+            &options,
+            &session,
+            |_| Ok(()),
+            |frame| {
+                guard.0.push_picture(Picture::new(
+                    frame,
+                    session.planes(),
+                    &options,
+                    backend,
+                    session.backend(),
+                )?);
+                Ok(())
+            },
+        );
+        #[cfg(feature = "block-evidence")]
+        if let Some(evidence) = &session.block_evidence {
+            evidence.finish(result.is_ok());
+        }
+        if !guard.0.park(result) {
+            break;
+        }
+    }
+}
+
 impl Decoder {
-    /// Opens a decoder and starts its driver and row workers.
+    /// Opens a decoder, validates its settings and SIMD policy, and starts its
+    /// driver and row workers.
     ///
     /// # Errors
-    /// Returns [`DecodeError::Pool`] if a thread cannot start.
+    /// Returns [`DecodeError::InvalidTemporalSelection`] if
+    /// `settings.temporal_layer_selection` is invalid,
+    /// [`DecodeError::InvalidEmbeddedSelection`] if
+    /// `settings.embedded_layer_selection` is invalid,
+    /// [`DecodeError::InvalidExtendedSelection`] if
+    /// `settings.extended_layer_selection` is invalid,
+    /// [`DecodeError::InvalidOperatingPointSelection`] if
+    /// `settings.operating_point_selection` is invalid or conflicts with layer selections,
+    /// [`DecodeError::UnsupportedBackend`] if the requested SIMD policy cannot
+    /// run on this host, or [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
+        Self::new_with_external_atlases(settings, crate::ExternalAtlases::default())
+    }
+
+    /// Opens a decoder with caller-supplied atlas metadata. In-band OBUs can replace those atlases.
+    /// Each flush restores the supplied metadata for the next decode.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_external_atlases(
+        settings: DecoderSettings,
+        atlases: crate::ExternalAtlases,
+    ) -> Result<Self> {
+        Self::open(
+            &settings,
+            atlases,
+            None,
+            #[cfg(feature = "block-evidence")]
+            None,
+        )
+    }
+
+    /// Opens a decoder with an observer for frames admitted on its decode path.
+    ///
+    /// The driver calls the observer in coded order, before the corresponding
+    /// picture can be returned. An event can precede a later decode error.
+    /// Skipped frames and show-existing OBUs do not generate coded-frame events.
+    /// The observer remains installed across [`Self::flush`].
+    /// Return promptly from the observer. Do not call this decoder from it.
+    /// Do not panic in the observer. A panic that unwinds stops the driver permanently.
+    /// Assign a distinct [`DataProps::user_data`] value to each input unit if the
+    /// observer must distinguish locations in different units.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_coded_frame_observer(
+        settings: DecoderSettings,
+        observer: impl Fn(CodedFrameEvent) + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            Some(Box::new(CodedFrameObserver(observer))),
+            #[cfg(feature = "block-evidence")]
+            None,
+        )
+    }
+
+    /// Opens a decoder with an observer for admitted coded frames' reference states.
+    ///
+    /// The driver calls the observer in coded order. An event can precede a later
+    /// decode error. Skipped frames and show-existing output do not generate events.
+    /// The decoder uses in-band reference pictures. Missing prerequisites still
+    /// produce the usual decode errors.
+    ///
+    /// The observer remains installed across [`Self::flush`]. Return promptly.
+    /// Do not call this decoder from the observer. Do not panic in the observer.
+    /// A panic that unwinds stops the driver permanently. Assign distinct
+    /// [`DataProps::user_data`] values to distinguish locations in different units.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    pub fn new_with_reference_observer(
+        settings: DecoderSettings,
+        observer: impl Fn(crate::ReferenceFrameEvent) + Send + Sync + 'static,
+    ) -> Result<Self> {
+        Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            Some(Box::new(
+                crate::reference::observation::CaptureReferences::new(observer),
+            )),
+            #[cfg(feature = "block-evidence")]
+            None,
+        )
+    }
+
+    /// Opens a decoder with a bounded capture for partitions and coding blocks.
+    /// The capture does not skip prerequisite decoding.
+    /// The driver waits for a selected frame to settle before it admits another frame.
+    /// Assign distinct [`DataProps::user_data`] values to distinguish input units.
+    /// A flush ends the capture and resets the decoder.
+    /// Enable the `block-evidence` Cargo feature to use this method.
+    ///
+    /// # Errors
+    /// Returns the errors from [`Self::new`].
+    #[cfg(feature = "block-evidence")]
+    pub fn new_with_block_evidence(
+        settings: DecoderSettings,
+        request: BlockEvidenceRequest,
+    ) -> Result<(Self, BlockEvidenceCapture)> {
+        let evidence = Arc::new(BlockEvidenceState::new(request));
+        let decoder = Self::open(
+            &settings,
+            crate::ExternalAtlases::default(),
+            None,
+            Some(Arc::clone(&evidence)),
+        )?;
+        Ok((decoder, BlockEvidenceCapture(evidence)))
+    }
+
+    fn open(
+        settings: &DecoderSettings,
+        atlases: crate::ExternalAtlases,
+        observer: Option<Box<dyn DecodeObserver>>,
+        #[cfg(feature = "block-evidence")] block_evidence: Option<Arc<BlockEvidenceState>>,
+    ) -> Result<Self> {
+        settings.temporal_layer_selection.validate()?;
+        settings.embedded_layer_selection.validate()?;
+        settings.extended_layer_selection.validate()?;
+        settings.operating_point_selection.validate_with(
+            settings.temporal_layer_selection,
+            settings.embedded_layer_selection,
+            settings.extended_layer_selection,
+        )?;
+        let resolved = splot_core::simd::resolve_backend(settings.simd_policy)?;
+        let selected_backend = resolved.kind();
         let threads = settings.threads.resolve();
         let frame_delay = settings.frame_delay.resolve(threads);
         let capacity = frame_delay.get().max(2);
@@ -506,36 +964,35 @@ impl Decoder {
             driver: Condvar::new(),
         });
         let driver = Arc::clone(&shared);
-        let options =
-            DecodeOptions::new(settings.limits).with_skip_film_grain(settings.skip_film_grain);
-        let rows = crate::pipeline::row_scheduler(threads)?;
-        let driver = splot_parallel::spawn_thread("splot-driver", move || {
-            let guard = DriverGuard(driver);
-            let session = DecodeSession::detaching_held(frame_delay, rows);
-            loop {
-                let mut units = ChannelUnits(Arc::clone(&guard.0));
-                let result = crate::pipeline::emit_frames(
-                    &mut units,
-                    &options,
-                    &session,
-                    |_| Ok(()),
-                    |frame| {
-                        guard
-                            .0
-                            .push_picture(Picture::new(frame, session.planes(), &options)?);
-                        Ok(())
-                    },
-                );
-                if !guard.0.park(result) {
-                    break;
-                }
-            }
+        let rows = crate::pipeline::row_scheduler(threads, resolved)?;
+        let driver = resolved.enter(DriverLaunch {
+            observer,
+            #[cfg(feature = "block-evidence")]
+            block_evidence,
+            atlases,
+            shared: driver,
+            limits: settings.limits,
+            skip_film_grain: settings.skip_film_grain,
+            temporal_layer_selection: settings.temporal_layer_selection,
+            embedded_layer_selection: settings.embedded_layer_selection,
+            extended_layer_selection: settings.extended_layer_selection,
+            operating_point_selection: settings.operating_point_selection,
+            frame_delay,
+            rows,
+            resolved,
         })?;
         Ok(Self {
             shared,
             limits: settings.limits,
+            selected_backend,
             driver: Some(driver),
         })
+    }
+
+    /// The concrete SIMD backend selected when this decoder opened.
+    #[must_use]
+    pub const fn selected_backend(&self) -> SelectedBackend {
+        self.selected_backend
     }
 
     /// Sends one whole temporal unit. The decoder copies it.

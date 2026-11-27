@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use splot_core::Error as CoreError;
 use splot_core::error::SymbolDecoderErrorKind;
 use splot_core::span::ByteOffset;

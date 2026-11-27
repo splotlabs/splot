@@ -43,7 +43,7 @@ struct FixtureEntry {
     /// Lowercase hex SHA-256 of the committed bytes.
     sha256: String,
     /// One-line human note.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     description: String,
     /// Outcome category.
     category: Category,

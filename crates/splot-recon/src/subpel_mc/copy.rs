@@ -64,7 +64,8 @@ pub fn blend_compound_average_weighted_sample(
 ///
 /// Returns [`ReconError::CompoundBlendLengthMismatch`] when `pred0` and `pred1`
 /// have different lengths.
-pub fn blend_compound_average_equal(
+#[cfg(test)]
+pub(crate) fn blend_compound_average_equal(
     pred0: &[i32],
     pred1: &[i32],
     bit_depth: BitDepth,

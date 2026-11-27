@@ -89,6 +89,40 @@ pub enum DecodeError {
         #[from]
         source: DecoderStateError,
     },
+    /// A requested SIMD backend is unsupported on this build or CPU.
+    #[error("unsupported SIMD backend: {source}")]
+    UnsupportedBackend {
+        /// The startup policy validation failure.
+        #[from]
+        source: splot_core::simd::UnsupportedBackendError,
+    },
+    /// Caller supplied an invalid temporal-layer selection.
+    #[error("invalid temporal-layer selection: {reason}")]
+    InvalidTemporalSelection {
+        /// Why the requested temporal selection is invalid.
+        reason: &'static str,
+    },
+
+    /// Caller supplied an invalid embedded-layer selection.
+    #[error("invalid embedded-layer selection: {reason}")]
+    InvalidEmbeddedSelection {
+        /// Why the requested embedded selection is invalid.
+        reason: &'static str,
+    },
+
+    /// Caller supplied an invalid extended-layer selection.
+    #[error("invalid extended-layer selection: {reason}")]
+    InvalidExtendedSelection {
+        /// Why the requested extended selection is invalid.
+        reason: &'static str,
+    },
+
+    /// Caller supplied an invalid operating-point selection.
+    #[error("invalid operating-point selection: {reason}")]
+    InvalidOperatingPointSelection {
+        /// Why the requested operating-point selection is invalid.
+        reason: &'static str,
+    },
 }
 
 /// Why a [`crate::Decoder`] session refused a call.
@@ -324,12 +358,6 @@ pub enum DecodeReferenceStateError {
     /// A selected reference had not published the motion field required by TIP output.
     #[error("a selected TIP-output reference has no published motion field")]
     MissingMotionFieldPublication,
-    /// The sequence signalled more reference slots than AV2 § 5.5.2 allows.
-    #[error("sequence signals {slots} reference slots, more than the sixteen AV2 allows")]
-    TooManyReferenceFrames {
-        /// The signalled slot count.
-        slots: usize,
-    },
     /// A selected reference completed without publishing a required motion-field band.
     #[error("reference slot {slot} has no published motion-field band {band}")]
     MissingMotionFieldBandPublication {

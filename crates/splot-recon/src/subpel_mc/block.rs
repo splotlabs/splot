@@ -71,7 +71,7 @@ pub(super) enum Sink<'a> {
 }
 
 /// The COMPOUND_AVERAGE `Round2(f * p0 + (16 - f) * p1, 4 + InterPostRound)`.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 pub(super) fn blend(pred0: i32, pred1: i32, forward: i32, max: i32) -> i32 {
     let post_round = 2 * FILTER_BITS - (INTER_ROUND0 + INTER_ROUND1_COMPOUND);
@@ -326,7 +326,7 @@ impl<'a, T> Block<'a, T> {
     }
 
     /// The source index of column 0 of window row `row`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin + row * self.stride
@@ -390,7 +390,6 @@ macro_rules! retained {
                 })
             }
 
-            #[allow(clippy::inline_always, reason = "border window copy")]
             #[inline(always)]
             fn bytes<S: Simd, const PADDED: bool>(
                 simd: S,
@@ -407,7 +406,6 @@ macro_rules! retained {
                 PADDED.then(|| $lanes::load_array(simd, lanes).bitcast())
             }
 
-            #[allow(clippy::inline_always, reason = "border window copy")]
             #[inline(always)]
             fn put_bytes<S: Simd>(samples: &mut [Self], at: usize, bytes: u8x16<S>) {
                 if let Some(slot) = samples
@@ -442,7 +440,7 @@ pub(super) type Geometry = [usize; 4];
 
 impl Window {
     /// The window of a block of `interp` from 1/1024-sample `[x, y]`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn new(interp: InterpolationFilter, w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
         let filters = [interp.pass_index(w as u32), interp.pass_index(h as u32)];
@@ -450,7 +448,7 @@ impl Window {
     }
 
     /// [`Self::new`] of the `Subpel_Filters` rows of each pass.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn of_filters(filters: [usize; 2], w: usize, h: usize, [x, y]: [i32; 2]) -> Self {
         let pass = |filter: usize, size: usize, start: i32| {
@@ -479,7 +477,7 @@ impl Window {
     /// The source index of the window origin in a plane of `geometry` when
     /// the window lies inside `[firstX, firstY, lastX, lastY]` clamped to the
     /// plane and its last row has [`reach`] samples of storage.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn origin(
         &self,
@@ -499,7 +497,7 @@ impl Window {
     }
 
     /// The block of this window read in place from `source`.
-    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
     pub(super) fn block<'a, T>(
         &self,
@@ -521,8 +519,9 @@ impl Window {
     /// The block over a copy of the window in `storage`, each sample the
     /// § 7.13.3.18 `Clip3` read of `view` within `bounds` clamped to the
     /// plane, or `None` when that clip range is empty.
-    fn emulate<'s, T: Sample>(
+    fn emulate<'s, R: super::SubpelRunner, T: Sample>(
         &self,
+        runner: R,
         view: &ReferencePlaneView<'_, T>,
         bounds: [i32; 4],
         storage: &'s mut [T],
@@ -539,9 +538,9 @@ impl Window {
         let clip = [first_x, first_y, last_x, last_y];
         let stride = reach(self.w);
         if view.width * size_of::<T>() < 16 {
-            baseline_simd!(simd => self.emulate_chunks::<_, _, true>(simd, view, clip, stride, storage))?;
+            runner.emulate_chunks::<T, true>(self, view, clip, stride, storage)?;
         } else {
-            baseline_simd!(simd => self.emulate_chunks::<_, _, false>(simd, view, clip, stride, storage))?;
+            runner.emulate_chunks::<T, false>(self, view, clip, stride, storage)?;
         }
         Some(self.block(storage, stride, 0))
     }
@@ -550,9 +549,9 @@ impl Window {
     /// window columns gathers every row's clipped samples from one load of
     /// that row, zero-padded past a plane narrower than 16 bytes, through
     /// one byte index vector.
-    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[expect(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
-    fn emulate_chunks<S: Simd, T: Sample, const PADDED: bool>(
+    pub(super) fn emulate_chunks<S: Simd, T: Sample, const PADDED: bool>(
         &self,
         simd: S,
         view: &ReferencePlaneView<'_, T>,
@@ -597,7 +596,7 @@ impl Window {
     /// The `C` chunks `(source column, window column, byte indices)` of
     /// [`Self::emulate_chunks`] of every window row: the rows above
     /// `first_y` and below `last_y` store the gather of that row.
-    #[allow(clippy::inline_always, reason = "border window copy")]
+    #[expect(clippy::inline_always, reason = "border window copy")]
     #[inline(always)]
     fn copy_rows<S: Simd, T: Sample, const C: usize, const PADDED: bool>(
         &self,
@@ -642,39 +641,42 @@ impl Window {
 /// Runs `f` on the block of `window` read in place from `view`, else on a
 /// copy in retained storage `slot`; `None` without running it when the clip
 /// range of `bounds` is empty.
-#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
-pub(super) fn with_block<T: Sample, R>(
+pub(super) fn with_block<R: super::SubpelRunner, T: Sample, Res>(
+    runner: R,
     window: &Window,
     view: &ReferencePlaneView<'_, T>,
     bounds: [i32; 4],
     slot: usize,
-    f: impl FnOnce(&Block<'_, T>) -> R,
-) -> Option<R> {
+    f: impl FnOnce(&Block<'_, T>) -> Res,
+) -> Option<Res> {
     if let Some(origin) = window.origin(view.geometry(), bounds) {
         return Some(f(&window.block(view.samples, view.stride, origin)));
     }
-    emulated(*window, view, bounds, slot, f)
+    emulated(runner, *window, view, bounds, slot, f)
 }
 
 /// [`with_block`] of a window that is not read in place.
 #[cold]
 #[inline(never)]
-fn emulated<T: Sample, R>(
+fn emulated<R: super::SubpelRunner, T: Sample, Res>(
+    runner: R,
     window: Window,
     view: &ReferencePlaneView<'_, T>,
     bounds: [i32; 4],
     slot: usize,
-    f: impl FnOnce(&Block<'_, T>) -> R,
-) -> Option<R> {
+    f: impl FnOnce(&Block<'_, T>) -> Res,
+) -> Option<Res> {
     let len = window.rows * reach(window.w);
     T::with_storage(slot, len, |storage| {
-        Some(f(&window.emulate(view, bounds, storage)?))
+        Some(f(&window.emulate(runner, view, bounds, storage)?))
     })
 }
 
 /// Predicts a validated block whose sink fits it.
-pub(super) fn predict<T: ReconSample>(
+pub(super) fn predict<R: super::SubpelRunner, T: ReconSample>(
+    runner: R,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     mut sink: Sink<'_>,
@@ -693,14 +695,14 @@ pub(super) fn predict<T: ReconSample>(
     );
     let bounds = params.bounds();
     if unscaled && let Some(view) = reference.as_u8() {
-        with_block(&window, &view, bounds, 0, |block| {
-            kernels(block, &mut sink, scratch);
+        with_block(runner, &window, &view, bounds, 0, |block| {
+            kernels(runner, block, &mut sink, scratch);
         });
         return;
     }
     if unscaled && let Some(view) = reference.as_u16() {
-        with_block(&window, &view, bounds, 0, |block| {
-            kernels(block, &mut sink, scratch);
+        with_block(runner, &window, &view, bounds, 0, |block| {
+            kernels(runner, block, &mut sink, scratch);
         });
         return;
     }
@@ -733,23 +735,26 @@ const PUT_STAGE: usize = 23 * 16 + 64;
 
 /// Runs the kernels of `block`: the eight-bit or 16-bit kernels of its
 /// shape and sink, else the portable kernels on a stage.
-pub(super) fn kernels<T: Sample>(
+pub(super) fn kernels<R: super::SubpelRunner, T: Sample>(
+    runner: R,
     block: &Block<'_, T>,
     sink: &mut Sink<'_>,
     scratch: Option<&mut [i16]>,
 ) {
-    if super::eight_bit::predict(block, sink) || super::sixteen_bit::predict(block, sink) {
+    if super::eight_bit::predict(runner, block, sink)
+        || super::sixteen_bit::predict(runner, block, sink)
+    {
         return;
     }
     with_stage(stage_needed(block), scratch, |stage| {
-        super::portable::predict(block, sink, stage);
+        super::portable::predict(runner, block, sink, stage);
     });
 }
 
 /// Whether a `w x h` block whose passes have `horizontal` and `vertical`
 /// taps is a register cell: 8x8, or 4x4 with at most two tap pairs in each
 /// pass.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
 pub(super) fn is_cell(
     w: usize,
@@ -765,9 +770,10 @@ pub(super) fn is_cell(
 /// `windows` read from `references` within their `bounds` into `output`;
 /// `false` without writing when a clip range is empty or the output samples
 /// are neither 8- nor 16-bit.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
-pub(super) fn compound<T: Sample, O: ReconSample>(
+pub(super) fn compound<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: [Window; 2],
     bounds: [[i32; 4]; 2],
@@ -784,15 +790,16 @@ pub(super) fn compound<T: Sample, O: ReconSample>(
     ) {
         let first = windows[0].block(references[0].samples, references[0].stride, first);
         let second = windows[1].block(references[1].samples, references[1].stride, second);
-        return compound_blocks([&first, &second], clip, output, stride);
+        return compound_blocks(runner, [&first, &second], clip, output, stride);
     }
-    compound_emulated(references, windows, bounds, clip, output, stride)
+    compound_emulated(runner, references, windows, bounds, clip, output, stride)
 }
 
 /// [`compound`] of a pair with a window that is not read in place.
 #[cold]
 #[inline(never)]
-fn compound_emulated<T: Sample, O: ReconSample>(
+fn compound_emulated<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: [Window; 2],
     bounds: [[i32; 4]; 2],
@@ -803,14 +810,25 @@ fn compound_emulated<T: Sample, O: ReconSample>(
     let cell = windows.iter().all(|window| {
         window.w == windows[0].w && is_cell(window.w, window.h, window.horizontal, window.vertical)
     });
-    if cell && clamped_cell(references, &windows, bounds, clip, &mut *output, stride) {
+    if cell
+        && clamped_cell(
+            runner,
+            references,
+            &windows,
+            bounds,
+            clip,
+            &mut *output,
+            stride,
+        )
+    {
         return true;
     }
-    copied(references, &windows, bounds, clip, output, stride)
+    copied(runner, references, &windows, bounds, clip, output, stride)
 }
 
 /// [`compound_emulated`] of each window copied with its reads clamped.
-pub(super) fn copied<T: Sample, O: ReconSample>(
+pub(super) fn copied<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -818,9 +836,9 @@ pub(super) fn copied<T: Sample, O: ReconSample>(
     output: &mut [O],
     stride: usize,
 ) -> bool {
-    with_block(&windows[0], references[0], bounds[0], 0, |first| {
-        with_block(&windows[1], references[1], bounds[1], 1, |second| {
-            compound_blocks([first, second], clip, output, stride)
+    with_block(runner, &windows[0], references[0], bounds[0], 0, |first| {
+        with_block(runner, &windows[1], references[1], bounds[1], 1, |second| {
+            compound_blocks(runner, [first, second], clip, output, stride)
         })
     })
     .flatten()
@@ -830,7 +848,8 @@ pub(super) fn copied<T: Sample, O: ReconSample>(
 /// The register-cell kernel of a 4x4 or 8x8 compound pair of [`is_cell`]
 /// windows read by clamped rows and columns, `false` without writing for a
 /// pair it does not cover.
-fn clamped_cell<T: Sample, O: ReconSample>(
+fn clamped_cell<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, T>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -843,22 +862,27 @@ fn clamped_cell<T: Sample, O: ReconSample>(
         O::u8_slice_mut(&mut *output),
     ) {
         let views = [&first, &second];
-        return super::eight_bit::compound_windows(views, windows, bounds, clip.0, output, stride);
+        return super::eight_bit::compound_windows(
+            runner, views, windows, bounds, clip.0, output, stride,
+        );
     }
     if let ([Some(first), Some(second)], Some(output)) = (
         references.map(ReferencePlaneView::as_u16),
         O::u16_slice_mut(&mut *output),
     ) {
         let views = [&first, &second];
-        return super::sixteen_bit::compound_windows(views, windows, bounds, clip, output, stride);
+        return super::sixteen_bit::compound_windows(
+            runner, views, windows, bounds, clip, output, stride,
+        );
     }
     false
 }
 
 /// [`compound`] of two blocks read in place.
-#[allow(clippy::inline_always, reason = "measured compound hot path")]
+#[expect(clippy::inline_always, reason = "measured compound hot path")]
 #[inline(always)]
-fn compound_blocks<T: Sample, O: ReconSample>(
+fn compound_blocks<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     blocks: [&Block<'_, T>; 2],
     (forward, max): (i32, u16),
     output: &mut [O],
@@ -876,7 +900,7 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             O::u8_slice_mut(&mut *output),
         ) {
             let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
-            if super::cell::fullpel_u8(sources, origins, w, forward, output, stride) {
+            if super::cell::fullpel_u8(runner, sources, origins, w, forward, output, stride) {
                 return true;
             }
         }
@@ -886,7 +910,8 @@ fn compound_blocks<T: Sample, O: ReconSample>(
             O::u16_slice_mut(&mut *output),
         ) {
             let sources = [(first, blocks[0].stride), (second, blocks[1].stride)];
-            if super::cell::fullpel_u16(sources, origins, w, (forward, max), output, stride) {
+            if super::cell::fullpel_u16(runner, sources, origins, w, (forward, max), output, stride)
+            {
                 return true;
             }
         }
@@ -897,7 +922,7 @@ fn compound_blocks<T: Sample, O: ReconSample>(
         O::u8_slice_mut(&mut *output),
     ) {
         let blocks = [blocks[0].with_source(first), blocks[1].with_source(second)];
-        super::eight_bit::compound([&blocks[0], &blocks[1]], forward, output, stride);
+        super::eight_bit::compound(runner, [&blocks[0], &blocks[1]], forward, output, stride);
         return true;
     }
     if let (Some(first), Some(second), Some(output)) = (
@@ -909,19 +934,20 @@ fn compound_blocks<T: Sample, O: ReconSample>(
         let blocks = [blocks[0].with_source(first), blocks[1].with_source(second)];
         let blocks = [&blocks[0], &blocks[1]];
         if still {
-            super::portable::compound_u16(blocks, forward, max, &mut [], output, stride);
+            super::portable::compound_u16(runner, blocks, forward, max, &mut [], output, stride);
             return true;
         }
-        if super::sixteen_bit::compound(blocks, (forward, max), output, stride) {
+        if super::sixteen_bit::compound(runner, blocks, (forward, max), output, stride) {
             return true;
         }
     }
-    two_pass(blocks, (forward, max), output, stride)
+    two_pass(runner, blocks, (forward, max), output, stride)
 }
 
 /// [`compound_blocks`] through the first predictor staged for the second:
 /// `false` without writing for output samples neither 8- nor 16-bit.
-pub(super) fn two_pass<T: Sample, O: ReconSample>(
+pub(super) fn two_pass<R: super::SubpelRunner, T: Sample, O: ReconSample>(
+    runner: R,
     blocks: [&Block<'_, T>; 2],
     (forward, max): (i32, u16),
     output: &mut [O],
@@ -930,6 +956,7 @@ pub(super) fn two_pass<T: Sample, O: ReconSample>(
     let (w, h) = (blocks[0].w, blocks[0].h);
     with_compound_pred0(w * h, |pred0| {
         kernels(
+            runner,
             blocks[0],
             &mut Sink::Prep {
                 output: pred0,
@@ -956,7 +983,7 @@ pub(super) fn two_pass<T: Sample, O: ReconSample>(
         } else {
             return false;
         };
-        kernels(blocks[1], &mut sink, None);
+        kernels(runner, blocks[1], &mut sink, None);
         true
     })
 }

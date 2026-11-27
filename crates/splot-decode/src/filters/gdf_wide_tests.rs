@@ -1,17 +1,34 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::*;
 use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_portable};
 
-/// A 16-sample row-pair kernel.
-type Kernel =
-    fn(&[&[u16; 28]; WINDOW_ROWS], [&mut [u16; 16]; 2], &[GdfClass; 8], &GdfBlock, &GdfSymParams);
+#[derive(Clone, Copy)]
+enum Kernel {
+    Target,
+    Portable,
+}
+
+impl Kernel {
+    fn run<B: splot_core::simd::SimdBackend>(
+        self,
+        backend: B,
+        window: &[&[u16; 28]; WINDOW_ROWS],
+        output: [&mut [u16; 16]; 2],
+        classes: &[GdfClass; 8],
+        block: &GdfBlock,
+        params: &GdfSymParams,
+    ) {
+        match self {
+            Self::Target => sym_rows(backend, window, output, classes, block, params),
+            Self::Portable => sym_rows_portable(backend, window, output, classes, block, params),
+        }
+    }
+}
 
 /// The target's kernel and the portable one.
-const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_portable];
+const KERNELS: [Kernel; 2] = [Kernel::Target, Kernel::Portable];
 
 /// A two-row window of `width` samples with the full tap reach around it.
 fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {
@@ -136,7 +153,11 @@ fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
                             stride,
                             &block,
                             &classes,
-                            |window, output| kernel(window, output, &classes, &block, &params),
+                            |window, output| {
+                                crate::test_support::with_auto_backend!(backend => {
+                                    kernel.run(backend, window, output, &classes, &block, &params);
+                                });
+                            },
                         );
                         assert_eq!(
                             actual, expected,
@@ -176,7 +197,11 @@ fn flat_windows_match_scalar_samples() {
                             stride,
                             &block,
                             &classes,
-                            |window, output| kernel(window, output, &classes, &block, &params),
+                            |window, output| {
+                                crate::test_support::with_auto_backend!(backend => {
+                                    kernel.run(backend, window, output, &classes, &block, &params);
+                                });
+                            },
                         );
                         assert_eq!(
                             actual, expected,
@@ -229,7 +254,9 @@ fn narrow_case<const W: usize, const WIN: usize>(
         classes,
         |window, [top, bottom]| {
             let rows = window.map(|row| &row[..]);
-            let result = sym_rows_narrow(&rows, 0, W, [top, bottom], classes, &block, &params);
+            let result = crate::test_support::with_auto_backend!(backend => {
+                sym_rows_narrow(backend, &rows, 0, W, [top, bottom], classes, &block, &params)
+            });
             assert!(result.is_some());
         },
     );
@@ -391,16 +418,27 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
             tiled[..halo_cols].copy_from_slice(&row[inset..inset + halo_cols]);
         }
         scratch.errors = vec![0; 2 * simd::ClassScratch::error_row(width)];
+        let params = simd::RunParams::new(&block);
         let mut tiled_actual = base;
-        assert!(
-            simd::filter_run(&tiled_samples, &block, &mut tiled_actual, &mut scratch).is_some()
-        );
+        assert!(crate::test_support::with_auto_backend!(backend => {
+            simd::filter_run(
+                backend,
+                &tiled_samples,
+                (&block, &params),
+                &mut tiled_actual,
+                &mut scratch,
+            )
+            .is_some()
+        }));
         assert_eq!(
             tiled_actual, expected,
             "tiled, width {width}, height {height}"
         );
         if bit_depth == BitDepth::Eight {
-            assert!(simd::filter_run(&tiled_samples, &block, &mut bytes, &mut scratch).is_some());
+            assert!(crate::test_support::with_auto_backend!(backend => {
+                simd::filter_run(backend, &tiled_samples, (&block, &params), &mut bytes, &mut scratch)
+                    .is_some()
+            }));
             let label = "tiled u8 rows";
             let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
             assert_eq!(bytes, expected, "{label}, width {width}, height {height}");

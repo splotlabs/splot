@@ -25,7 +25,7 @@ pub(in crate::validator::tests) fn ref_sef(slot: u32) -> Vec<u8> {
 /// `refresh_frame_flags` IS parsed (`enable_short_refresh_frame_flags == 0` ->
 /// f(NumRefFrames) read here), but as an INTER frame on a path the core parser does
 /// not fully model, `frame_core_against_referenced_header` does not resolve it, so the
-/// validator poisons all slots (the mask could touch any slot). Used to test honest
+/// validator poisons all slots (the mask could touch any slot). Used to test
 /// poisoning. The body is a best-effort inter header; the validator's core parse stops
 /// before the flags, so the update is `PoisonAll` either way.
 pub(in crate::validator::tests) fn ref_inter_tile_group() -> Vec<u8> {
@@ -1151,5 +1151,86 @@ fn bru_ref_frame_size_not_checked_without_use_bru() {
     assert!(
         !has_bru_ref_size_error(&report),
         "a non-BRU frame must not fire the use_bru==1 equality; report was: {report}"
+    );
+}
+
+#[test]
+fn tip_ref_pair_intra_only_fires() {
+    let ivf = include_bytes!(
+        "../../../../../tests/conformance/vectors/invalid/syn-tip-intra-pair-72x40.ivf"
+    );
+    let report = Validator::new(false).validate_bytes(ivf);
+    let diag = report
+        .errors()
+        .find(|d| d.rule_id == "frame-header/tip-ref-pair-ineligible-frame-type")
+        .unwrap_or_else(|| {
+            panic!("expected TIP reference-pair eligibility error; report was: {report}")
+        });
+    assert_eq!(diag.spec_section.as_deref(), Some("7.9"));
+}
+
+#[test]
+fn tip_ref_pair_with_inter_reference_is_silent() {
+    let tip_families = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-frame-tip-families-64x64.ivf"
+    );
+    let report = Validator::new(false).validate_bytes(tip_families);
+    assert!(
+        report.is_conformant(),
+        "valid TIP reference stream must validate clean; report was: {report}"
+    );
+
+    let tip_output = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-tip-output-window-64x64-q210.ivf"
+    );
+    let report = Validator::new(false).validate_bytes(tip_output);
+    assert!(
+        report.is_conformant(),
+        "valid TIP output stream must validate clean; report was: {report}"
+    );
+}
+
+#[test]
+fn tip_ref_pair_eof_truncation_never_panics() {
+    let ivf = include_bytes!(
+        "../../../../../tests/conformance/vectors/invalid/syn-tip-intra-pair-72x40.ivf"
+    );
+    let mut saw_truncation = false;
+    for len in [0, 16, 32, 44, ivf.len() / 2, ivf.len() - 64, ivf.len() - 1] {
+        let report = Validator::new(false).validate_bytes(&ivf[..len]);
+        if report
+            .errors()
+            .any(|d| d.rule_id.contains("truncated") || d.rule_id == "bitstream/empty")
+        {
+            saw_truncation = true;
+        }
+    }
+    assert!(
+        saw_truncation,
+        "truncated prefixes must produce truncation errors"
+    );
+
+    let mut annex_b = Vec::new();
+    let mut pos = 32;
+    let mut frame_starts = Vec::new();
+    while pos + 12 <= ivf.len() {
+        let size = u32::from_le_bytes(ivf[pos..pos + 4].try_into().unwrap()) as usize;
+        pos += 12;
+        frame_starts.push(annex_b.len());
+        annex_b.extend_from_slice(&ivf[pos..pos + size]);
+        pos += size;
+    }
+    let last_frame_start = *frame_starts.last().unwrap();
+    let truncated_tip = &annex_b[..last_frame_start + 8];
+    let report = Validator::new(false).validate_bytes(truncated_tip);
+    assert!(
+        !report
+            .errors()
+            .any(|d| d.rule_id == "frame-header/tip-ref-pair-ineligible-frame-type"),
+        "a TIP frame truncated before tip_frame_mode must not fire the TIP pair rule; report was: {report}"
+    );
+    assert!(
+        !report.is_conformant(),
+        "a truncated TIP frame must be rejected; report was: {report}"
     );
 }

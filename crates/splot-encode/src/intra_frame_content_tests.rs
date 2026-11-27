@@ -237,6 +237,92 @@ fn rejects_a_description_the_input_cannot_have() {
     }));
 }
 
+#[test]
+fn validates_mastering_display_ranges() {
+    type Case = (&'static str, u32, u32, u32, fn(&mut MasteringDisplay));
+
+    let mut base = config(16, 16, BitDepth::Eight, 10, 120);
+    base.content.mastering_display = Some(DISPLAY);
+    assert!(base.validate().is_ok());
+
+    let mut unknown = config(16, 16, BitDepth::Eight, 10, 120);
+    unknown.content.mastering_display = Some(MasteringDisplay {
+        primaries: [(0, 0); 3],
+        white_point: (0, 0),
+        luminance_max: 0,
+        luminance_min: 0,
+    });
+    assert!(unknown.validate().is_ok());
+
+    let cases: [Case; 12] = [
+        ("primary_chromaticity_x[0]", 4, 5, 37_000, |d| {
+            d.primaries[0].0 = 4;
+        }),
+        ("primary_chromaticity_y[0]", 42_001, 5, 42_000, |d| {
+            d.primaries[0].1 = 42_001;
+        }),
+        ("primary_chromaticity_x[1]", 37_001, 5, 37_000, |d| {
+            d.primaries[1].0 = 37_001;
+        }),
+        ("primary_chromaticity_y[1]", 4, 5, 42_000, |d| {
+            d.primaries[1].1 = 4;
+        }),
+        ("primary_chromaticity_x[2]", 4, 5, 37_000, |d| {
+            d.primaries[2].0 = 4;
+        }),
+        ("primary_chromaticity_y[2]", 42_001, 5, 42_000, |d| {
+            d.primaries[2].1 = 42_001;
+        }),
+        ("white_point_chromaticity_x", 4, 5, 37_000, |d| {
+            d.white_point.0 = 4;
+        }),
+        ("white_point_chromaticity_x", 37_001, 5, 37_000, |d| {
+            d.white_point.0 = 37_001;
+        }),
+        ("white_point_chromaticity_y", 42_001, 5, 42_000, |d| {
+            d.white_point.1 = 42_001;
+        }),
+        ("luminance_max", 1_000, 50_000, 100_000_000, |d| {
+            d.luminance_max = 1_000;
+        }),
+        ("luminance_max", 100_000_001, 50_000, 100_000_000, |d| {
+            d.luminance_max = 100_000_001;
+        }),
+        ("luminance_min", 50_001, 1, 50_000, |d| {
+            d.luminance_min = 50_001;
+        }),
+    ];
+    for (expected_field, expected_value, expected_min, expected_max, mutate) in cases {
+        let mut display = DISPLAY;
+        mutate(&mut display);
+        let mut cfg = config(16, 16, BitDepth::Eight, 10, 120);
+        cfg.content.mastering_display = Some(display);
+        let err = cfg.validate().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::InvalidMasteringDisplay {
+                    field,
+                    value,
+                    min,
+                    max,
+                } if field == expected_field
+                    && value == expected_value
+                    && min == expected_min
+                    && max == expected_max
+            ),
+            "unexpected error for {expected_field}={expected_value}: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains(expected_field), "{msg}");
+        assert!(msg.contains(&expected_value.to_string()), "{msg}");
+        assert!(
+            msg.contains(&format!("{expected_min}..={expected_max}")),
+            "{msg}"
+        );
+    }
+}
+
 /// An ICC profile of a 128-byte header and four data bytes.
 const ICC: &[u8] = &[0x49; 132];
 /// Country code 0xFF, extension byte 0x01, then three payload bytes.

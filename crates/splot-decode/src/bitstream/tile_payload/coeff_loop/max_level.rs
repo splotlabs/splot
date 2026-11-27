@@ -7,30 +7,14 @@
 
 pub(crate) use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 
+use splot_recon::TransformClass;
+
 use super::scan_walk::CoeffScanEntry;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffTransformClass {
-    TwoD,
-    Horizontal,
-    Vertical,
-}
-
-impl CoeffTransformClass {
-    #[must_use]
-    pub(crate) const fn from_plane_tx_type(plane_tx_type: usize) -> Self {
-        match plane_tx_type {
-            10 | 12 | 14 => Self::Vertical,
-            11 | 13 | 15 => Self::Horizontal,
-            _ => Self::TwoD,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffMaxLevelConfig {
     pub(crate) plane: usize,
-    pub(crate) tx_class: CoeffTransformClass,
+    pub(crate) tx_class: TransformClass,
     pub(crate) is_hidden: bool,
 }
 
@@ -58,17 +42,17 @@ pub(crate) const fn visible_max_level(is_low_frequency: bool, plane: usize) -> u
 pub(crate) fn coeff_is_low_frequency(
     entry: CoeffScanEntry,
     plane: usize,
-    tx_class: CoeffTransformClass,
+    tx_class: TransformClass,
 ) -> bool {
     let is_luma = plane == 0;
     let coordinate = match tx_class {
-        CoeffTransformClass::TwoD => entry.row().saturating_add(entry.col()),
-        CoeffTransformClass::Horizontal => entry.col(),
-        CoeffTransformClass::Vertical => entry.row(),
+        TransformClass::TwoD => entry.row().saturating_add(entry.col()),
+        TransformClass::Horizontal => entry.col(),
+        TransformClass::Vertical => entry.row(),
     };
     let limit = match (tx_class, is_luma) {
-        (CoeffTransformClass::TwoD, true) => 4,
-        (CoeffTransformClass::Horizontal | CoeffTransformClass::Vertical, true) => 2,
+        (TransformClass::TwoD, true) => 4,
+        (TransformClass::Horizontal | TransformClass::Vertical, true) => 2,
         (_, false) => 1,
     };
     coordinate < limit

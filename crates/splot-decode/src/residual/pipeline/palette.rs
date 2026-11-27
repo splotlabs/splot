@@ -416,7 +416,6 @@ fn swap_color_order(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::bitstream::tile_payload::FrameCdfSubset;

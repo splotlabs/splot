@@ -242,6 +242,18 @@ fn frame_bits(bitrate_kbps: u32, (numerator, denominator): (u32, u32)) -> u64 {
     bits.clamp(1, u128::from(MAX_FRAME_BITS)) as u64
 }
 
+/// A frame [`Vbr`] has given a `base_q_idx`, kept until its size is known.
+#[derive(Debug, Clone, Copy)]
+struct PlannedFrame {
+    frame_index: u64,
+    /// The model class.
+    class: usize,
+    /// `0` for a flat frame.
+    complexity: u64,
+    bit_depth: BitDepth,
+    budget: u64,
+}
+
 /// Variable bitrate: the average bitrate meets the target over a few
 /// windows. [`Cbr`] uses the same model.
 #[derive(Debug, Clone)]
@@ -261,9 +273,7 @@ pub struct Vbr {
     base: u16,
     /// The most frames a window has held.
     longest_window: usize,
-    /// Frame index, model class, complexity (`0` for a flat frame), bit
-    /// depth and budget of the planned frames.
-    planned: VecDeque<(u64, usize, u64, BitDepth, u64)>,
+    planned: VecDeque<PlannedFrame>,
     /// The first-pass bits of each input frame and their sum.
     first_pass: (Vec<u64>, u64),
 }
@@ -393,13 +403,13 @@ impl RateController for Vbr {
             self.planned.pop_front();
         }
         let flat = is_flat(info);
-        self.planned.push_back((
-            info.frame_index,
-            class(info),
-            if flat { 0 } else { info.complexity },
-            info.bit_depth,
-            self.budget(info.display_index),
-        ));
+        self.planned.push_back(PlannedFrame {
+            frame_index: info.frame_index,
+            class: class(info),
+            complexity: if flat { 0 } else { info.complexity },
+            bit_depth: info.bit_depth,
+            budget: self.budget(info.display_index),
+        });
         with_offset(self.base, info.qindex_offset, info.bit_depth)
     }
 
@@ -409,10 +419,16 @@ impl RateController for Vbr {
         let planned = self
             .planned
             .iter()
-            .find(|planned| planned.0 == stats.frame_index)
+            .find(|planned| planned.frame_index == stats.frame_index)
             .copied();
-        self.spend(stats.bits, planned.map_or(self.frame_bits, |p| p.4));
-        let Some((_, class, complexity, bit_depth, _)) = planned else {
+        self.spend(stats.bits, planned.map_or(self.frame_bits, |p| p.budget));
+        let Some(PlannedFrame {
+            class,
+            complexity,
+            bit_depth,
+            ..
+        }) = planned
+        else {
             return;
         };
         if complexity == 0 {

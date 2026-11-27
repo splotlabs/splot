@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
-use super::super::{MotionFieldHandle, Mv, ReferenceMetadata};
+use super::super::{MotionFieldHandle, MotionVector, ReferenceMetadata};
 use parking_lot::Mutex;
 
 fn temporal_ref_order_hint(
@@ -19,7 +19,7 @@ fn temporal_ref_order_hint(
         .copied()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn temporal_motion_block(
     reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
@@ -32,8 +32,8 @@ pub(super) fn temporal_motion_block(
     current_order_hint: u32,
     ref_frame0: i8,
     ref_frame1: Option<i8>,
-    mv0: Mv,
-    mv1: Mv,
+    mv0: MotionVector,
+    mv1: MotionVector,
     warp_params: [Option<[i32; 6]>; 2],
 ) -> TemporalMotionBlock {
     TemporalMotionBlock::new(
@@ -264,11 +264,10 @@ impl MotionFieldUnits {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use super::*;
 
-    fn block(order_hint: u32, mv: Mv) -> TemporalMotionBlock {
+    fn block(order_hint: u32, mv: MotionVector) -> TemporalMotionBlock {
         TemporalMotionBlock::new(
             0,
             0,
@@ -278,7 +277,7 @@ mod tests {
             2,
             0,
             [Some(order_hint), None],
-            [mv, Mv::ZERO],
+            [mv, MotionVector::ZERO],
             [None, None],
         )
     }
@@ -308,8 +307,8 @@ mod tests {
 
     #[test]
     fn ordered_log_commit_matches_direct_recording_and_preserves_last_write() {
-        let first = block(1, Mv { row: 8, col: 16 });
-        let second = block(2, Mv { row: 24, col: 32 });
+        let first = block(1, MotionVector { row: 8, col: 16 });
+        let second = block(2, MotionVector { row: 24, col: 32 });
         let mut direct = TemporalMotionField::new(2, 2).expect("direct field");
         direct.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
         direct.record_block(first);
@@ -337,12 +336,12 @@ mod tests {
             2,
             0,
             [None, None],
-            [Mv::ZERO; 2],
+            [MotionVector::ZERO; 2],
             [None, None],
         );
         let mut cleared = TemporalMotionField::new(2, 2).expect("cleared field");
         cleared.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
-        cleared.record_block(block(1, Mv { row: 8, col: 16 }));
+        cleared.record_block(block(1, MotionVector { row: 8, col: 16 }));
         cleared.record_block(clear);
 
         let mut untouched = TemporalMotionField::new(2, 2).expect("untouched field");

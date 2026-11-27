@@ -19,7 +19,7 @@ use super::bytes_per_sample;
 
 const SPEC_SECTION: &str = "7.1";
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(clippy::needless_pass_by_value)]
 pub(super) fn decode_tile_boundary_error(
     error: FrameCandidateTileBoundaryError,
     offset: ByteOffset,
@@ -41,8 +41,8 @@ pub(super) fn decode_tile_boundary_error(
         } => unsupported_with_spec(
             "backward_reference_update",
             Some(offset),
-            "decode runtime does not decode use_bru == 1 frames with loop restoration, GDF or IntraBC",
-            "7.20.1",
+            "decode runtime requires active use_bru == 1 frames with bru_inactive == 0",
+            "5.20.2.1",
         ),
         FrameCandidateTileBoundaryError::Unsupported { .. }
         | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(
@@ -55,16 +55,7 @@ pub(super) fn decode_tile_boundary_error(
 
 fn malformed_tile_boundary_reason(malformed: FrameCandidateTileMalformed) -> &'static str {
     match malformed {
-        FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field } => match field {
-            "payload_source" => "payload_source_mismatch",
-            "offset" => "candidate_offset_mismatch",
-            "size" => "candidate_size_mismatch",
-            "header" => "candidate_header_mismatch",
-            "payload_len" => "candidate_payload_len_mismatch",
-            "payload" => "candidate_payload_mismatch",
-            "ivf_frame" => "ivf_frame_mismatch",
-            _ => "candidate_envelope_mismatch",
-        },
+        FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field } => field.reason(),
         FrameCandidateTileMalformed::ObuSizeSmallerThanHeader { .. } => {
             "obu_size_smaller_than_header"
         }

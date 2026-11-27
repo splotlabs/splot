@@ -63,7 +63,11 @@ typedef enum SplotFrameType {
 // An open decoder.
 typedef struct SplotDecoder SplotDecoder;
 
-// How [`splot_open`] sets up a decoder. Fill it with
+// Atlas metadata owned by one picture. Pointers into it remain valid until
+// the caller releases that picture with `splot_picture_unref`.
+typedef struct SplotPictureAtlas SplotPictureAtlas;
+
+// Settings for [`splot_open`] and [`splot_open_with_atlases`]. Fill them with
 // [`splot_default_settings`] first.
 typedef struct SplotSettings {
   // Worker threads; 0 picks one per logical core.
@@ -74,8 +78,29 @@ typedef struct SplotSettings {
   // 1 leaves film grain out of the pictures; [`splot_apply_grain`] adds it
   // to a picture later. 0 applies it.
   uint8_t skip_film_grain;
+  // Bitmask (`1..=15`) of temporal layers (`1 << temporal_layer_id`) to emit;
+  // transitive dependencies still decode. `0` emits all layers (default).
+  uint8_t temporal_output_mask;
+  // Bitmask (`1..=255`) of embedded layers (`1 << embedded_layer_id`) to emit;
+  // transitive dependencies still decode. `0` emits all layers (default).
+  uint8_t embedded_output_mask;
   // Reserved; keep zero.
-  uint8_t reserved[31];
+  uint8_t reserved0;
+  // Bitmask (`1..=0x7fffffff`) of extended layers (`1 << extended_layer_id`) to emit.
+  // `0` emits all extended layers (default). Bit 31 (`0x80000000`) is invalid.
+  uint32_t extended_output_mask;
+  // Operating-point selection scope: `0` = none (default), `1` = global OPS,
+  // `2` = local OPS on `operating_point_xlayer_id`. Cannot be non-zero when
+  // any output mask is non-zero.
+  uint8_t operating_point_scope;
+  // Target extended layer (`0..=30`) when `operating_point_scope == 2`; keep zero otherwise.
+  uint8_t operating_point_xlayer_id;
+  // `ops_id` (`0..=15`) when `operating_point_scope != 0`; keep zero otherwise.
+  uint8_t operating_point_ops_id;
+  // Operating-point index (`0..=6`) when `operating_point_scope != 0`; keep zero otherwise.
+  uint8_t operating_point_index;
+  // Reserved; keep zero.
+  uint8_t reserved[20];
 } SplotSettings;
 
 // Caller data that goes with one temporal unit to the pictures it codes.
@@ -99,6 +124,24 @@ typedef struct SplotColor {
   // 1 for full range, 0 for limited range.
   uint8_t full_range;
 } SplotColor;
+
+// An OBU location in one temporal unit.
+typedef struct SplotObuLocation {
+  // The `SplotDataProps.user_data` value of the unit.
+  uint64_t user_data;
+  // The byte offset from the start of the unit to the OBU header after its length prefix.
+  uint64_t offset;
+} SplotObuLocation;
+
+// The AV2 input locations for a decoded picture.
+typedef struct SplotPictureProvenance {
+  // The frame OBU that coded the samples. This is the first tile group for a tiled frame.
+  struct SplotObuLocation coded;
+  // The frame OBU that caused display. This is `coded` unless a show-existing OBU caused display.
+  struct SplotObuLocation display;
+  // The sequence header in effect when the decoder decoded the coded frame.
+  struct SplotObuLocation sequence_header;
+} SplotPictureProvenance;
 
 // A decoded picture. Valid from [`splot_get_picture`] or
 // [`splot_apply_grain`] until [`splot_picture_unref`].
@@ -132,11 +175,121 @@ typedef struct SplotPicture {
   uint8_t has_film_grain;
   // A [`SplotFrameType`] value: the type of the frame this picture shows.
   uint8_t frame_type;
-  // Reserved.
-  size_t reserved[3];
+  // Temporal layer ID (`obu_tlayer_id`, `0..=3`) of the output picture.
+  // A show-existing frame with a derived order hint uses the reference layer ID.
+  uint8_t temporal_layer_id;
+  // Embedded layer ID (`obu_mlayer_id`, `0..=7`) of the output picture.
+  // A show-existing frame with a derived order hint uses the reference layer ID.
+  uint8_t embedded_layer_id;
+  // Extended layer id (`obu_xlayer_id`, `0..=30`) of the picture.
+  uint8_t extended_layer_id;
+  // Immutable atlas snapshot. Null when the picture has no atlas association.
+  const struct SplotPictureAtlas *atlas;
+  // Number of associations accessible through `splot_atlas_info`.
+  size_t atlas_count;
+  // Immutable input locations. The picture owns this data until `splot_picture_unref`.
+  const struct SplotPictureProvenance *provenance;
   // The decoder's handle on the samples; do not touch.
   void *internal;
 } SplotPicture;
+
+// One caller-supplied Annex B atlas OBU, including its length prefix.
+typedef struct SplotAtlasInput {
+  // Bytes of exactly one framed atlas OBU.
+  const uint8_t *data;
+  // Length of `data` in bytes.
+  size_t size;
+  // Offset of the length prefix in the caller's source.
+  uint64_t source_offset;
+} SplotAtlasInput;
+
+// An optional eight-bit atlas field. Read `value` only when `present` is true.
+typedef struct SplotAtlasByte {
+  // True when the association or layout specifies this field.
+  bool present;
+  // The field value.
+  uint8_t value;
+} SplotAtlasByte;
+
+// One atlas association for the picture. Array pointers borrow the picture.
+typedef struct SplotAtlasInfo {
+  // The extended layer ID of the atlas. The global scope has ID 31.
+  uint8_t scope_xlayer_id;
+  // The referenced atlas ID.
+  uint8_t atlas_id;
+  // True when an LCR supplies this association.
+  bool has_lcr_offset;
+  // Source byte offset of the LCR when `has_lcr_offset` is true.
+  uint64_t lcr_offset;
+  // The segment associated with this picture.
+  struct SplotAtlasByte segment_id;
+  // The segment index when the available layout resolves the segment ID.
+  struct SplotAtlasByte segment_index;
+  // The LCR priority order for this association.
+  struct SplotAtlasByte priority_order;
+  // The LCR rendering method for this association.
+  struct SplotAtlasByte rendering_method;
+  // False when the bitstream omits an optional global layout.
+  bool has_layout;
+  // True when the layout comes from caller-supplied metadata.
+  bool external;
+  // Source byte offset of the atlas OBU when `has_layout` is true.
+  uint64_t atlas_offset;
+  // Atlas mode from AV2 Table 6.11. Valid when `has_layout` is true.
+  uint8_t mode;
+  // True when the atlas signals explicit segment IDs.
+  bool explicit_segment_ids;
+  // Segment IDs in atlas index order. The array has `segment_count` entries.
+  const uint8_t *segment_ids;
+  // Number of segments in the layout.
+  size_t segment_count;
+  // Canvas width for modes 1, 3 and 4. Nominal width for mode 2.
+  uint64_t width;
+  // Canvas height for modes 1, 3 and 4. Nominal height for mode 2.
+  uint64_t height;
+  // True when the layout specifies a background color.
+  bool has_background;
+  // Background red, green and blue, in order.
+  uint8_t background_rgb[3];
+  // True when mode 4 signals alpha segments.
+  bool alpha_segments_present;
+  // Number of region columns for mode 0.
+  uint32_t region_columns;
+  // Number of region rows for mode 0.
+  uint32_t region_rows;
+  // True when all mode 0 regions have the same dimensions.
+  bool uniform_spacing;
+  // Region widths minus one. Uniform spacing has one entry, otherwise one per column.
+  const uint32_t *column_widths_minus_1;
+  // Region heights minus one. Uniform spacing has one entry, otherwise one per row.
+  const uint32_t *row_heights_minus_1;
+  // True when each segment maps to one region in raster order.
+  bool single_region_per_segment;
+} SplotAtlasInfo;
+
+// Geometry and source of one indexed segment.
+typedef struct SplotAtlasSegment {
+  // The extended layer ID of the input stream, if present.
+  struct SplotAtlasByte input_stream_id;
+  // Horizontal position in the canvas for modes 1, 3 and 4.
+  uint32_t x;
+  // Vertical position in the canvas for modes 1, 3 and 4.
+  uint32_t y;
+  // Segment width for modes 1, 3 and 4.
+  uint32_t width;
+  // Segment height for modes 1, 3 and 4.
+  uint32_t height;
+  // True for an alpha segment in mode 4.
+  bool alpha;
+  // Mode 0 first column for an explicit region mapping.
+  uint32_t top_left_region_column;
+  // Mode 0 first row for an explicit region mapping.
+  uint32_t top_left_region_row;
+  // Mode 0 last column relative to the first column.
+  uint32_t bottom_right_region_column_off;
+  // Mode 0 last row relative to the first row.
+  uint32_t bottom_right_region_row_off;
+} SplotAtlasSegment;
 
 #ifdef __cplusplus
 extern "C" {
@@ -154,7 +307,8 @@ void splot_default_settings(struct SplotSettings *settings);
 // Opens a decoder and stores it in `*out`.
 //
 // Returns [`SPLOT_OK`], [`SPLOT_EINVAL`] for a null argument, a
-// `skip_film_grain` above 1 or nonzero reserved bytes, or [`SPLOT_EDECODE`]
+// `skip_film_grain` above 1, `temporal_output_mask` above `15`, invalid
+// operating-point settings, or nonzero reserved bytes, or [`SPLOT_EDECODE`]
 // when the worker pool cannot start.
 //
 // # Safety
@@ -168,7 +322,7 @@ int splot_open(struct SplotDecoder **out, const struct SplotSettings *settings);
 // [`SPLOT_EINVAL`], [`SPLOT_EDECODE`] or [`SPLOT_ESTATE`].
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`]; `data` points to `size`
+// `decoder` is null or points to an open decoder. `data` points to `size`
 // readable bytes (it may be null when `size` is 0); `props` is null or
 // points to a [`SplotDataProps`].
 int splot_send_data(struct SplotDecoder *decoder,
@@ -180,7 +334,7 @@ int splot_send_data(struct SplotDecoder *decoder,
 // and [`SPLOT_EOF`].
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`].
+// `decoder` is null or points to an open decoder.
 void splot_drain(struct SplotDecoder *decoder);
 
 // Drops every unit and picture the decoder holds and starts a new session
@@ -190,7 +344,7 @@ void splot_drain(struct SplotDecoder *decoder);
 // Pictures already taken stay valid until released.
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`].
+// `decoder` is null or points to an open decoder.
 void splot_flush(struct SplotDecoder *decoder);
 
 // Takes the next picture in display order into `*out`.
@@ -201,7 +355,7 @@ void splot_flush(struct SplotDecoder *decoder);
 // `*out` is zeroed.
 //
 // # Safety
-// `decoder` is null or came from [`splot_open`]. `out` is null or points to a
+// `decoder` is null or points to an open decoder. `out` is null or points to a
 // zeroed or released picture: this call overwrites `*out`, so a picture in
 // `*out` that was not released with [`splot_picture_unref`] leaks.
 int splot_get_picture(struct SplotDecoder *decoder, struct SplotPicture *out);
@@ -240,8 +394,43 @@ void splot_picture_unref(struct SplotPicture *picture);
 // valid until released.
 //
 // # Safety
-// `decoder` is null or points to null or to a decoder from [`splot_open`].
+// `decoder` is null or points to a null handle or an open decoder handle.
 void splot_close(struct SplotDecoder **decoder);
+
+// Open a decoder with external atlas metadata for random access. The
+// decoder owns the parsed layouts. It retains no caller pointers.
+// The final input for each scope and atlas ID takes precedence.
+// A flush restores these layouts.
+//
+// Returns `SPLOT_EINVAL` for invalid pointers, array lengths or settings.
+// Returns `SPLOT_EDECODE` for invalid atlas data or a decoder initialization failure.
+// On error, a valid `out` receives a null pointer.
+//
+// # Safety
+// Supply writable, aligned storage for a null decoder pointer in `out`. Supply initialized, readable
+// settings. Each nonempty input array must occupy one live allocation.
+// Supply `count` aligned, initialized descriptors and `size` readable bytes
+// for each descriptor. Keep all input storage immutable during the call.
+// Output storage must not overlap any input. A zero count accepts null `inputs`.
+int splot_open_with_atlases(struct SplotDecoder **out,
+                            const struct SplotSettings *settings,
+                            const struct SplotAtlasInput *inputs,
+                            size_t count);
+
+// Read association `index` from a picture's atlas snapshot.
+// Supply zero-initialized output storage. Returns `SPLOT_EINVAL` for null
+// pointers or an index outside the association array.
+int splot_atlas_info(const struct SplotPictureAtlas *snapshot,
+                     size_t index,
+                     struct SplotAtlasInfo *out);
+
+// Read one segment of association `index` from the picture's atlas snapshot.
+// Supply zero-initialized output storage. Returns `SPLOT_EINVAL` for null
+// pointers, an unavailable layout, or an index outside either array.
+int splot_atlas_segment(const struct SplotPictureAtlas *snapshot,
+                        size_t index,
+                        size_t segment_index,
+                        struct SplotAtlasSegment *out);
 
 #ifdef __cplusplus
 }  // extern "C"

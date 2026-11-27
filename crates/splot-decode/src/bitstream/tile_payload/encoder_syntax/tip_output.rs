@@ -44,16 +44,15 @@ impl EncoderReferences {
             false,
         )
         .map_err(rule("TIP output geometry"))?;
-        let (frame, _) = reconstruct_tip_output(
-            &mut InterDecodeScratch::default(),
-            FramePlaneSamples::default(),
-            &core,
-            &self.sequence,
-            &self.state,
-            geometry,
-            ByteOffset::new(0),
-        )
-        .map_err(rule("TIP output"))?;
+        let frame = self
+            .backend
+            .enter(TipOutputScope {
+                core: &core,
+                sequence: &self.sequence,
+                state: &self.state,
+                geometry,
+            })
+            .map_err(rule("TIP output"))?;
         Ok((core, frame))
     }
 
@@ -69,12 +68,39 @@ impl EncoderReferences {
             ));
         }
         self.buffer.prepare_for_frame(core.obu_type, true);
-        let update =
-            frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
-                .map_err(rule("reference update"))?;
+        let update = frame_ref_update_from_core(
+            core,
+            ByteOffset::new(0),
+            EmbeddedLayerId::from_bits(0),
+            splot_core::types::TemporalLayerId::BASE,
+        )
+        .map_err(rule("reference update"))?;
         self.buffer.update(self.frames.len(), &update, false);
         self.buffer.note_frame(core.obu_type, true, &update);
         self.state = settled_state(&self.buffer, &self.frames)?;
         Ok(())
+    }
+}
+
+struct TipOutputScope<'a> {
+    core: &'a FrameHeaderCore,
+    sequence: &'a splot_core::headers::sequence::SequenceHeader,
+    state: &'a crate::prediction::inter::InterReferenceState<u16>,
+    geometry: FrameDecodeGeometry,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<DecodedFrame<u16>>> for TipOutputScope<'_> {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<DecodedFrame<u16>> {
+        reconstruct_tip_output(
+            backend.narrow(),
+            &mut InterDecodeScratch::default(),
+            FramePlaneSamples::default(),
+            self.core,
+            self.sequence,
+            self.state,
+            self.geometry,
+            ByteOffset::new(0),
+        )
+        .map(|(frame, _)| frame)
     }
 }

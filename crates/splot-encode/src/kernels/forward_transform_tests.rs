@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use proptest::prelude::*;
 use splot_recon::{
     BitDepth, DpcmDirection, InverseTransform1dType, InverseTransform2d, InverseTransform2dDim,

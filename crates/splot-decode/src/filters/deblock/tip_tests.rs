@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::tests::with_plane_ctx;
 use super::*;
 
@@ -75,7 +73,8 @@ fn tip_runs_match_per_edge_filter<T: ReconSample>(bit_depth: BitDepth) {
         for luma_unit_size in [8, 16] {
             let mut actual = filled(width, height);
             let original = samples(&actual, 0);
-            deblock_tip_frame(
+            crate::test_support::with_auto_backend!(backend => deblock_tip_frame(
+                backend,
                 &mut actual,
                 luma_unit_size,
                 QuantizationParams::inferred_tip(200, 0, 0),
@@ -83,7 +82,7 @@ fn tip_runs_match_per_edge_filter<T: ReconSample>(bit_depth: BitDepth) {
                 None,
                 false,
                 bit_depth,
-            )
+            ))
             .unwrap();
             let mut expected = filled(width, height);
             for plane in 0..3 {

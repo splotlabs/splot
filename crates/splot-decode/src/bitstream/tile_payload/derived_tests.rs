@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-use super::input::{FrameCandidateTileMalformed, FrameCandidateTileUnsupportedReason};
+use super::input::{
+    EnvelopeField, FrameCandidateTileMalformed, FrameCandidateTileUnsupportedReason,
+};
 use super::*;
 use crate::{DecodeContext, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig};
 use splot_core::annexb::{ObuEnvelope, parse_annex_b_obus};
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView,
-    parse_frame_header_core,
+    FrameHeaderCore, FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
@@ -193,11 +192,12 @@ fn parsed_frame_header_fixture() -> ParsedFrameHeaderFixture {
     assert_eq!(frame_reader.read_bit().unwrap(), 1);
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_mlayer_id: splot_core::types::EmbeddedLayerId::BASE,
+        obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
         first_picture_in_tu: false,
         active_sequence: Some(&sequence),
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut frame_reader, &input).unwrap();
 
@@ -214,11 +214,12 @@ fn activation_only_frame_header_core() -> FrameHeaderCore {
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_mlayer_id: splot_core::types::EmbeddedLayerId::BASE,
+        obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).unwrap()
 }
@@ -284,7 +285,7 @@ fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
 
     assert_eq!(plan.work_units().len(), 1);
     let unit = &plan.work_units()[0];
-    assert_eq!(unit.tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(plan.resolved_tile_bytes(unit).unwrap(), &[0x80, 0x00]);
     assert_eq!(unit.tile_byte_span(), ByteSpan::new(ByteOffset::new(3), 2));
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
@@ -322,7 +323,7 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
     assert_eq!(first.tile_byte_span(), ByteSpan::new(ByteOffset::new(5), 1));
-    assert_eq!(first.tile_bytes(), &[0x80]);
+    assert_eq!(plan.resolved_tile_bytes(first).unwrap(), &[0x80]);
     assert!(first.cdf().save_policy().copy_cdf);
     let second = &plan.work_units()[1];
     assert_eq!(second.tile_num(), 1);
@@ -332,7 +333,7 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
         second.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(6), 1)
     );
-    assert_eq!(second.tile_bytes(), &[0x00]);
+    assert_eq!(plan.resolved_tile_bytes(second).unwrap(), &[0x00]);
     assert!(!second.cdf().save_policy().copy_cdf);
 }
 
@@ -354,7 +355,10 @@ fn derived_ivf_tile_payload_preserves_tile_offsets() {
         plan.work_units()[0].tile_byte_span(),
         ByteSpan::new(ByteOffset::new(47), 2)
     );
-    assert_eq!(plan.work_units()[0].tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(
+        plan.resolved_tile_bytes(&plan.work_units()[0]).unwrap(),
+        &[0x80, 0x00]
+    );
 }
 
 #[test]
@@ -440,7 +444,9 @@ fn derived_boundary_rejects_candidate_envelope_mismatch_before_slicing() {
 
     assert_malformed_error(
         &error,
-        FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field: "size" },
+        FrameCandidateTileMalformed::CandidateEnvelopeMismatch {
+            field: EnvelopeField::Size,
+        },
     );
 }
 
@@ -462,7 +468,7 @@ fn derived_boundary_rejects_envelope_payload_from_different_input_buffer() {
     assert_malformed_error(
         &error,
         FrameCandidateTileMalformed::CandidateEnvelopeMismatch {
-            field: "payload_source",
+            field: EnvelopeField::PayloadSource,
         },
     );
 }
@@ -494,25 +500,48 @@ fn derived_boundary_rejects_backward_reference_update_frames() {
         FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
     );
 
-    inter.bru_inactive = Some(false);
+    inter.bru_inactive = Some(true);
     core.inter = Some(inter.clone());
+    let inactive_err =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
+    assert_unsupported_error(
+        &inactive_err,
+        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
+    );
+
+    inter.bru_inactive = Some(false);
+    core.inter = Some(inter);
+    assert!(core.gdf_params.is_some());
     core.gdf_params = core.gdf_params.map(|mut gdf| {
         gdf.gdf_frame_enable = true;
         gdf
     });
-    let error =
-        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).unwrap_err();
-    assert_unsupported_error(
-        &error,
-        FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
-    );
+    let with_gdf = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        with_gdf,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
 
     core.gdf_params = core.gdf_params.map(|mut gdf| {
         gdf.gdf_frame_enable = false;
         gdf
     });
+    core.allow_intrabc = Some(true);
+    let with_intrabc =
+        FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
+    assert!(!matches!(
+        with_intrabc,
+        Some(FrameCandidateTileBoundaryError::Unsupported {
+            reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate
+        })
+    ));
+
+    core.allow_intrabc = Some(false);
+    assert!(core.lr_params.is_some());
     core.lr_params = core.lr_params.map(|mut lr| {
-        lr.uses_lr = false;
+        lr.uses_lr = true;
         lr
     });
     let other = FrameCandidateTileFacts::from_inter_frame_core(&core, base_coeff_facts()).err();
@@ -655,5 +684,10 @@ fn derived_boundary_is_deterministic_across_decode_context_thread_policies() {
 
     assert_eq!(plans[0], plans[1]);
     assert_eq!(plans[1], plans[2]);
-    assert_eq!(plans[0].work_units()[0].tile_bytes(), &[0x80, 0x00]);
+    assert_eq!(
+        plans[0]
+            .resolved_tile_bytes(&plans[0].work_units()[0])
+            .unwrap(),
+        &[0x80, 0x00]
+    );
 }

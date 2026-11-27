@@ -231,7 +231,6 @@ pub(super) trait Sample: Copy {
 macro_rules! sample_kernels {
     ($sample:ty, |$t:ident, $lanes:ident| $words16:block, |$u:ident, $low:ident, $high:ident| $words8x2:block) => {
         impl Sample for $sample {
-            #[allow(clippy::inline_always, reason = "one load per tap")]
             #[inline(always)]
             fn words16(t: Avx2, lanes: &[Self; 16]) -> __m256i {
                 fearless_simd::kernel!(
@@ -243,7 +242,6 @@ macro_rules! sample_kernels {
                 kernel(t, lanes)
             }
 
-            #[allow(clippy::inline_always, reason = "one load per tap")]
             #[inline(always)]
             fn words8x2(t: Avx2, low: &[Self; 8], high: &[Self; 8]) -> __m256i {
                 fearless_simd::kernel!(
@@ -255,10 +253,6 @@ macro_rules! sample_kernels {
                 kernel(t, low, high)
             }
 
-            #[allow(
-                clippy::inline_always,
-                reason = "the group kernel inlines into its row loop"
-            )]
             #[inline(always)]
             fn filter16(
                 t: Avx2,
@@ -292,10 +286,6 @@ macro_rules! sample_kernels {
                 kernel(t, chroma, luma, pairs, reads_luma, max_sample)
             }
 
-            #[allow(
-                clippy::inline_always,
-                reason = "the group kernel inlines into its row loop"
-            )]
             #[inline(always)]
             fn filter8x2(
                 t: Avx2,

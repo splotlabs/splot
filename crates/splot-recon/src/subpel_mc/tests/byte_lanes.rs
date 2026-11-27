@@ -169,6 +169,7 @@ fn byte_search_window_and_sads_match_the_general_path() {
                 subpel_predict_block_strided_into(&view, &params, &mut expected, w).unwrap();
                 let mut actual = vec![0u8; w * h];
                 assert!(search_window::subpel_predict_bilinear_search_window_u8(
+                    BaselineSubpel,
                     &view,
                     &params,
                     &mut actual
@@ -251,7 +252,12 @@ fn byte_search_window_and_sads_match_the_general_path() {
                 }
                 let pair = [&windows[0][..], &windows[1][..]];
                 assert_eq!(
-                    refinemv_window::search_bytes(pair, [stride, sad_h], allow_center),
+                    refinemv_window::search_bytes(
+                        BaselineSubpel,
+                        pair,
+                        [stride, sad_h],
+                        allow_center,
+                    ),
                     best,
                     "{sad_w}x{sad_h} seed {seed} centre {allow_center}"
                 );
@@ -330,7 +336,13 @@ fn word_search_matches_a_scalar_search() {
                     let pair = [&windows[0][..stride * (sad_h + 4)], &windows[1][..]];
                     let shift = u32::from(bit_depth.bits() - 8);
                     assert_eq!(
-                        refinemv_window::search_words(pair, [stride, sad_h], allow_center, shift),
+                        refinemv_window::search_words(
+                            BaselineSubpel,
+                            pair,
+                            [stride, sad_h],
+                            allow_center,
+                            shift,
+                        ),
                         best,
                         "{sad_w}x{sad_h} seed {seed} {bit_depth:?} centre {allow_center}"
                     );
@@ -901,6 +913,7 @@ fn fullpel_cells_refuse_weights_outside_7_13_3_14_range() {
                 let sources = [(&textures[0][..], step), (&textures[1][..], step)];
                 let mut got = vec![0xabcd_u16; stride * size];
                 let stored = super::super::cell::fullpel_u16(
+                    BaselineSubpel,
                     sources,
                     origins,
                     size,
@@ -911,6 +924,7 @@ fn fullpel_cells_refuse_weights_outside_7_13_3_14_range() {
                 let mut narrow = vec![0xa5_u8; stride * size];
                 let narrow_stored = depth == BitDepth::Eight
                     && super::super::cell::fullpel_u8(
+                        BaselineSubpel,
                         [(&bytes[0][..], step), (&bytes[1][..], step)],
                         origins,
                         size,
@@ -1098,9 +1112,9 @@ fn check_byte_lanes() {
                     let mut stage = vec![0i16; len];
                     let fits = eight_bit::fits(&block);
                     let run = |sink: &mut block::Sink<'_>, stage: &mut [i16], neon: bool| {
-                        if !neon || !eight_bit::predict(&block, sink) {
+                        if !neon || !eight_bit::predict(BaselineSubpel, &block, sink) {
                             assert!(!neon || !fits, "declined {label}");
-                            portable::predict(&block, sink, stage);
+                            portable::predict(BaselineSubpel, &block, sink, stage);
                         }
                     };
                     let out_stride = w + 5;
@@ -1149,11 +1163,11 @@ fn check_byte_lanes() {
                     assert_eq!(put[0], put[1], "put {label}");
                     assert_eq!(wide[0], wide[1], "put wide {label}");
                     let mut direct = [vec![7u8; out_stride * h], vec![7u8; out_stride * h]];
-                    eight_bit::put(&block, &mut direct[0], out_stride);
+                    eight_bit::put(BaselineSubpel, &block, &mut direct[0], out_stride);
                     assert_eq!(direct[0], put[0], "direct put {label}");
                     let [first, second] = &mut direct;
                     let outputs = [(&mut first[..], out_stride), (&mut second[..], out_stride)];
-                    eight_bit::put_pair([&block, &block], outputs);
+                    eight_bit::put_pair(BaselineSubpel, [&block, &block], outputs);
                     assert_eq!(direct, [put[0].clone(), put[0].clone()], "put pair {label}");
                     let pred0: Vec<i32> =
                         (0..w * h).map(|i| (i as i32 * 397) % 8200 - 1100).collect();
@@ -1194,7 +1208,7 @@ fn check_byte_lanes() {
                             output: &mut first,
                             stride: w,
                         };
-                        portable::predict(&block, sink, &mut stage);
+                        portable::predict(BaselineSubpel, &block, sink, &mut stage);
                         let mut other_stage = vec![0i16; 4096];
                         let sink = &mut block::Sink::AverageNarrow {
                             pred0: &first,
@@ -1202,8 +1216,14 @@ fn check_byte_lanes() {
                             output: &mut fused[0],
                             stride: out_stride,
                         };
-                        portable::predict(&other, sink, &mut other_stage);
-                        eight_bit::compound([&block, &other], forward, &mut fused[1], out_stride);
+                        portable::predict(BaselineSubpel, &other, sink, &mut other_stage);
+                        eight_bit::compound(
+                            BaselineSubpel,
+                            [&block, &other],
+                            forward,
+                            &mut fused[1],
+                            out_stride,
+                        );
                         assert_eq!(fused[0], fused[1], "compound {forward} {label}");
                     }
                 }

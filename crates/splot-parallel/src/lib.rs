@@ -34,7 +34,8 @@ pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::WorkerPool;
 pub use rows::{
-    Claim, FrameWork, ParallelStage, RowScheduler, RowWake, Stage, run_on_thread, spawn_thread,
+    Claim, FrameWork, ParallelStage, RowScheduler, RowWake, Stage, WorkerLoop, run_on_thread,
+    spawn_thread,
 };
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

@@ -130,7 +130,7 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     pub fn write_to<W: Write + ?Sized>(&self, writer: &mut W) -> io::Result<()> {
         let bit_depth = self.frame.bit_depth();
         for plane in self.planes() {
-            write_visible_plane(bit_depth, plane, writer)?;
+            write_visible_plane(bit_depth, plane.as_plane_ref(), writer)?;
         }
         Ok(())
     }
@@ -210,9 +210,13 @@ fn visible_plane_byte_len(visible_size: PlaneSize, bytes_per_sample: usize) -> R
         })
 }
 
-fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
+/// Writes the visible plane in raw output order. Ten-bit words use little-endian byte order.
+///
+/// # Errors
+/// Returns the error from the writer.
+pub fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
     bit_depth: BitDepth,
-    plane: &Plane<T>,
+    plane: crate::PlaneRef<'_, T>,
     writer: &mut W,
 ) -> io::Result<()> {
     let bytes_per_sample = bytes_per_sample(bit_depth);
@@ -281,7 +285,6 @@ fn lower_hex_digit(nibble: u8) -> &'static str {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, PlaneRect, PlaneSize};

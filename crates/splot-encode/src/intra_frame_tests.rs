@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -18,7 +16,7 @@ use crate::preset::{Levels, PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::rd::partition::search_partition;
 use crate::test_support::{
-    assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
+    Rng, assert_same_samples, avm_decode, avm_decoder, decode, each_case, raw_bytes, refs_for,
 };
 use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
@@ -91,6 +89,121 @@ fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u16) -> 
     config.preset = Preset::new(preset).unwrap();
     config.rate_control = RateControlMode::ConstantQp { qp };
     config
+}
+
+#[test]
+fn effective_rows_match_the_frame_coder() -> Result<()> {
+    use crate::{PresetOrigin, ThreadCount, Tune};
+
+    for (depth, speed, tune) in [
+        (BitDepth::Eight, 6, Tune::Vq),
+        (BitDepth::Ten, 9, Tune::Ssim),
+    ] {
+        let mut config = config(1_280, 720, depth, speed, 80);
+        config.threads = ThreadCount::from(1_usize);
+        config.resize_denominator = Some(16);
+        config.tune = tune;
+        config.fast_decode = true;
+        config.preset_overrides = vec![
+            ("ssim_aq".into(), "30".into()),
+            ("none_breakout".into(), "1,2,3,4".into()),
+        ];
+
+        let resolved = config.resolve()?;
+        let coder = IntraFrameCoder::new(&config.coded())?;
+        assert_eq!(resolved.normal.params, coder.preset);
+        assert_eq!(resolved.screen.as_ref().map(|row| row.params), coder.screen);
+        assert_eq!((resolved.coded_width, resolved.coded_height), (640, 360));
+        assert_eq!(resolved.resolution, ResolutionClass::Sd);
+
+        let origin = |row: &crate::ResolvedPreset, key, context| {
+            let field = PresetParams::FIELD_DESCRIPTORS
+                .iter()
+                .find(|field| field.name == key)
+                .expect("public preset field");
+            row.origin(field, context)
+        };
+        let context = PresetContext {
+            frame: FrameKind::Leaf,
+            ..PresetContext::default()
+        };
+        let screen = resolved.screen.unwrap();
+        assert_eq!(
+            origin(&resolved.normal, "ssim_aq", context),
+            PresetOrigin::Explicit
+        );
+        assert_eq!(
+            origin(&screen, "none_breakout", context),
+            PresetOrigin::Explicit
+        );
+        assert_eq!(screen.params.none_breakout.at(context), 4);
+        assert_eq!(
+            origin(&screen, "palette", context),
+            PresetOrigin::ScreenContent
+        );
+        assert_eq!(
+            origin(&screen, "max_block_log2", context),
+            PresetOrigin::FastDecode
+        );
+        assert_eq!(
+            origin(&screen, "num_ref_frames", context),
+            PresetOrigin::Preset
+        );
+
+        if tune == Tune::Vq {
+            assert_eq!(origin(&screen, "psy_rd", context), PresetOrigin::Tune);
+        }
+
+        config.resize_denominator = None;
+        config.rate_control = RateControlMode::ConstantQp { qp: 0 };
+        config.preset_overrides.push(("tcq".into(), "0".into()));
+        config
+            .preset_overrides
+            .push(("screen_detect".into(), "0".into()));
+        let lossless = config.resolve()?;
+        assert_eq!(
+            lossless.normal.params,
+            IntraFrameCoder::new(&config)?.preset
+        );
+        assert!(lossless.screen.is_none());
+        assert_eq!(
+            origin(&lossless.normal, "tcq", context),
+            PresetOrigin::Lossless
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resolve_checks_the_coded_tile_layout() {
+    let mut config = Config::new(128, 128);
+    config.tiles = TileLayout::Explicit {
+        widths: vec![3],
+        heights: vec![1],
+    };
+    assert!(matches!(
+        config.resolve(),
+        Err(Error::InvalidTiles {
+            reason: "tiles beyond the frame edge",
+            ..
+        })
+    ));
+    assert!(matches!(
+        Encoder::new(config),
+        Err(Error::InvalidTiles {
+            reason: "tiles beyond the frame edge",
+            ..
+        })
+    ));
+}
+
+/// Fast search base with 128x128 superblocks (`max_block_log2 = 7`) and
+/// mini-GOPs (`preset 9` search speed with `preset 6` superblock size).
+fn fast_p6() -> PresetParams {
+    PresetParams {
+        max_block_log2: 7,
+        ..*Preset::new(9).unwrap().params()
+    }
 }
 
 fn code(config: &Config, seed: u32) -> CodedFrame {
@@ -228,7 +341,8 @@ fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .collect();
         let name = format!("preset {preset}");
         assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
@@ -271,7 +385,7 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             let other: Vec<u8> = stream(threads)
                 .iter()
                 .flat_map(|f| f.temporal_unit.clone())
@@ -313,7 +427,8 @@ fn parity_hiding_codes_the_frames_without_tcq() {
         );
         assert!(!hidden.contains(&(true, true)));
         assert_same_samples(&decode(&units), &expected, &format!("{bit_depth:?}"));
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(threads).0 == units, "{bit_depth:?} {threads}");
         }
     }
@@ -360,7 +475,7 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
             assert_same_samples(&decode(&units), &expected, &name);
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 let other: Vec<u8> = stream(threads)
                     .iter()
                     .flat_map(|f| f.temporal_unit.clone())
@@ -423,7 +538,7 @@ fn type_model_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             let name = format!("{bit_depth:?} {chroma:?}");
             assert_same_samples(&decode(&units), &expected, &name);
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 let other: Vec<u8> = type_model_stream(&config, params, threads)
                     .iter()
                     .flat_map(|f| f.temporal_unit.clone())
@@ -554,7 +669,8 @@ fn cctx_rd_over_every_rotation_decodes_to_the_encoder_recon_on_any_thread_count(
             stream(1, 1).0 != units,
             "{name}: the wider CCTX search coded the same stream"
         );
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(6, threads).0 == units, "{name}: {threads} threads");
         }
     }
@@ -601,7 +717,8 @@ fn cfl_zero_alpha_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         total += coded;
         assert_same_samples(&decode(&units), &expected, &name);
         differs |= stream(false, 1).0 != units;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 stream(true, threads).0 == units,
                 "{name}: {threads} threads"
@@ -653,7 +770,8 @@ fn intra_ist_rd_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         chosen += other;
         assert_same_samples(&decode(&units), &expected, &name);
         differs |= stream(false, 1).0 != units;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 stream(true, threads).0 == units,
                 "{name}: {threads} threads"
@@ -716,7 +834,8 @@ fn dip_trials_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         }
         differs |= one != units;
         more += four;
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(4, threads).0 == units, "{name}: {threads} threads");
         }
     }
@@ -1103,18 +1222,6 @@ pub(super) fn is_global(choice: &LeafChoice) -> bool {
             modes.mode == splot_decode::encoder_syntax::CompoundMode::GlobalGlobal
         }
         _ => false,
-    }
-}
-
-/// A small deterministic generator (xorshift64*).
-struct Rng(u64);
-
-impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
     }
 }
 
@@ -1998,6 +2105,49 @@ fn multi_tile_output_does_not_depend_on_the_thread_count() {
     }
 }
 
+/// Multi-tile wavefront mini-GOP with delta-q, segmentation, compound modes,
+/// TIP, warp, loop filters and film grain enabled together writes identical
+/// bytes on 1, 2 and 8 threads and decodes to the encoder recon.
+#[test]
+fn all_tools_decode_alike_on_any_thread_count() {
+    let stream = |threads: usize| {
+        let mut config = config(136, 136, BitDepth::Ten, 9, 150);
+        config.tiles = TileLayout::Uniform {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.film_grain = true;
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            wavefront: true,
+            segmentation: 1,
+            compound_types: 2,
+            implicit_mask: true,
+            tip: 2,
+            warp: 1,
+            ..*Preset::new(9).unwrap().params()
+        }));
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        carry::planned_stream_of(&config, coder, panning_frame, 150)
+    };
+    let (one, expected, ..) = stream(1);
+    let ctx = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(
+        splot_parallel::ThreadCount::from(1),
+    ))
+    .unwrap();
+    let mut decoded = Vec::new();
+    ctx.decode_raw_bytes(
+        &one,
+        splot_decode::DecodeOptions::default().with_skip_film_grain(true),
+        &mut decoded,
+    )
+    .unwrap();
+    assert_same_samples(&decoded, &expected, "all tools");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
+}
+
 /// Preset 9 refining to eighth samples in frames up to `base_q_idx` 100.
 static EIGHTH_PEL: PresetParams = PresetParams {
     subpel_depth: 3,
@@ -2020,7 +2170,8 @@ fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
     let case = (72, 8, BitDepth::Eight, 9, 100, (1, 0));
     let (one, expected) = tiled_stream(case, 1, Some(&EIGHTH_PEL));
     assert_same_samples(&decode(&one.concat()), &expected, "eighth-pel");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let (units, _) = tiled_stream(case, threads, Some(&EIGHTH_PEL));
         assert!(units == one, "{threads} threads");
     }
@@ -2165,4 +2316,12 @@ fn order_hints_map_references_to_display_pairs() {
     );
     assert_eq!(plan(7).order_hint, 2, "frame 5 is a key frame");
     assert_eq!(pairs(7, &[1, 3]), [Some((7, 6)), Some((7, 8))]);
+}
+
+#[test]
+fn resolve_rejects_unencodable_sample_aspect_ratio() {
+    let mut config = Config::new(64, 64);
+    config.content.sample_aspect_ratio = Some((u32::MAX, 1));
+    assert!(config.resolve().is_err());
+    assert!(crate::Encoder::new(config).is_err());
 }

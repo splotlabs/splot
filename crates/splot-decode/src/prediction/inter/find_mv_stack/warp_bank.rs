@@ -3,10 +3,12 @@
 
 //! AV2 § 7.12.2 warp-parameter bank and the WRL warp-parameter stack.
 
+use splot_recon::IDENTITY_WARP_PARAMS;
+
 use super::{
-    DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MvBlockContext, NeighbourMvGrid, ProbedLeaf,
-    bank_ring_update, generate_points_from_corners, mv_stack_spatial_probes,
-    seed_walk_from_row_above, superblock_of, visit_mv_stack_column,
+    MAX_WARP_REF_CANDIDATES, MvBlockContext, NeighbourMvGrid, ProbedLeaf, bank_ring_update,
+    generate_points_from_corners, mv_stack_spatial_probes, seed_walk_from_row_above, superblock_of,
+    visit_mv_stack_column,
 };
 
 const WARP_PARAM_BANK_SIZE: usize = 4;
@@ -25,7 +27,7 @@ pub(crate) struct WarpParamBank {
 impl WarpParamBank {
     pub(crate) fn new() -> Self {
         Self {
-            entries: [[DEFAULT_WARP_PARAMS; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
+            entries: [[IDENTITY_WARP_PARAMS; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
             sizes: [0; WARP_BANK_REFS],
             starts: [0; WARP_BANK_REFS],
             sb_hits: 0,
@@ -109,7 +111,7 @@ impl WarpParamBank {
         index: usize,
     ) -> [i32; 6] {
         if index >= MAX_WARP_REF_CANDIDATES {
-            return DEFAULT_WARP_PARAMS;
+            return IDENTITY_WARP_PARAMS;
         }
         let mut warp = WarpParamStack::new();
         generate_points_from_corners(grid, block, &mut warp);
@@ -145,7 +147,7 @@ pub(crate) struct WarpParamStack {
 impl WarpParamStack {
     pub(super) fn new() -> Self {
         Self {
-            slots: [DEFAULT_WARP_PARAMS; MAX_WARP_REF_CANDIDATES],
+            slots: [IDENTITY_WARP_PARAMS; MAX_WARP_REF_CANDIDATES],
             num_found: 0,
         }
     }

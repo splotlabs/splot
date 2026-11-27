@@ -12,7 +12,9 @@ use super::{
 };
 use crate::pipeline::frame_progress::PublishedFrame;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
+use crate::prediction::inter::{
+    BawpSyntax, InterBlock, MotionVector, PlacedInterBlock, mc::CompoundBlend,
+};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -120,13 +122,13 @@ fn template_lane_sums_match_the_pair_oracle() {
                     assert!(byte_pairs.add_left(left, |i| Some(pair(1, i))).is_some());
                 }
                 assert_eq!(
-                    pairs.stats(),
+                    crate::test_support::with_auto_backend!(backend => pairs.stats(backend)),
                     want,
                     "{bw}x{bh} {luma} {up} {left} {max} {row_len}"
                 );
                 if max == 255 {
                     assert_eq!(
-                        byte_pairs.stats(),
+                        crate::test_support::with_auto_backend!(backend => byte_pairs.stats(backend)),
                         want,
                         "u8 {bw}x{bh} {up} {left} {row_len}"
                     );
@@ -139,7 +141,13 @@ fn template_lane_sums_match_the_pair_oracle() {
     assert!(pairs.add_above((16, 16), full_rows).is_some());
     assert!(pairs.add_left((16, 16), |_| Some((1023, 1023))).is_some());
     let full = oracle_stats([(16, 16); 2], |_, _| (1023, 1023));
-    assert_eq!((pairs.stats(), full.sum_xx), (full, 32 * 1023 * 1023));
+    assert_eq!(
+        (
+            crate::test_support::with_auto_backend!(backend => pairs.stats(backend)),
+            full.sum_xx
+        ),
+        (full, 32 * 1023 * 1023)
+    );
     assert!(
         TemplatePairs::default()
             .add_above((8, 8), [&[0u16; 7][..], &[0; 8]])
@@ -152,12 +160,15 @@ fn intrabc_morph_pred_skips_unavailable_top_left_template() -> TestResult {
     let mut workspace = workspace(8, 8, 77)?;
     let target = PlaneRect::new(0, 0, 4, 4)?;
 
-    apply_intrabc_morph_pred(
-        &mut workspace,
-        target,
-        (false, false),
-        Mv { row: 0, col: 0 },
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_intrabc_morph_pred(
+            backend,
+            &mut workspace,
+            target,
+            (false, false),
+            MotionVector { row: 0, col: 0 },
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 0, 0)?, 77);
     Ok(())
@@ -169,17 +180,20 @@ fn inter_bawp_skips_unavailable_top_left_reference_template() -> TestResult {
     let reference = frame(8, 8, vec![12; 64], vec![34; 16], vec![56; 16])?;
     let placed = placed_luma_block(0, 0, 4, 4);
 
-    apply_bawp(
-        &mut workspace,
-        ReferenceSamples::settled(&reference),
-        &placed,
-        BawpSyntax {
-            enabled: true,
-            ..BawpSyntax::default()
-        },
-        Mv { row: 0, col: 0 },
-        splot_core::span::ByteOffset::new(0),
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_bawp(
+            backend,
+            &mut workspace,
+            ReferenceSamples::settled(&reference),
+            &placed,
+            BawpSyntax {
+                enabled: true,
+                ..BawpSyntax::default()
+            },
+            MotionVector { row: 0, col: 0 },
+            splot_core::span::ByteOffset::new(0),
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 0, 0)?, 91);
     Ok(())
@@ -195,12 +209,15 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
         workspace.set_reconstructed_sample(PlaneId::Y, 23, row, 20)?;
     }
 
-    apply_intrabc_morph_pred(
-        &mut workspace,
-        PlaneRect::new(16, 16, 128, 128)?,
-        (true, true),
-        Mv { row: 64, col: 64 },
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_intrabc_morph_pred(
+            backend,
+            &mut workspace,
+            PlaneRect::new(16, 16, 128, 128)?,
+            (true, true),
+            MotionVector { row: 64, col: 64 },
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 143, 143)?, 60);
@@ -217,12 +234,15 @@ fn intrabc_morph_pred_applies_block_cut_by_the_frame_edge() -> TestResult {
         workspace.set_reconstructed_sample(PlaneId::Y, 15, i, 20)?;
     }
 
-    apply_intrabc_morph_pred(
-        &mut workspace,
-        PlaneRect::new(16, 16, 16, 20)?,
-        (true, true),
-        Mv { row: -64, col: -64 },
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_intrabc_morph_pred(
+            backend,
+            &mut workspace,
+            PlaneRect::new(16, 16, 16, 20)?,
+            (true, true),
+            MotionVector { row: -64, col: -64 },
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 20);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 31, 35)?, 20);
@@ -241,19 +261,22 @@ fn inter_bawp_applies_large_luma_block() -> TestResult {
         vec![20; 80 * 80],
     )?;
 
-    apply_bawp(
-        &mut workspace,
-        ReferenceSamples::settled(&reference),
-        &placed_luma_block(16, 16, 128, 128),
-        BawpSyntax {
-            enabled: true,
-            avail_up: true,
-            avail_left: true,
-            ..BawpSyntax::default()
-        },
-        Mv { row: 0, col: 0 },
-        splot_core::span::ByteOffset::new(0),
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_bawp(
+            backend,
+            &mut workspace,
+            ReferenceSamples::settled(&reference),
+            &placed_luma_block(16, 16, 128, 128),
+            BawpSyntax {
+                enabled: true,
+                avail_up: true,
+                avail_left: true,
+                ..BawpSyntax::default()
+            },
+            MotionVector { row: 0, col: 0 },
+            splot_core::span::ByteOffset::new(0),
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 143, 143)?, 60);
@@ -273,20 +296,23 @@ fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
         PixelFormat::Yuv444,
     )?;
 
-    apply_bawp(
-        &mut workspace,
-        ReferenceSamples::settled(&reference),
-        &placed_luma_block(4, 4, 8, 8),
-        BawpSyntax {
-            enabled: true,
-            chroma: true,
-            avail_up: true,
-            avail_left: true,
-            ..BawpSyntax::default()
-        },
-        Mv::ZERO,
-        splot_core::span::ByteOffset::new(0),
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_bawp(
+            backend,
+            &mut workspace,
+            ReferenceSamples::settled(&reference),
+            &placed_luma_block(4, 4, 8, 8),
+            BawpSyntax {
+                enabled: true,
+                chroma: true,
+                avail_up: true,
+                avail_left: true,
+                ..BawpSyntax::default()
+            },
+            MotionVector::ZERO,
+            splot_core::span::ByteOffset::new(0),
+        )
+    })?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::U, 4, 4)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::V, 4, 4)?, 60);
@@ -342,27 +368,33 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     let (admitted_slot, _writer) = admitted_progress.ok_or("admitted published slot")?;
     let admitted_frame = PublishedFrame::of_slot(&admitted_slot).ok_or("published frame")?;
     let mut admitted = workspace(160, 160, 40)?;
-    apply_bawp(
-        &mut admitted,
-        ReferenceSamples::publishing(&admitted_frame),
-        &placed,
-        syntax,
-        Mv::ZERO,
-        splot_core::span::ByteOffset::new(0),
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        apply_bawp(
+            backend,
+            &mut admitted,
+            ReferenceSamples::publishing(&admitted_frame),
+            &placed,
+            syntax,
+            MotionVector::ZERO,
+            splot_core::span::ByteOffset::new(0),
+        )
+    })?;
     assert_eq!(admitted.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
 
     let (short_slot, _short_writer) = short_progress.ok_or("short published slot")?;
     let short_frame = PublishedFrame::of_slot(&short_slot).ok_or("short published frame")?;
     let mut short = workspace(160, 160, 40)?;
-    let refused = apply_bawp(
-        &mut short,
-        ReferenceSamples::publishing(&short_frame),
-        &placed,
-        syntax,
-        Mv::ZERO,
-        splot_core::span::ByteOffset::new(0),
-    );
+    let refused = crate::test_support::with_auto_backend!(backend => {
+        apply_bawp(
+            backend,
+            &mut short,
+            ReferenceSamples::publishing(&short_frame),
+            &placed,
+            syntax,
+            MotionVector::ZERO,
+            splot_core::span::ByteOffset::new(0),
+        )
+    });
     let refused = refused
         .err()
         .map(|error| format!("{error}"))
@@ -458,8 +490,8 @@ fn placed_luma_block(x: usize, y: usize, width: usize, height: usize) -> PlacedI
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,
-            mv: Mv { row: 0, col: 0 },
-            mv1: Mv { row: 0, col: 0 },
+            mv: MotionVector { row: 0, col: 0 },
+            mv1: MotionVector { row: 0, col: 0 },
             interp: InterpolationFilter::EightTap,
             warp_params: [None, None],
             bawp: BawpSyntax::default(),

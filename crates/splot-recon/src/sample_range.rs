@@ -6,6 +6,7 @@
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`.
 
 use fearless_simd::{Bytes as _, Simd, SimdBase, u16x16};
+use splot_core::simd::SimdBackend;
 
 use crate::ReconSample;
 
@@ -17,6 +18,18 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
         && T::u16_slice(samples).is_some_and(|samples| u16_samples_exceed(samples, max_sample))
 }
 
+/// Typed [`samples_exceed`] using caller-selected `backend` with no baseline re-probe.
+#[inline]
+pub(crate) fn samples_exceed_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    samples: &[T],
+    max_sample: u16,
+) -> bool {
+    max_sample < T::MAX_VALUE
+        && T::u16_slice(samples)
+            .is_some_and(|samples| u16_samples_exceed_with(backend, samples, max_sample))
+}
+
 /// Reports whether any `u16` sample exceeds the active bit depth.
 ///
 /// The scan keeps a running lane-wise peak and compares it once at the end, so
@@ -25,6 +38,16 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 /// rereads the last full lane group.
 pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
     baseline_simd!(simd => u16_peak_exceeds(simd, samples, max_sample))
+}
+
+/// Typed [`u16_samples_exceed`] using caller-selected `backend` with no baseline re-probe.
+pub(crate) fn u16_samples_exceed_with<B: SimdBackend>(
+    backend: B,
+    samples: &[u16],
+    max_sample: u16,
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => u16_peak_exceeds(simd, samples, max_sample))
 }
 
 #[inline]
@@ -99,6 +122,16 @@ pub fn sum_samples<T: SummedSample>(samples: &[T], every_second: bool) -> u32 {
     baseline_simd!(simd => sum_lanes(simd, samples, every_second))
 }
 
+/// Typed [`sum_samples`] using caller-selected `backend` with no baseline re-probe.
+pub fn sum_samples_with<B: SimdBackend, T: SummedSample>(
+    backend: B,
+    samples: &[T],
+    every_second: bool,
+) -> u32 {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => sum_lanes(simd, samples, every_second))
+}
+
 #[inline]
 pub(crate) fn sum_lanes<S: Simd, T: SummedSample>(
     simd: S,
@@ -162,6 +195,52 @@ mod tests {
                 assert!(!u16_samples_exceed(&samples, 1000));
                 samples[hot] = 1001;
                 assert!(u16_samples_exceed(&samples, 1000), "len {len} hot {hot}");
+            }
+        }
+    }
+
+    #[test]
+    fn typed_backend_entry_matches_compatibility_scans() {
+        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+
+        struct ParityProbe<'a>(&'a [u16], &'a [u8], &'a [i16]);
+        impl SimdScope<()> for ParityProbe<'_> {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for every_second in [false, true] {
+                    assert_eq!(
+                        sum_samples_with(backend, self.0, every_second),
+                        sum_samples(self.0, every_second)
+                    );
+                    assert_eq!(
+                        sum_samples_with(backend, self.1, every_second),
+                        sum_samples(self.1, every_second)
+                    );
+                    assert_eq!(
+                        sum_samples_with(backend, self.2, every_second),
+                        sum_samples(self.2, every_second)
+                    );
+                }
+                assert!(!samples_exceed_with(backend, self.1, 255));
+                assert_eq!(
+                    samples_exceed_with(backend, self.0, 1000),
+                    samples_exceed(self.0, 1000)
+                );
+                assert_eq!(
+                    u16_samples_exceed_with(backend, self.0, 1000),
+                    u16_samples_exceed(self.0, 1000)
+                );
+            }
+        }
+
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        for len in [0usize, 1, 7, 15, 16, 17, 63] {
+            let mut wide: Vec<u16> = (0..len).map(|i| ((i * 7919 + 13) % 1024) as u16).collect();
+            let narrow: Vec<u8> = wide.iter().map(|&v| (v >> 2) as u8).collect();
+            let signed: Vec<i16> = wide.iter().map(|&v| (v * 8) as i16).collect();
+            resolved.enter(ParityProbe(&wide, &narrow, &signed));
+            if let Some(last) = wide.last_mut() {
+                *last = 1001;
+                resolved.enter(ParityProbe(&wide, &narrow, &signed));
             }
         }
     }

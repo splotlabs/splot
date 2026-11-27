@@ -43,6 +43,61 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     stride: usize,
     carry: &mut BilinearOverlapCarry<'a, T>,
 ) -> Result<bool> {
+    predict_12x12_overlap(BaselineSubpel, reference, params, output, stride, carry)
+}
+
+/// Typed [`subpel_predict_12x12_bilinear_overlap_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`subpel_predict_12x12_bilinear_overlap_into`].
+pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: ReconSample>(
+    backend: B,
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+    carry: &mut BilinearOverlapCarry<'a, T>,
+) -> Result<bool> {
+    predict_12x12_overlap(
+        TypedSubpel(backend),
+        reference,
+        params,
+        output,
+        stride,
+        carry,
+    )
+}
+
+#[inline]
+fn predict_12x12_overlap<'a, R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+    carry: &mut BilinearOverlapCarry<'a, T>,
+) -> Result<bool> {
+    let Some((window, output, geometry, ref_stride, reuse)) =
+        prepare_12x12_overlap(reference, params, output, stride, carry)?
+    else {
+        return Ok(false);
+    };
+    let [_, _, h_phase, v_phase] = geometry;
+    let block = (window, ref_stride, output, stride, &mut carry.columns);
+    runner.bilinear_12x12(block, (h_phase, v_phase), reuse);
+    carry.source = Some((reference.samples, ref_stride, geometry));
+    Ok(true)
+}
+
+#[inline]
+#[expect(clippy::type_complexity)]
+fn prepare_12x12_overlap<'a, 'o, T: ReconSample>(
+    reference: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &'o mut [u16],
+    stride: usize,
+    carry: &BilinearOverlapCarry<'a, T>,
+) -> Result<Option<(&'a [T], &'o mut [u16], [i32; 4], usize, bool)>> {
     const SIZE: usize = 12;
     if params.interp != InterpolationFilter::Bilinear
         || params.step_x != 1 << SCALE_SUBPEL_BITS
@@ -51,7 +106,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         || params.h != SIZE
         || stride < SIZE
     {
-        return Ok(false);
+        return Ok(None);
     }
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
@@ -60,7 +115,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         || x0 + SIZE as i32 > params.last_x.min(reference.width as i32 - 1)
         || y0 + SIZE as i32 > params.last_y.min(reference.readable_rows as i32 - 1)
     {
-        return Ok(false);
+        return Ok(None);
     }
     let needed = stride
         .checked_mul(SIZE - 1)
@@ -85,7 +140,7 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
         .samples
         .get(origin..origin + SIZE * ref_stride + SIZE + 1)
     else {
-        return Ok(false);
+        return Ok(None);
     };
     let reuse = carry
         .source
@@ -94,28 +149,21 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
                 && carry_stride == ref_stride
                 && [x + 8, y, h, v] == geometry
         });
-    let block = (window, ref_stride, output, stride, &mut carry.columns);
-    baseline_simd!(simd => if reuse {
-        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
-    } else {
-        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
-    });
-    carry.source = Some((reference.samples, ref_stride, geometry));
-    Ok(true)
+    Ok(Some((window, output, geometry, ref_stride, reuse)))
 }
 
 /// A source window and its stride, an output and its stride, and the carry
 /// columns.
-type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8]; 12]);
+pub(super) type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8]; 12]);
 
 /// Filters a 12x12 bilinear block whose 13x13 source window holds every tap
 /// unclamped into the strided output, keeping columns 4..12 in the carry
 /// columns. With `REUSE`, carried columns 8..12 become columns 0..4. An 8-bit
 /// horizontal value is at most `16 * 255`, so its vertical blend plus the
 /// rounding bias stays below `2^16` in `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
+pub(super) fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
     simd: S,
     block: Block12x12<'_, T>,
     (h_phase, v_phase): (i32, i32),
@@ -149,7 +197,7 @@ fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
 }
 
 /// Eight samples from `col` as `u16` lanes.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16x8<S> {
     if let Some(lanes) = T::u16_slice(line).and_then(|line| line.get(col..)?.first_chunk::<8>()) {
@@ -167,7 +215,7 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16
 /// Runs the rows of [`bilinear_12x12_block`] in one pass: `horizontal`
 /// filters eight columns of one source line and `vertical` blends two such
 /// results.
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[expect(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn bilinear_12x12_rows<S: Simd, T: ReconSample, const REUSE: bool>(
     (window, ref_stride, output, stride, columns): Block12x12<'_, T>,
@@ -195,7 +243,6 @@ fn bilinear_12x12_rows<S: Simd, T: ReconSample, const REUSE: bool>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::tests::full_pel_params;
     use super::*;

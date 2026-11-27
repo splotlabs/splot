@@ -55,7 +55,7 @@ const VERTICAL: [[[i16; 16]; EXT_WARP_TAPS / 2]; PHASES] = {
 
 /// The four horizontal sums of a row from its samples at the unit's first
 /// column (`first`) and the next (`second`).
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 pub(super) fn horizontal<S: Simd>(
     simd: S,
@@ -71,7 +71,7 @@ pub(super) fn horizontal<S: Simd>(
 
 /// `Round2` of the vertical sums of the unit's nine intermediate rows of four
 /// lanes, in row-major order.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[expect(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
 pub(super) fn vertical<S: Simd>(
     simd: S,

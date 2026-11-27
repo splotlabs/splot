@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Decoder oracles shared by the encoder tests.
+//! Decoder oracles and helpers shared by the encoder tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
-use splot_parallel::prelude::*;
-use splot_parallel::{ThreadCount, WorkerPool};
+use splot_parallel::ThreadCount;
 use splot_recon::BitDepth;
 
 /// Planes as the decoder's raw output: `u8` samples at 8 bits, little-endian
@@ -40,16 +37,13 @@ pub(crate) fn decode(annexb: &[u8]) -> Vec<u8> {
     out
 }
 
-/// `check` of every case at once, in case order: a test of several encodes
-/// takes the time of its slowest one, not their sum. Each case runs on a
-/// worker thread, so a thread-local test counter counts inside `check` alone.
-pub(crate) fn each_case<T: Send, R: Send>(
+/// Runs `check` on every case in order; `cargo test` already runs tests across
+/// worker threads, so nested pools here would oversubscribe the machine.
+pub(crate) fn each_case<T, R>(
     cases: impl IntoIterator<Item = T>,
-    check: impl Fn(T) -> R + Send + Sync,
+    check: impl Fn(T) -> R,
 ) -> Vec<R> {
-    let cases: Vec<T> = cases.into_iter().collect();
-    let pool = WorkerPool::new(ThreadCount::from(cases.len().max(1))).unwrap();
-    pool.install(|| cases.into_par_iter().map(check).collect())
+    cases.into_iter().map(check).collect()
 }
 
 /// Asserts that `decoded` equals `expected` and names the first mismatch.
@@ -79,7 +73,7 @@ pub(crate) fn avm_decoder() -> Option<PathBuf> {
 /// and returns its raw output; the IVF file holds one temporal unit per
 /// record, each starting at a temporal delimiter.
 pub(crate) fn avm_decode(
-    avmdec: &PathBuf,
+    avmdec: &Path,
     units: &[Vec<u8>],
     (width, height): (u32, u32),
     bit_depth: BitDepth,
@@ -134,4 +128,16 @@ pub(crate) fn refs_for(
     seq: &splot_core::headers::sequence::SequenceHeader,
 ) -> splot_decode::encoder_syntax::EncoderReferences {
     splot_decode::encoder_syntax::EncoderReferences::new(seq).unwrap()
+}
+
+/// A small deterministic generator (xorshift64*).
+pub(crate) struct Rng(pub(crate) u64);
+
+impl Rng {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+    }
 }

@@ -62,6 +62,7 @@ pub(super) struct LcrAssociation {
     pub(super) lcr_is_global: bool,
     /// The associated record's id (the header's `seq_lcr_id`).
     pub(super) lcr_id: u8,
+    pub(super) global_reference: Option<u8>,
     /// The record's § 5.8.8 embedded-layer maps at observation time; `None`
     /// when it carried no embedded-layer info (§ 6.8.9 binds "if present").
     pub(super) maps: Option<LcrEmbeddedMaps>,
@@ -146,13 +147,13 @@ pub(super) struct LcrRepInfoSnapshot {
     pub(super) max_pic_width: u32,
     /// `lcr_max_pic_height[isGlobal][xId]` (always present).
     pub(super) max_pic_height: u32,
-    /// `(lcr_bit_depth_idc, lcr_chroma_format_idc)`, present when
+    /// `lcr_bit_depth_idc` and `lcr_chroma_format_idc`, present when
     /// `lcr_format_info_present_flag == 1`.
-    pub(super) format: Option<(u32, u32)>,
+    pub(super) format: Option<LcrFormatInfo>,
     /// The four `lcr_cropping_win_*_offset` values, present when
     /// `lcr_cropping_window_present_flag == 1` (the present flag itself is the
-    /// `Option::is_some`). Order: `(left, right, top, bottom)`.
-    pub(super) cropping: Option<(u32, u32, u32, u32)>,
+    /// `Option::is_some`).
+    pub(super) cropping: Option<CroppingWindow>,
     /// Byte offset of the defining LCR OBU.
     pub(super) offset: ByteOffset,
 }
@@ -199,9 +200,18 @@ pub(super) enum DependencyFindingKey {
 
 impl DependencyFindingKey {
     /// The activated sequence header this finding was paired with.
-    pub(super) fn seq_header_id(self) -> SequenceHeaderId {
+    pub(super) fn sequence(self) -> (ExtendedLayerId, SequenceHeaderId) {
         match self {
-            Self::Ops { seq_header_id, .. } | Self::Lcr { seq_header_id, .. } => seq_header_id,
+            Self::Ops {
+                entry_xlayer: xlayer,
+                seq_header_id,
+                ..
+            }
+            | Self::Lcr {
+                xlayer,
+                seq_header_id,
+                ..
+            } => (xlayer, seq_header_id),
         }
     }
 }
@@ -360,12 +370,8 @@ pub(super) fn rep_info_snapshot(rep_info: &LcrRepInfo, offset: ByteOffset) -> Lc
     LcrRepInfoSnapshot {
         max_pic_width: rep_info.max_pic_width,
         max_pic_height: rep_info.max_pic_height,
-        format: rep_info
-            .format_info
-            .map(|f| (f.bit_depth_idc, f.chroma_format_idc)),
-        cropping: rep_info
-            .cropping_window
-            .map(|c| (c.left_offset, c.right_offset, c.top_offset, c.bottom_offset)),
+        format: rep_info.format_info,
+        cropping: rep_info.cropping_window,
         offset,
     }
 }
@@ -398,7 +404,8 @@ impl ValidatorContext {
         }
 
         let xlayer = obu.header.extended_layer_id;
-        let external_disabled = matches!(options.external_hls, ExternalHlsMode::Disabled);
+        let lcr_availability_decidable =
+            !matches!(options.external_hls, ExternalHlsMode::Provided(_));
         match record {
             LayerConfigurationRecord::Global(info) => {
                 self.cmvs.note_global_lcr_present();
@@ -504,7 +511,7 @@ impl ValidatorContext {
                             xlayer,
                             obu.offset,
                         );
-                    } else if external_disabled {
+                    } else if lcr_availability_decidable {
                         report.push(
                             Diagnostic::error(
                                 "lcr/global-lcr-unavailable",
@@ -532,7 +539,7 @@ impl ValidatorContext {
                             xlayer,
                             obu.offset,
                         );
-                    } else if external_disabled {
+                    } else if lcr_availability_decidable {
                         report.push(
                             Diagnostic::error(
                                 "atlas/local-atlas-unavailable",
@@ -550,7 +557,8 @@ impl ValidatorContext {
                         );
                     }
                 }
-                self.hls.record_local_lcr(xlayer, info.local_id);
+                self.hls
+                    .record_local_lcr(xlayer, info.local_id, info.global_id);
                 self.rap_replay.note_resend(
                     RapHlsKey::LayerConfigurationRecord {
                         xlayer: xlayer.get(),
@@ -631,7 +639,7 @@ impl ValidatorContext {
         }
         if let Some(xlayer_map) = self.hls.global_lcr_xlayer_map(seq_lcr_id) {
             let xlayer_bit = xlayer.get();
-            if matches!(options.external_hls, ExternalHlsMode::Disabled)
+            if !matches!(options.external_hls, ExternalHlsMode::Provided(_))
                 && xlayer_bit < 31
                 && xlayer_map & (1u32 << xlayer_bit) == 0
             {
@@ -652,7 +660,7 @@ impl ValidatorContext {
             return;
         }
 
-        if matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if !matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             report.push(
                 Diagnostic::error(
                     "hls/unavailable-layer-configuration-record",

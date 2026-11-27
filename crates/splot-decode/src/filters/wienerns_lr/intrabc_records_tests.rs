@@ -16,7 +16,7 @@ use super::*;
 use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackGeometry, build_intrabc_ref_mv_stack_from_candidates,
+    IntrabcStackGeometry, build_intrabc_ref_mv_stack_from_candidates,
     select_intrabc_ref_mv_from_candidates,
 };
 
@@ -79,11 +79,10 @@ fn read_intrabc_info_record(
     let spatial = state
         .capture_spatial_intrabc_probes(geometry)
         .resolve(|_, _| None);
-    let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
-        Some(DrlReorder::Always) => DrlReorderMode::Always,
-        Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
-        Some(DrlReorder::Disabled) | None => DrlReorderMode::Disabled,
-    };
+    let drl_reorder = sequence
+        .inter
+        .as_ref()
+        .map_or(DrlReorder::Disabled, |inter| inter.drl_reorder);
     let enable_refmvbank = sequence
         .inter
         .as_ref()
@@ -376,10 +375,7 @@ fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
             skip_flag: true,
         }
     );
-    assert_eq!(
-        info.unwrap().block_mv,
-        IntrabcBlockVector { row: -512, col: 0 }
-    );
+    assert_eq!(info.unwrap().block_mv, MotionVector { row: -512, col: 0 });
     assert_eq!(symbol_count, 4);
 }
 
@@ -424,7 +420,7 @@ fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual
         }
     );
     let info = info.expect("non-skip IntrABC prelude returns parsed mode-info");
-    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(info.block_mv, MotionVector { row: -512, col: 0 });
     assert_eq!(symbol_count, 8);
 }
 
@@ -453,7 +449,7 @@ fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
     .unwrap();
 
     assert!(!info.morph_pred);
-    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(info.block_mv, MotionVector { row: -512, col: 0 });
     assert_eq!(symbols.symbol_count(), 3);
 }
 
@@ -482,7 +478,7 @@ fn intrabc_morph_pred_one_is_retained_for_reconstruction() {
     .unwrap();
 
     assert!(info.morph_pred);
-    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(info.block_mv, MotionVector { row: -512, col: 0 });
     assert_eq!(symbols.symbol_count(), 3);
 }
 
@@ -543,8 +539,8 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
     let spatial = state
         .capture_spatial_intrabc_probes(geometry)
         .resolve(|row, col| match (row, col) {
-            (23, 7) => Some(Mv { row: -512, col: 0 }),
-            (19, 8) => Some(Mv { row: 0, col: -3072 }),
+            (23, 7) => Some(MotionVector { row: -512, col: 0 }),
+            (19, 8) => Some(MotionVector { row: 0, col: -3072 }),
             _ => None,
         });
     let selected = select_intrabc_ref_mv_from_candidates(
@@ -560,7 +556,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         },
         &spatial,
         true,
-        DrlReorderMode::Always,
+        DrlReorder::Always,
         pending.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(pending, selected);
@@ -572,7 +568,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
             skip_flag: false,
         }
     );
-    assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
+    assert_eq!(info.block_mv, MotionVector { row: -512, col: 0 });
 }
 
 #[test]
@@ -585,11 +581,11 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
     let scan = sb_border
         .capture_spatial_intrabc_probes(at_border)
-        .resolve(|row, col| (row == 15 && col == 54).then_some(Mv { row: -512, col: 0 }));
+        .resolve(|row, col| (row == 15 && col == 54).then_some(MotionVector { row: -512, col: 0 }));
     assert_eq!(
         scan.candidates[..],
         [super::super::intrabc_ref_mv_stack::WeightedBv {
-            mv: Mv { row: -512, col: 0 },
+            mv: MotionVector { row: -512, col: 0 },
             weight: 0,
         }]
     );
@@ -600,7 +596,7 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
     let control = interior
         .capture_spatial_intrabc_probes(at_interior)
-        .resolve(|row, col| (row == 19 && col == 54).then_some(Mv { row: -512, col: 0 }));
+        .resolve(|row, col| (row == 19 && col == 54).then_some(MotionVector { row: -512, col: 0 }));
     assert!(control.candidates.is_empty());
 }
 
@@ -640,16 +636,16 @@ fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
 
     let intra_scan = intra
         .capture_spatial_intrabc_probes(geometry)
-        .resolve(|row, col| (row == 31 && col == 11).then_some(Mv { row: -512, col: 0 }));
+        .resolve(|row, col| (row == 31 && col == 11).then_some(MotionVector { row: -512, col: 0 }));
     let inter_scan = inter
         .capture_spatial_intrabc_probes(geometry)
-        .resolve(|row, col| (row == 31 && col == 11).then_some(Mv { row: -512, col: 0 }));
+        .resolve(|row, col| (row == 31 && col == 11).then_some(MotionVector { row: -512, col: 0 }));
 
     assert!(intra_scan.candidates.is_empty());
     assert_eq!(
         inter_scan.candidates[..],
         [super::super::intrabc_ref_mv_stack::WeightedBv {
-            mv: Mv { row: -512, col: 0 },
+            mv: MotionVector { row: -512, col: 0 },
             weight: 1,
         }]
     );
@@ -755,7 +751,7 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -132, col: 0 },
+        block_mv: MotionVector { row: -132, col: 0 },
     };
 
     let prediction =
@@ -780,7 +776,7 @@ fn intrabc_geometry_rejects_fractional_border_extension_above_the_tile() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -4, col: 0 },
+        block_mv: MotionVector { row: -4, col: 0 },
     };
 
     let error =
@@ -801,7 +797,7 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 2);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -64, col: 0 },
+        block_mv: MotionVector { row: -64, col: 0 },
     };
 
     let prediction =
@@ -829,7 +825,7 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: 0, col: -128 },
+        block_mv: MotionVector { row: 0, col: -128 },
     };
 
     let error =
@@ -846,7 +842,7 @@ fn intrabc_geometry_derives_overlapping_integer_copy_region() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        block_mv: MotionVector { row: 0, col: 0 },
     };
 
     let prediction =
@@ -864,7 +860,7 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -512, col: 0 },
+        block_mv: MotionVector { row: -512, col: 0 },
     };
 
     let error =
@@ -881,7 +877,7 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        block_mv: MotionVector { row: 0, col: 0 },
     };
 
     let error =
@@ -891,14 +887,14 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
     assert_state_error(&error);
 }
 
-/// A bottom-edge IntrABC block whose NOMINAL target footprint overhangs the frame
-/// bottom edge (the §6.19.7.12 `intrabc_target_bounds` frontier) is now ADMITTED
-/// with an EFFECTIVE in-frame target clamped to the visible region, modelling AVM
+/// A bottom-edge IntrABC block whose nominal target footprint overhangs the frame
+/// bottom edge (the §6.19.7.12 `intrabc_target_bounds` frontier) is admitted
+/// with an effective in-frame target clamped to the visible region, modelling AVM
 /// §5.20.3.2 `block_coded`. The frame is 10x10 (4x4 MI, 16x16 luma storage); a
 /// `BLOCK_16X64`-shaped block (`n4h == 4`, 16 luma rows nominal) at MI(row=2,col=0)
-/// has its nominal y[8,24) target clamped to the in-frame y[8,16) — an EFFECTIVE
-/// 16x8 target — and an integer DV(row=-64) gives a CONGRUENT in-frame 16x8 source
-/// at y[0,8). The block is NOT rejected `intrabc_target_bounds`; the clamp only
+/// has its nominal y[8,24) target clamped to the in-frame y[8,16) — an effective
+/// 16x8 target — and an integer DV(row=-64) gives a congruent in-frame 16x8 source
+/// at y[0,8). The block is not rejected `intrabc_target_bounds`; the clamp only
 /// shrinks (source/target stay the same congruent shape).
 #[test]
 fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
@@ -911,7 +907,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -64, col: 0 },
+        block_mv: MotionVector { row: -64, col: 0 },
     };
 
     let prediction =
@@ -924,7 +920,7 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     assert_eq!(prediction.target.size(), prediction.source.size());
 }
 
-/// A genuinely off-frame IntrABC block whose TOP-LEFT MI row is at/after the frame
+/// An off-frame IntrABC block whose TOP-LEFT MI row is at/after the frame
 /// MI-row count (no visible samples at all, not an overhang) is still rejected
 /// `intrabc_target_bounds` — the clamp admits overhangs, never an off-frame top-left.
 #[test]
@@ -938,7 +934,7 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: -64, col: 0 },
+        block_mv: MotionVector { row: -64, col: 0 },
     };
 
     let error =
@@ -956,7 +952,7 @@ fn intrabc_geometry_rejects_missing_frame_size() {
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
         morph_pred: false,
-        block_mv: IntrabcBlockVector { row: 0, col: 0 },
+        block_mv: MotionVector { row: 0, col: 0 },
     };
 
     let error =
@@ -1026,7 +1022,7 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
         info,
         IntrabcInfo {
             morph_pred: false,
-            block_mv: IntrabcBlockVector { row: -504, col: 0 },
+            block_mv: MotionVector { row: -504, col: 0 },
         }
     );
     assert_eq!(symbols.symbol_count(), 7);
@@ -1083,7 +1079,7 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
         .capture_spatial_intrabc_probes(geometry)
         .resolve(|_, _| None);
     let selected = select_intrabc_ref_mv_from_candidates(
-        &[Mv { row: 4, col: -316 }],
+        &[MotionVector { row: 4, col: -316 }],
         IntrabcStackGeometry {
             mi_row: geometry.block.row,
             mi_col: geometry.block.col,
@@ -1095,12 +1091,12 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
         },
         &spatial,
         true,
-        DrlReorderMode::Disabled,
+        DrlReorder::Disabled,
         pending.ref_selection(),
     );
     let info = resolve_pending_intrabc_info(pending, selected);
 
-    assert_eq!(info.block_mv, IntrabcBlockVector { row: 0, col: -312 });
+    assert_eq!(info.block_mv, MotionVector { row: 0, col: -312 });
     assert_eq!(symbols.symbol_count(), 5);
 }
 
@@ -1206,10 +1202,10 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
     assert_eq!(
         candidates,
         vec![
-            Mv { row: -1024, col: 0 },
-            Mv { row: 0, col: -3072 },
-            Mv { row: -128, col: 0 },
-            Mv { row: 0, col: -128 },
+            MotionVector { row: -1024, col: 0 },
+            MotionVector { row: 0, col: -3072 },
+            MotionVector { row: -128, col: 0 },
+            MotionVector { row: 0, col: -128 },
         ]
     );
 }

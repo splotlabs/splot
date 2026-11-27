@@ -83,7 +83,7 @@ jobs:
             cargo xtask check-conventional-commits "$PUSH_COMMIT_RANGE"
           fi
 
-      - run: cargo xtask ci --exclude-tests splot-encode
+      - run: cargo xtask ci --exclude-tests splot-encode --exclude-tests splot-cli
 
       # Checkout gives the sources new mtimes, so workspace crates compile again. Keep third-party artifacts only.
       - name: Remove workspace artifacts before the cache save
@@ -106,13 +106,14 @@ jobs:
   # The splot-encode tests that `ci` leaves out, in two shards that together select every test once.
   # The wavefront_search test alone runs for about 4.6 minutes, so it has its own shard.
   test-encode:
+    name: ${{ matrix.shard == 'cli' && 'test-cli' || format('test-encode ({0})', matrix.shard) }}
     runs-on: ubuntu-latest
     env:
       FILTER: "intra_frame::tests::wavefront_search::"
     strategy:
       fail-fast: false
       matrix:
-        shard: [wavefront-search, rest]
+        shard: [wavefront-search, rest, cli]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -133,6 +134,7 @@ jobs:
             ${{ runner.os }}-cargo-v3-
 
       - name: Test splot-encode
+        if: matrix.shard != 'cli'
         env:
           SHARD: ${{ matrix.shard }}
         run: |
@@ -141,6 +143,12 @@ jobs:
           else
             cargo test -p splot-encode --all-targets --locked -- --skip "$FILTER"
           fi
+
+      - name: Test splot-cli and encoder doctests
+        if: matrix.shard == 'cli'
+        run: |
+          cargo test -p splot-cli --all-targets --locked
+          cargo test -p splot-cli -p splot-encode --doc --locked
 
   decode-release:
     runs-on: ubuntu-latest
@@ -153,14 +161,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # No cargo cache: third-party crates take about 12 s of a release build.
-      - run: cargo test -p splot-decode --release --lib --locked
+      - run: cargo test -p splot-decode --profile ci-release --lib --locked
 
   ewouth-av2-samples:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        threads: [1, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -178,13 +182,12 @@ jobs:
           git -C "$TEST_DATA_DIR" checkout --detach "$revision"
 
       - name: Build splot
-        run: cargo build --release -p splot-cli --locked
+        run: cargo build --profile ci-release -p splot-cli --locked
 
       - name: Verify complete sample output against AVM hashes
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
-          THREADS: ${{ matrix.threads }}
-        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --threads "$THREADS"
+        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --splot target/ci-release/splot --parallel
 
   encoder-avm-oracle:
     runs-on: ubuntu-latest
@@ -226,7 +229,7 @@ jobs:
           cp "$AVM_BUILD/avmdec" "$HOME/avmdec"
 
       - name: Decode encoder output with AVM
-        run: SPLOT_AVM_DECODER="$HOME/avmdec" cargo test --release -p splot-encode --lib avm --locked -- --ignored
+        run: SPLOT_AVM_DECODER="$HOME/avmdec" cargo test --profile ci-release -p splot-encode --lib avm --locked -- --ignored
 
   # Advisories are informational because the database changes independently of PRs.
   supply-chain:
@@ -313,25 +316,33 @@ jobs:
       - name: Build the targets of this group
         env:
           FEATURES: ${{ matrix.features }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
+          RUSTFLAGS: -C target-cpu=x86-64-v3
         run: cargo +nightly fuzz build --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu
 
       # Every target runs, so that one crash does not hide another.
+      # Concurrent targets get 90 seconds to offset lower execution rates.
       - name: Fuzz each target of this group (per-target smoke)
         env:
           FEATURES: ${{ matrix.features }}
           TARGETS: ${{ matrix.targets }}
-          RUSTFLAGS: -C target-cpu=x86-64-v3 --cfg disable_dispatch_avx512
+          RUSTFLAGS: -C target-cpu=x86-64-v3
         run: |
-          failed=""
-          for target in $TARGETS; do
+          read -r -a fuzz_targets <<< "$TARGETS"
+          # shellcheck disable=SC2016
+          printf '%s\n' "${fuzz_targets[@]}" | xargs -r -n 1 -P 2 bash -o pipefail -c '
+            target=$1
             echo "=== fuzz $target ==="
-            cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu -- -max_total_time=60 -timeout=10 -rss_limit_mb=2048 || failed="$failed $target"
-          done
-          if [ -n "$failed" ]; then
-            echo "::error::Fuzz targets failed:$failed"
-            exit 1
-          fi
+            if ! cargo +nightly fuzz run "$target" --no-default-features --features "$FEATURES" \
+              --codegen-units 16 --disable-branch-folding=false --target x86_64-unknown-linux-gnu -- \
+              -max_total_time=90 -timeout=10 -rss_limit_mb=2048 2>&1 |
+              while IFS= read -r line || [[ -n "$line" ]]; do
+                printf "[%s] %s\n" "$target" "$line"
+              done
+            then
+              echo "::error::Fuzz target failed: $target"
+              exit 1
+            fi
+          ' _
 
       - name: Upload crash artifacts on failure
         if: failure()
@@ -390,18 +401,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-cov-v3-${{ hashFiles('rust-toolchain.toml') }}-
 
-      # The gate covers splot-validate and splot-tables; dropping splot-encode's
-      # tests does not lower it (96.32% -> 96.33% gated lines when measured).
+      - name: Measure validator and table coverage on PRs
+        if: github.event_name == 'pull_request'
+        run: cargo llvm-cov -p splot-validate -p splot-tables --all-features --locked --no-report
+
       - name: Coverage (workspace summary + lcov)
+        if: github.ref == 'refs/heads/main'
         run: |
           cargo llvm-cov --workspace --exclude splot-encode --all-features --locked --no-report
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
       # Keep the exclusion in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX in xtask.
-      - name: Gate splot-validate line coverage (>= 90%)
+      - name: Gate validator and table line coverage (>= 90%)
         run: cargo llvm-cov report --fail-under-lines 90 --ignore-filename-regex 'crates/splot-(core|parallel|recon|decode|encode|cli|capi)/|(^|/)xtask/|(^|/)fuzz/'
 
       - name: Upload lcov artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-lcov
@@ -441,11 +456,8 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
-      # The gates below reuse this release build of splot.
-      - name: Build splot
-        run: cargo build --release -p splot-cli --locked
-
-      - name: Binary size budget
+      # The gates below reuse the release CLI built by the size check.
+      - name: Build release artifacts and check binary sizes
         run: cargo xtask check-binary-size
 
       - name: Verify upstream AVM corpus hashes (dav2d test data)

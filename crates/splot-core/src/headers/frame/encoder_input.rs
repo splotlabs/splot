@@ -69,6 +69,13 @@ impl CoreSeqView {
             monotonic_output_order_flag: false,
             single_picture_header_flag: false,
             max_mlayer_id: 0,
+            mlayer_dependency_map: crate::headers::sequence::MLayerDependencyMap::default_for(
+                crate::types::EmbeddedLayerId::from_bits(0),
+            ),
+            tlayer_dependency_map: crate::headers::sequence::TLayerDependencyMap::default_for(
+                crate::types::TemporalLayerId::BASE,
+                crate::types::EmbeddedLayerId::from_bits(0),
+            ),
             frame_width_bits,
             frame_height_bits,
             max_frame_width,
@@ -610,7 +617,6 @@ pub fn encode_padding_obu(bytes: usize) -> Result<Vec<u8>, WriteError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::annexb::parse_annex_b_obus_partial;

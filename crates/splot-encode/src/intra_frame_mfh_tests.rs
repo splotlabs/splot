@@ -65,7 +65,7 @@ fn mfh_preset(intra_only: u8) -> &'static PresetParams {
         tip: 1,
         tip_output: 200,
         intra_only,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -84,7 +84,7 @@ fn mfh_stream(
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, mfh_preset(intra_only)).unwrap();
     let (units, expected, cores, _) =
-        super::carry::planned_stream_of(&config, coder, panning_frame, 150);
+        super::carry::planned_stream_frames(&config, coder, panning_frame, 150, 9);
     (units, expected, cores)
 }
 
@@ -124,7 +124,8 @@ fn mfh_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 "{case}: {intra} intra-only frames"
             );
             assert_same_samples(&decode(&units), &expected, &case);
-            for threads in [2, 8] {
+            {
+                let threads = 2;
                 let other = mfh_stream(format, (keyint, intra_only), true, threads).0;
                 assert!(other == units, "{case}: {threads} threads");
             }

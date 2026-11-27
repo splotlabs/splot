@@ -15,14 +15,13 @@
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
+use crate::lr_madd::{BaselineLr, LrBackend, LrSimdOp, TypedLr};
 #[cfg(test)]
 use crate::math::round2_i32;
 use crate::wienerns_filter::{LumaSimdSource, validated_source_sample};
-use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Level;
 use fearless_simd::{Simd, SimdIntWiden, i16x8, i16x16, i32x4, i32x8, prelude::*, u16x16};
+use splot_core::simd::SimdBackend;
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;
@@ -303,12 +302,48 @@ pub fn wiener_ns_filter_chroma_block_padded_into<O: ReconSample, T: ReconSample>
     source: &WienerNsChromaPaddedSource<'_, T>,
     scratch: &mut WienerNsChromaScratch,
 ) -> Result<()> {
+    wiener_ns_filter_chroma_padded_with_backend(BaselineLr, output, params, source, scratch)
+}
+
+/// Applies [`wiener_ns_filter_chroma_block_padded_into`] using startup-selected
+/// `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`wiener_ns_filter_chroma_block_padded_into`].
+#[inline]
+pub fn wiener_ns_filter_chroma_block_padded_into_with<
+    B: SimdBackend,
+    O: ReconSample,
+    T: ReconSample,
+>(
+    backend: B,
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &mut WienerNsChromaScratch,
+) -> Result<()> {
+    wiener_ns_filter_chroma_padded_with_backend(
+        TypedLr(backend.narrow()),
+        output,
+        params,
+        source,
+        scratch,
+    )
+}
+
+fn wiener_ns_filter_chroma_padded_with_backend<L: LrBackend, O: ReconSample, T: ReconSample>(
+    backend: L,
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &mut WienerNsChromaScratch,
+) -> Result<()> {
     validate_sample_type::<O>(params.bit_depth)?;
-    prepare_chroma_padded(output.len(), params, source, scratch)?;
+    prepare_chroma_padded(backend, output.len(), params, source, scratch)?;
     if let Some(output) = O::u8_slice_mut(output) {
-        filter_chroma_padded_output(output, params, source, scratch);
+        filter_chroma_padded_output(backend, output, params, source, scratch);
     } else if let Some(output) = O::u16_slice_mut(output) {
-        filter_chroma_padded_output(output, params, source, scratch);
+        filter_chroma_padded_output(backend, output, params, source, scratch);
     }
     Ok(())
 }
@@ -319,7 +354,8 @@ const BAND_ROWS: usize = 64;
 
 const BAND_WINDOW_ROWS: usize = BAND_ROWS + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
 
-fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
+fn filter_chroma_padded_output<L: LrBackend, O: ChromaOutputSample, T: ReconSample>(
+    backend: L,
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
@@ -345,10 +381,24 @@ fn filter_chroma_padded_output<O: ChromaOutputSample, T: ReconSample>(
         });
         if T::u16_slice(&[]).is_some() {
             let chroma = band_rows(source.chroma, first, padded_width, T::u16_slice);
-            filter_chroma_padded_simd(output, &band, &chroma[..rows], &luma[..rows], max_sample);
+            filter_chroma_padded_simd(
+                backend,
+                output,
+                &band,
+                &chroma[..rows],
+                &luma[..rows],
+                max_sample,
+            );
         } else if T::u8_slice(&[]).is_some() {
             let chroma = band_rows(source.chroma, first, padded_width, T::u8_slice);
-            filter_chroma_padded_simd(output, &band, &chroma[..rows], &luma[..rows], max_sample);
+            filter_chroma_padded_simd(
+                backend,
+                output,
+                &band,
+                &chroma[..rows],
+                &luma[..rows],
+                max_sample,
+            );
         }
     }
 }
@@ -367,7 +417,8 @@ fn band_rows<'a, T, S>(
     })
 }
 
-fn prepare_chroma_padded<T: ReconSample>(
+fn prepare_chroma_padded<L: LrBackend, T: ReconSample>(
+    backend: L,
     output_len: usize,
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
@@ -379,7 +430,7 @@ fn prepare_chroma_padded<T: ReconSample>(
     let max_sample = params.bit_depth.max_sample();
     let chroma_shape = padded_window_shape(params.width, params.height, 0, 0)?;
     validate_padded_window(source.chroma, chroma_shape)?;
-    validate_padded_samples(source.chroma, chroma_shape, max_sample)?;
+    validate_padded_samples(backend, source.chroma, chroma_shape, max_sample)?;
     if !reads_luma {
         scratch.luma_ds.clear();
         return Ok(context);
@@ -391,7 +442,7 @@ fn prepare_chroma_padded<T: ReconSample>(
         params.subsampling_y,
     )?;
     validate_padded_window(source.luma, luma_shape)?;
-    validate_padded_samples(source.luma, luma_shape, max_sample)?;
+    validate_padded_samples(backend, source.luma, luma_shape, max_sample)?;
 
     let ds_width = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
     let ds_height = params.height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
@@ -410,6 +461,7 @@ fn prepare_chroma_padded<T: ReconSample>(
         })?;
     scratch.luma_ds.resize(ds_len, 0);
     downsample_luma(
+        backend,
         &mut scratch.luma_ds,
         ds_width,
         (source.luma, luma_shape.0),
@@ -420,7 +472,8 @@ fn prepare_chroma_padded<T: ReconSample>(
     Ok(context)
 }
 
-fn validate_padded_samples<T: ReconSample>(
+fn validate_padded_samples<L: LrBackend, T: ReconSample>(
+    backend: L,
     rows: PaddedRows<'_, T>,
     (width, height): (usize, usize),
     max_sample: u16,
@@ -433,7 +486,7 @@ fn validate_padded_samples<T: ReconSample>(
                 actual: 0,
             })?;
         if let Some(values) = T::u16_slice(values)
-            && u16_samples_exceed(values, max_sample)
+            && backend.u16_samples_exceed(values, max_sample)
             && let Some((col, &value)) = values
                 .iter()
                 .enumerate()
@@ -454,7 +507,8 @@ fn validate_padded_samples<T: ReconSample>(
 /// `get_luma_sample`: coordinates scale by the per-axis subsampling, and the
 /// 2x2 `Wiener_Filters_420` kernel applies only when both axes subsample and
 /// `filterIdx <= 1`; every other format reads the scaled sample directly.
-fn downsample_luma<T: ReconSample>(
+fn downsample_luma<L: LrBackend, T: ReconSample>(
+    backend: L,
     output: &mut [u16],
     output_stride: usize,
     (source, source_width): (PaddedRows<'_, T>, usize),
@@ -518,6 +572,7 @@ fn downsample_luma<T: ReconSample>(
         && luma_last_y <= context.luma_last_y
     {
         return downsample_luma_unclipped(
+            backend,
             output,
             output_stride,
             (source, source_width),
@@ -561,7 +616,7 @@ fn downsample_luma<T: ReconSample>(
             let output = &mut output[middle.clone()];
             match (filter_420, top_row.get(span.clone()), bottom_row.get(span)) {
                 (Some(filter_index), Some(top), Some(bottom))
-                    if downsample_luma_420_row(output, top, bottom, filter_index) =>
+                    if downsample_luma_420_row(backend, output, top, bottom, filter_index) =>
                 {
                     skip = middle;
                 }
@@ -627,7 +682,8 @@ fn downsample_luma<T: ReconSample>(
     Ok(())
 }
 
-fn downsample_luma_unclipped<T: ReconSample>(
+fn downsample_luma_unclipped<L: LrBackend, T: ReconSample>(
+    backend: L,
     output: &mut [u16],
     output_stride: usize,
     (source, source_width): (PaddedRows<'_, T>, usize),
@@ -649,7 +705,7 @@ fn downsample_luma_unclipped<T: ReconSample>(
                 PICK_420 => top,
                 _ => row(2 * r + 1)?,
             };
-            downsample_luma_420_row(output, top, bottom, filter_index);
+            downsample_luma_420_row(backend, output, top, bottom, filter_index);
             continue;
         }
         for (col, slot) in output.iter_mut().enumerate() {
@@ -662,32 +718,53 @@ fn downsample_luma_unclipped<T: ReconSample>(
 /// One 4:2:0 output row from luma rows `top` and `bottom` that start at its
 /// first sample's luma column and reach `2 * output.len()` samples, or `false`
 /// when the storage has no lane load.
-fn downsample_luma_420_row<T: ReconSample>(
+fn downsample_luma_420_row<L: LrBackend, T: ReconSample>(
+    backend: L,
     output: &mut [u16],
     top: &[T],
     bottom: &[T],
     filter_index: usize,
 ) -> bool {
     if let (Some(top), Some(bottom)) = (T::u16_slice(top), T::u16_slice(bottom)) {
-        downsample_420_lanes(output, top, bottom, filter_index);
+        downsample_420_lanes(backend, output, top, bottom, filter_index);
         return true;
     }
     if let (Some(top), Some(bottom)) = (T::u8_slice(top), T::u8_slice(bottom)) {
-        downsample_420_lanes(output, top, bottom, filter_index);
+        downsample_420_lanes(backend, output, top, bottom, filter_index);
         return true;
     }
     false
 }
 
+struct Downsample420Op<'a, T> {
+    output: &'a mut [u16],
+    top: &'a [T],
+    bottom: &'a [T],
+    filter_index: usize,
+}
+
+impl<T: LumaSimdSource> LrSimdOp<usize> for Downsample420Op<'_, T> {
+    #[inline]
+    fn run<S: Simd>(self, simd: S) -> usize {
+        downsample_420_simd(simd, self.output, self.top, self.bottom, self.filter_index)
+    }
+}
+
 /// Sixteen outputs per step: the two luma rows add lane-wise, then even and
 /// odd columns add pairwise (or the even column doubles for `filterIdx` 1).
-fn downsample_420_lanes<S: ReconSample + LumaSimdSource>(
+fn downsample_420_lanes<L: LrBackend, S: ReconSample + LumaSimdSource>(
+    backend: L,
     output: &mut [u16],
     top: &[S],
     bottom: &[S],
     filter_index: usize,
 ) {
-    let col = crate::lr_madd::lr_simd!(simd => downsample_420_simd(simd, output, top, bottom, filter_index));
+    let col = backend.run(Downsample420Op {
+        output,
+        top,
+        bottom,
+        filter_index,
+    });
     for (x, slot) in output
         .iter_mut()
         .enumerate()
@@ -831,32 +908,46 @@ fn padded_tap<'a, S>(
         .get(c + radius.wrapping_add_signed(dx)..)
 }
 
-/// Filters every output row in 16-lane groups, finishing each row's last
-/// few samples with the scalar kernel.
-#[allow(clippy::too_many_arguments)]
-fn filter_chroma_padded_simd<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
-    output: &mut [O],
-    params: &WienerNsChromaFilter<'_>,
-    chroma: &[&[T]],
-    luma_ds: &[&[u16]],
+struct FilterChromaOp<'a, O, T> {
+    output: &'a mut [O],
+    params: &'a WienerNsChromaFilter<'a>,
+    chroma: &'a [&'a [T]],
+    luma_ds: &'a [&'a [u16]],
     max_sample: u16,
-) {
-    crate::lr_madd::lr_simd!(simd => filter_chroma_rows(simd, output, params, chroma, luma_ds, max_sample));
 }
 
-#[allow(clippy::too_many_arguments)]
-#[inline]
-fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
-    simd: S,
+impl<O: ChromaOutputSample, T: ReconSample + LumaSimdSource> LrSimdOp<()>
+    for FilterChromaOp<'_, O, T>
+{
+    #[inline]
+    fn run<S: Simd>(self, simd: S) {
+        filter_chroma_rows(
+            simd,
+            self.output,
+            self.params,
+            self.chroma,
+            self.luma_ds,
+            self.max_sample,
+        );
+    }
+}
+
+/// Filters every output row in 16-lane groups, finishing each row's last
+/// few samples with the scalar kernel.
+fn filter_chroma_padded_simd<
+    L: LrBackend,
+    O: ChromaOutputSample,
+    T: ReconSample + LumaSimdSource,
+>(
+    backend: L,
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[&[T]],
     luma_ds: &[&[u16]],
     max_sample: u16,
 ) {
-    let reads_luma = params.reads_luma();
     #[cfg(target_arch = "x86_64")]
-    let narrow_done = match Level::baseline().as_avx2() {
+    let narrow_done = match backend.avx2_token() {
         Some(token) if (8..16).contains(&params.width) => {
             let luma = luma_ds;
             let vectors = &avx2::pair_vectors(token, params.coeffs);
@@ -875,11 +966,32 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
     if narrow_done {
         return;
     }
-    if params.width < 16 {
-        filter_chroma_lanes8(simd, output, params, chroma, luma_ds, max_sample);
+    if params.width >= 16
+        && filter_chroma_block(backend, output, params, chroma, luma_ds, max_sample)
+    {
         return;
     }
-    if filter_chroma_block(output, params, chroma, luma_ds, max_sample) {
+    backend.run(FilterChromaOp {
+        output,
+        params,
+        chroma,
+        luma_ds,
+        max_sample,
+    });
+}
+
+#[inline]
+fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
+    simd: S,
+    output: &mut [O],
+    params: &WienerNsChromaFilter<'_>,
+    chroma: &[&[T]],
+    luma_ds: &[&[u16]],
+    max_sample: u16,
+) {
+    let reads_luma = params.reads_luma();
+    if params.width < 16 {
+        filter_chroma_lanes8(simd, output, params, chroma, luma_ds, max_sample);
         return;
     }
     for r in 0..params.height {
@@ -959,7 +1071,8 @@ fn filter_chroma_rows<S: Simd, O: ChromaOutputSample, T: ReconSample + LumaSimdS
 /// architecture's block kernel, where it has one; returns `false`, the rows
 /// left to the group kernel, otherwise.
 #[inline]
-fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
+fn filter_chroma_block<L: LrBackend, O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
+    backend: L,
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     chroma: &[&[T]],
@@ -967,7 +1080,7 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
     max_sample: u16,
 ) -> bool {
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(t) = backend.neon_token() {
         let size = (params.width, params.height);
         let weights = (params.coeffs, params.reads_luma());
         if let (Some(chroma), Some(output)) = (T::u16_table(chroma), O::u16_samples_mut(output)) {
@@ -980,7 +1093,7 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
         }
     }
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = Level::baseline().as_avx2() {
+    if let Some(t) = backend.avx2_token() {
         let size = (params.width, params.height);
         let pairs = (&avx2::pair_vectors(t, params.coeffs), params.reads_luma());
         let target = (output, params.output_stride);
@@ -994,7 +1107,7 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
         }
         return false;
     }
-    let _ = (output, params, chroma, luma, max_sample);
+    let _ = (backend, output, params, chroma, luma, max_sample);
     false
 }
 
@@ -1002,7 +1115,6 @@ fn filter_chroma_block<O: ChromaOutputSample, T: ReconSample + LumaSimdSource>(
 /// vector, the last 8 columns overlapping the first when the width is not 8.
 /// Returns `false`, having written nothing, when a window is short.
 #[cfg(target_arch = "x86_64")]
-#[allow(clippy::too_many_arguments)]
 fn filter_chroma_narrow<O: ChromaOutputSample, S: avx2::Sample>(
     token: fearless_simd::Avx2,
     output: &mut [O],
@@ -1354,7 +1466,7 @@ impl LumaDsCache {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn filter_chroma_sample<T, C, L>(
     params: &WienerNsChromaFilter<'_>,
     context: &ChromaFilterContext,
@@ -1542,7 +1654,6 @@ fn scale_coord(value: isize, shift: u8, context: &'static str) -> Result<isize> 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 #[path = "wienerns_chroma_filter_tests.rs"]
 mod tests;
 
@@ -1741,7 +1852,6 @@ mod neon {
         Some(group)
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn rows<const LUMA: bool>(
@@ -1897,7 +2007,6 @@ mod neon {
 
     /// [`rows`] over `u8` chroma: each tap one 16-byte load widened to two
     /// `i16` vectors, each group narrowed to bytes.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn byte_rows<const LUMA: bool>(

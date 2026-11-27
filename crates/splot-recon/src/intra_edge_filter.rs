@@ -9,6 +9,7 @@ use fearless_simd::{Bytes, Simd, SimdBase, SimdMask, u16x16, u32x8};
 
 use crate::intra_dc_math::IntraLaneSample;
 use crate::{ReconError, ReconSample, Result};
+use splot_core::simd::SimdBackend;
 
 /// Number of §7.13.2.18 intra edge filter kernel rows (`INTRA_EDGE_KERNELS`).
 const INTRA_EDGE_KERNELS: usize = 3;
@@ -21,6 +22,83 @@ const INTRA_EDGE_TAPS: usize = 5;
 /// `strength - 1` (strength `1..=3`).
 pub(crate) const INTRA_EDGE_KERNEL: [[i32; INTRA_EDGE_TAPS]; INTRA_EDGE_KERNELS] =
     [[0, 4, 8, 4, 0], [0, 5, 6, 5, 0], [2, 4, 4, 4, 2]];
+
+#[derive(Clone, Copy)]
+struct BaselineEdgeFilter;
+
+#[derive(Clone, Copy)]
+struct TypedEdgeFilter<B: SimdBackend>(B);
+
+trait EdgeFilterRunner: Copy {
+    fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]);
+    fn filter_u16(self, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]);
+}
+
+impl EdgeFilterRunner for BaselineEdgeFilter {
+    #[inline]
+    fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]) {
+        baseline_simd!(simd => filter_rolling::<_, _, false>(simd, samples, kernel));
+    }
+
+    #[inline]
+    fn filter_u16(self, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]) {
+        baseline_simd!(simd => filter_u16_edge_simd(simd, samples, kernel));
+    }
+}
+
+impl<B: SimdBackend> EdgeFilterRunner for TypedEdgeFilter<B> {
+    #[inline]
+    fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]) {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => filter_rolling::<_, _, false>(simd, samples, kernel));
+    }
+
+    #[inline]
+    fn filter_u16(self, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]) {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => filter_u16_edge_simd(simd, samples, kernel));
+    }
+}
+
+#[inline]
+fn filter_u16_edge_simd<S: Simd>(simd: S, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]) {
+    if fits_narrow_sum(simd, samples) {
+        filter_rolling::<_, _, false>(simd, samples, kernel);
+    } else {
+        filter_rolling::<_, _, true>(simd, samples, kernel);
+    }
+}
+
+fn apply_intra_edge_filter_with_runner<R: EdgeFilterRunner, T: ReconSample>(
+    runner: R,
+    edge: &mut [T],
+    sz: usize,
+    strength: u8,
+) -> Result<()> {
+    if strength == 0 || sz == 0 {
+        return Ok(());
+    }
+    if sz > edge.len() {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra edge filter size exceeds edge length",
+        });
+    }
+    let Some(kernel) = INTRA_EDGE_KERNEL.get(usize::from(strength - 1)) else {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "intra edge filter strength out of range",
+        });
+    };
+    if sz < 2 {
+        return Ok(());
+    }
+    let edge = &mut edge[..sz];
+    if let Some(samples) = T::u8_slice_mut(edge) {
+        runner.filter_u8(samples, kernel);
+    } else if let Some(samples) = T::u16_slice_mut(edge) {
+        runner.filter_u16(samples, kernel);
+    }
+    Ok(())
+}
 
 /// AV2 §7.13.2.18 Intra edge filter process. Filters the first `sz` samples of
 /// `edge` in place with the given `strength` (`0..=3`). `strength == 0` is a
@@ -45,35 +123,20 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
     sz: usize,
     strength: u8,
 ) -> Result<()> {
-    if strength == 0 || sz == 0 {
-        return Ok(());
-    }
-    if sz > edge.len() {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "intra edge filter size exceeds edge length",
-        });
-    }
-    let Some(kernel) = INTRA_EDGE_KERNEL.get(usize::from(strength - 1)) else {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "intra edge filter strength out of range",
-        });
-    };
-    if sz < 2 {
-        return Ok(());
-    }
-    let edge = &mut edge[..sz];
-    if let Some(samples) = T::u8_slice_mut(edge) {
-        baseline_simd!(simd => filter_rolling::<_, _, false>(simd, samples, kernel));
-    } else if let Some(samples) = T::u16_slice_mut(edge) {
-        baseline_simd!(simd => {
-            if fits_narrow_sum(simd, samples) {
-                filter_rolling::<_, _, false>(simd, samples, kernel);
-            } else {
-                filter_rolling::<_, _, true>(simd, samples, kernel);
-            }
-        });
-    }
-    Ok(())
+    apply_intra_edge_filter_with_runner(BaselineEdgeFilter, edge, sz, strength)
+}
+
+/// Typed [`apply_intra_edge_filter`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`apply_intra_edge_filter`].
+pub fn apply_intra_edge_filter_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    edge: &mut [T],
+    sz: usize,
+    strength: u8,
+) -> Result<()> {
+    apply_intra_edge_filter_with_runner(TypedEdgeFilter(backend), edge, sz, strength)
 }
 
 #[inline]
@@ -171,7 +234,7 @@ fn filter_rolling<S: Simd, P: IntraLaneSample, const WIDE: bool>(
 
 /// AV2 §7.13.2.14 Filter corner process. Returns the three-tap top-left corner
 /// value `Round2(LeftCol[0] * 5 + AboveRow[-1] * 6 + AboveRow[0] * 5, 4)`,
-/// written by the caller into BOTH `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
+/// written by the caller into both `AboveRow[-1]` and `LeftCol[-1]`. Transcribed
 /// VERBATIM from the committed spec mirror
 /// (`filter_intra_edge_corner_high`, `~/Devel/avm/av2/common/reconintra.c:1020-1028`):
 /// `s = left0 * 5 + above_neg1 * 6 + above0 * 5; out = (s + 8) >> 4`.
@@ -179,4 +242,52 @@ fn filter_rolling<S: Simd, P: IntraLaneSample, const WIDE: bool>(
 pub fn filter_intra_edge_corner(left0: u16, above_neg1: u16, above0: u16) -> u16 {
     let s = i32::from(left0) * 5 + i32::from(above_neg1) * 6 + i32::from(above0) * 5;
     ((s + 8) >> 4) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_backend_matches_compatibility_route() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for strength in 0..=3u8 {
+                    for sz in [1usize, 5, 17, 37] {
+                        let base8: Vec<u8> = (0..sz).map(|i| ((i * 29 + 7) % 256) as u8).collect();
+                        let (mut compat8, mut typed8) =
+                            (Vec::from(base8.as_slice()), Vec::from(base8.as_slice()));
+                        apply_intra_edge_filter(&mut compat8, sz, strength).unwrap();
+                        apply_intra_edge_filter_with(backend, &mut typed8, sz, strength).unwrap();
+                        assert_eq!(typed8, compat8);
+
+                        let narrow10: Vec<u16> =
+                            (0..sz).map(|i| (i as u16 * 61 + 11) % 1024).collect();
+                        let (mut compat10, mut typed10) = (
+                            Vec::from(narrow10.as_slice()),
+                            Vec::from(narrow10.as_slice()),
+                        );
+                        apply_intra_edge_filter(&mut compat10, sz, strength).unwrap();
+                        apply_intra_edge_filter_with(backend, &mut typed10, sz, strength).unwrap();
+                        assert_eq!(typed10, compat10);
+
+                        let wide10: Vec<u16> =
+                            (0..sz).map(|i| (i as u16 * 509 + 4090) % 8192).collect();
+                        let (mut wcompat, mut wtyped) =
+                            (Vec::from(wide10.as_slice()), Vec::from(wide10.as_slice()));
+                        apply_intra_edge_filter(&mut wcompat, sz, strength).unwrap();
+                        apply_intra_edge_filter_with(backend, &mut wtyped, sz, strength).unwrap();
+                        assert_eq!(wtyped, wcompat);
+                    }
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
+    }
 }

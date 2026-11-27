@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::error::{Error, TileParamsErrorKind};
-use splot_core::headers::atlas_segment::parse_atlas_segment;
+use splot_core::headers::atlas_segment::parse_scoped_atlas_segment;
 use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
     ContentInterpretation, parse_content_interpretation,
@@ -18,12 +18,14 @@ use splot_core::headers::film_grain::{
     FilmGrainObu, FilmGrainScalingPoint, MAX_FILM_GRAIN, parse_film_grain,
 };
 use splot_core::headers::frame::{
-    CCSO_BAND_NUM, CcsoParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameHeaderPrefix, FrameReferenceStateView, FrameType, SetupQmParams,
-    TileInfo, TipFrameMode, get_relative_dist, parse_frame_header_core, parse_frame_header_prefix,
+    CCSO_BAND_NUM, CcsoParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus,
+    FrameHeaderPrefix, FrameReferenceStateView, FrameType, InterControl, RESTRICTED_ORDER_HINT,
+    SetupQmParams, TileInfo, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
-    LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
+    LayerConfigurationRecord, LcrAggregateInfo, LcrFormatInfo, LcrRepInfo,
+    parse_layer_config_record,
 };
 use splot_core::headers::metadata::{
     MetadataPayload, MetadataScanType, MetadataTimecode, MetadataUnit, parse_metadata_group,
@@ -36,8 +38,8 @@ use splot_core::headers::quantizer_matrix::{
     NUM_CUSTOM_QMS, QuantizerMatrixObu, parse_quantizer_matrix,
 };
 use splot_core::headers::sequence::{
-    MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, MLayerPresenceMap, SequenceHeader,
-    SequenceHeaderGeneral, SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo,
+    CroppingWindow, MAX_NUM_MLAYERS, MAX_SEQ_NUM, MLayerDependencyMap, MLayerPresenceMap,
+    SequenceHeader, SequenceHeaderGeneral, SequenceHeaderId, TLayerDependencyMap, Tier, TimingInfo,
     parse_sequence_header,
 };
 use splot_core::headers::tile_group::{
@@ -58,8 +60,7 @@ use splot_core::types::{
 
 use crate::annex_a::{
     InteroperabilityPoint, MIN_FRAME_DIMENSION, config_idc_allows_profile, interoperability_point,
-    is_defined_config_idc, is_reserved_level, is_reserved_profile, level_limits,
-    profile_allows_chroma,
+    is_defined_config_idc, is_reserved_level, level_limits,
 };
 use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
@@ -70,11 +71,14 @@ use crate::reference_state::{
     SlotState, is_key_or_switch, slot_facts,
 };
 
+mod annex_a_frame_limits;
 mod annex_a_iop;
 mod annex_a_value_space;
 mod cmvs;
 mod content_interpretation;
 mod cvs;
+mod external_hls;
+pub(crate) use external_hls::parse_external_hls;
 mod film_grain;
 mod frame_facts;
 mod frame_header_checks;
@@ -82,6 +86,7 @@ mod frame_header_copy;
 mod frame_header_diagnostics;
 mod frame_headers;
 mod hls;
+pub(crate) mod layer_metadata;
 mod lcr;
 mod lcr_agreement;
 mod lcr_sequence_agreement;
@@ -101,6 +106,7 @@ mod tests;
 mod tile_groups;
 mod timecode;
 
+use self::annex_a_frame_limits::FrameAllocations;
 use self::annex_a_iop::*;
 use self::annex_a_value_space::*;
 use self::cmvs::*;
@@ -113,7 +119,7 @@ use self::frame_header_copy::*;
 use self::frame_header_diagnostics::*;
 use self::hls::*;
 use self::lcr::*;
-use self::lcr_agreement::*;
+use self::lcr_agreement::ActiveGlobalLcrReference;
 use self::metadata::*;
 use self::msdo::*;
 use self::ops::*;
@@ -130,7 +136,6 @@ use self::timecode::*;
 /// Stateful validator data derived from parseable high-level syntax OBUs.
 #[derive(Debug, Default)]
 pub(crate) struct ValidatorContext {
-    sequence_headers: BTreeMap<SequenceHeaderId, SequenceHeader>,
     active_sequence_by_xlayer: BTreeMap<ExtendedLayerId, SequenceHeaderId>,
     /// Payload fingerprints for activated sequence headers, keyed by
     /// `(obu_xlayer_id, seq_header_id)`, used to detect non-bit-identical repeats
@@ -150,12 +155,6 @@ pub(crate) struct ValidatorContext {
     /// (AV2 § 6.10.1, § 7.3.8.5). Kept separate from [`HlsAvailabilityStore`] because
     /// OPS state, unlike the other HLS records, is explicitly resettable.
     ops: OpsAvailabilityStore,
-    /// Quantizer-matrix `qm_bit_map` reset/level state (§ 6.12) plus per-level
-    /// availability for frame-reference checks (§ 7.3.8).
-    qm: QuantizerMatrixState,
-    /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
-    /// for frame-reference checks (§ 7.3.8).
-    film_grain: FilmGrainState,
     /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
     /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record
     /// carries its unit's bitstream-derived embedded-layer association (see
@@ -179,7 +178,7 @@ pub(crate) struct ValidatorContext {
     /// The temporal unit in which [`ValidatorContext::repair_post_rap_ci_pairings`]
     /// last ran for each extended layer, so the § 7.3.8.11 RAP re-pair is idempotent
     /// within one temporal unit: a malformed temporal unit carrying two CLK/OLK random
-    /// access points for the SAME extended layer would otherwise run the re-pair twice
+    /// access points for the same extended layer would otherwise run the re-pair twice
     /// against the same post-epoch CI snapshot and duplicate every repaired diagnostic.
     /// The second CLK/OLK's `observe_ci_rap` keeps the epoch at this temporal unit and
     /// drops nothing new, so the guard short-circuits the redundant re-pair.
@@ -234,6 +233,10 @@ pub(crate) struct ValidatorContext {
     /// later activation (a post-header redefinition is not the associated
     /// record).
     lcr_associations: BTreeMap<(ExtendedLayerId, SequenceHeaderId), LcrAssociation>,
+    global_lcr_group_start: Option<u64>,
+    active_global_lcr_references: [Option<ActiveGlobalLcrReference>; 32],
+    global_lcr_keys_in_tu: u32,
+    global_lcr_group_mismatches: u32,
     /// Stateful § 5.6 MSDO observer (AV2 § 5.6 / § 7.3.2); see [`MsdoObserver`]. Feeds
     /// the [`CmvsTracker`] the § 7.3.2 condition-2 "differs from the previous OBU_MSDO"
     /// signal and holds no diagnostics of its own.
@@ -308,10 +311,6 @@ pub(crate) struct ValidatorContext {
         u64,
         AnnexAValueSpaceFingerprint,
     )>,
-    /// Byte offset of the OBU carrying each stored sequence header, keyed by
-    /// `seq_header_id`, so the Annex A value-space diagnostics — emitted at activation
-    /// time, which may be a frame OBU — anchor at the defining sequence-header OBU.
-    sequence_header_offsets: BTreeMap<SequenceHeaderId, ByteOffset>,
     /// The most recently observed OBU_MSDO's `sub_xlayer_id[i] → (max_profile,
     /// max_level, max_tier)` mapping plus the MSDO's byte offset, recorded for the
     /// § 6.6 sub-stream PTL-ceiling agreement checks
@@ -322,11 +321,12 @@ pub(crate) struct ValidatorContext {
     /// descoped Table A.4 IOP-presence machinery (`msdo-global-lcr-agreement`) will
     /// reuse.
     msdo_substream_max: Option<MsdoSubstreamMax>,
+    frame_allocations: FrameAllocations,
     /// Every OBU_MSDO observed, accumulated for the § 6.8.2 MSDO↔global-LCR *agreement*
     /// (mirror lines 1646-1648: the constraints hold "when both an OBU_MSDO and an activated
     /// global LCR ... are present in the same coded multistream video sequence"). The live
     /// `msdo_substream_max` is last-wins (correct for the § 6.6 ceiling check — the live MSDO
-    /// is the active operation), but the agreement must hold for EVERY MSDO present in the
+    /// is the active operation), but the agreement must hold for every MSDO present in the
     /// CMVS: a per-MSDO last-wins overwrite would let an earlier non-conforming MSDO escape
     /// when a later conforming one replaced it before the deferred resolution. § 7.3.8.2's identity rule bounds this — a non-RAP MSDO must be identical
     /// to its predecessor, so distinct MSDOs only appear at RAPs — but distinct MSDOs CAN
@@ -440,9 +440,9 @@ pub(crate) struct ValidatorContext {
     /// Per extended layer, the § 7.3.6 "content interpretation present in any CELU shall also
     /// be present in the first CELU of the sequence" PRESENCE state (mirror lines 560-562,
     /// `07-decoding-process.md#s-7-3-6`). For each extended layer it records the embedded
-    /// layers whose CI was observed in the FIRST coded extended layer unit of the current
+    /// layers whose CI was observed in the first coded extended layer unit of the current
     /// coded video sequence (the CELU in the CVS's first temporal unit, § 7.3.6) and dedups
-    /// the diagnostic per embedded layer. A CI in a LATER CELU of the same CVS for an embedded
+    /// the diagnostic per embedded layer. A CI in a later CELU of the same CVS for an embedded
     /// layer the first CELU lacked fires `celu/content-interpretation-not-in-first-celu`. Reset
     /// per coded video sequence in [`Self::start_cvs_for_xlayer`]. The contents-identity half
     /// of the same sentence is owned by `content-interpretation/repeated-ci-not-identical`
@@ -461,7 +461,7 @@ pub(crate) struct ValidatorContext {
     /// [`ReferenceStateTracker`]). Updated at each completed frame's coded-frame
     /// boundary from the parsed `refresh_frame_flags` / `OrderHint` / dimensions
     /// (`ReferenceStateView::pending_ref_update` derives the grounded update kind), with
-    /// honest all-slot poisoning whenever the refresh mask is unparsed and a grounded
+    /// all-slot poisoning whenever the refresh mask is unparsed and a grounded
     /// CLK reset at a new coded video sequence. The state is threaded into the
     /// frame-header parse input ([`FrameReferenceStateView`]) and gates the
     /// show-existing-frame slot-validity diagnostic (§ 6.17.2). Validator-derived: the
@@ -469,7 +469,7 @@ pub(crate) struct ValidatorContext {
     /// consults external HLS.
     reference_state: ReferenceStateTracker,
     /// The just-completed frame's pending § 7.23 update, deferred until the frame's
-    /// coded-frame UNIT closes. § 7.23 runs at `decode_frame_wrapup` AFTER the frame is
+    /// coded-frame unit closes. § 7.23 runs at `decode_frame_wrapup` after the frame is
     /// decoded, so the update must land before any *later* frame's reference checks read
     /// the buffer but after the current frame's own reference checks. The pending update
     /// (and its OBU header) is committed when the segmenter reports the next frame
@@ -493,7 +493,9 @@ impl ValidatorContext {
         self.temporal_unit.observe_obu(obu, report);
 
         if obu.header.obu_type == ObuType::TemporalDelimiter {
-            self.qm.clear_qm_protected_at_temporal_delimiter();
+            for state in self.hls.layers.iter_mut().flatten() {
+                state.qm.clear_qm_protected_at_temporal_delimiter();
+            }
         }
 
         self.annex_a_iop.note_xlayer(obu.header.extended_layer_id);
@@ -538,7 +540,7 @@ impl ValidatorContext {
         }
 
         if is_frame_bearing(obu.header.obu_type) {
-            self.reset_coded_frame_window();
+            self.reset_coded_frame_window(obu.header.extended_layer_id);
         }
         let role = self.seg_role_for(obu, first_picture_in_tu);
         let boundary = self.frame_unit.observe(obu, role, report);
@@ -589,9 +591,10 @@ impl ValidatorContext {
         self.resolve_deferred_doh_constraint(options, report);
         self.resolve_deferred_lcr_msdo_agreement(options, report);
         self.resolve_deferred_cmvs_boundary(options, report);
+        self.resolve_global_lcr_group_agreement(self.cvs.tu_index, options, report);
         self.commit_annex_a_iop_pending(self.cvs.tu_index, options, report);
         self.flush_annex_a_iop_window(options, report);
-        self.msdo_identity.complete_temporal_unit(report);
+        self.complete_msdo_temporal_unit(report);
         self.complete_rap_replay_tu(self.cvs.tu_index, options, report);
         let scope_keys: Vec<ExtendedLayerId> = self.scan_type.scopes.keys().copied().collect();
         for scope_key in scope_keys {

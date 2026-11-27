@@ -9,6 +9,8 @@
 use super::super::resolve::{WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax};
 use super::super::warp::warp_delta_scale;
 use super::*;
+use crate::encoder_syntax::WarpOptions;
+use splot_recon::CurrentFrameSurface;
 
 /// `WARP_DELTA_NUM_SYMBOLS_HIGH` (§ 3).
 const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
@@ -42,23 +44,12 @@ pub(crate) struct EncoderWarpMotion {
     pub(crate) ref_warp_idx: usize,
     /// The difference: every `WARP_NEWMV` codes one, a `WARPMV` with
     /// `warpmv_with_mvd`.
-    pub(crate) mvd: Option<Mv>,
+    pub(crate) mvd: Option<MotionVector>,
     /// The explicit block `MvPrecision` of a `WARP_NEWMV`.
     pub(crate) precision: Option<u8>,
     /// The inter-intra prediction of a `WARPMV` that codes
     /// `warp_inter_intra = 1` (§ 5.20.7.15).
     pub(crate) interintra: Option<InterIntraPrediction>,
-}
-
-/// The warp tools a leaf can code, see [`EncoderInterTile::warp_options`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct EncoderWarpOptions {
-    /// `WARP_NEWMV`: `force_integer_mv` frames code `WARPMV` only.
-    pub(crate) newmv: bool,
-    pub(crate) local: bool,
-    pub(crate) extend: bool,
-    /// `enable_six_param_warp_delta`: `RefWarpIdx` 1 codes four deltas.
-    pub(crate) six_param: bool,
 }
 
 impl EncoderWarpSource {
@@ -96,7 +87,7 @@ impl EncoderInterTile {
         &self,
         frontier: &DecodeBlockFrontier,
         ref_frame: i8,
-    ) -> Result<Option<EncoderWarpOptions>> {
+    ) -> Result<Option<WarpOptions>> {
         if !self.reads_is_warp(frontier)? {
             return Ok(None);
         }
@@ -109,7 +100,7 @@ impl EncoderInterTile {
             .and_then(|inter| inter.frame_enabled_motion_modes)
             .unwrap_or_default();
         let newmv = !effective_force_integer_mv(&self.core);
-        Ok(Some(EncoderWarpOptions {
+        Ok(Some(WarpOptions {
             newmv,
             local: newmv && found && modes[splot_core::headers::frame::LOCALWARP],
             extend: newmv && found && modes[splot_core::headers::frame::EXTENDWARP],
@@ -306,7 +297,7 @@ impl EncoderInterTile {
             }
             (EncoderWarpSource::Candidate, _) if reads_interintra => {
                 let b_size = frontier.b_size.index();
-                let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+                let bsize_group = usize::from(SIZE_GROUP_LOOKUP[b_size]);
                 out.push((
                     TileCdfSelector::WarpInterIntra { bsize_group },
                     u8::from(warp.interintra.is_some()),
@@ -334,8 +325,9 @@ const fn delta_limit(high_precision: bool) -> u8 {
 impl EncoderInterTile {
     /// Predicts the luma of `warp` at `frontier` into `workspace`, as the
     /// decoder predicts its luma (§ 7.11.3, § 7.13.3.14).
-    pub(crate) fn predict_warp_luma(
+    pub(crate) fn predict_warp_luma<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         frontier: &DecodeBlockFrontier,
         warp: EncoderWarpMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -353,7 +345,8 @@ impl EncoderInterTile {
             parsed,
         )?;
         prediction::reconstruct_pure_inter_block(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            backend,
+            &mut CurrentFrameSurface::Frame(workspace),
             &placed,
             &[],
             &[],

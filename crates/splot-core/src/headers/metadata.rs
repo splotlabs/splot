@@ -19,6 +19,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, MetadataErrorKind, Result};
+use crate::syntax::{NoopObserver, SyntaxDescriptor, SyntaxObserver, SyntaxReader, SyntaxValue};
 use crate::types::ExtendedLayerId;
 
 /// `muh_layer_idc` value `LAYER_VALUES` (AV2 § 6.16.3): the metadata applies to an
@@ -407,17 +408,17 @@ pub struct MetadataGroupObu {
 
 /// Reads a `leb128()` value and the number of bytes it occupied (`Leb128Bytes`).
 ///
-/// `leb128()` only appears at byte-aligned positions in AV2 syntax, so the byte-offset
-/// delta is exactly the number of bytes consumed (`1..=8`).
-fn read_leb128_bytes(reader: &mut BitReader<'_>) -> Result<(u32, u8)> {
-    let before = reader.byte_offset().get();
-    let value = reader.read_leb128()?;
-    let after = reader.byte_offset().get();
+fn read_leb128_bytes<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    name: &'static str,
+) -> Result<(u32, u8)> {
+    let before = sr.byte_offset().get();
+    let value = sr.read_leb128(name)?;
+    let after = sr.byte_offset().get();
     let bytes = after.saturating_sub(before) as u8;
     Ok((value, bytes))
 }
 
-/// Builds an `Error::InvalidMetadata` located at `reader` with the given `kind`.
 fn metadata_error(reader: &BitReader<'_>, kind: MetadataErrorKind) -> Error {
     Error::InvalidMetadata {
         offset: reader.byte_offset(),
@@ -428,112 +429,149 @@ fn metadata_error(reader: &BitReader<'_>, kind: MetadataErrorKind) -> Error {
 
 /// Parses `metadata_short_obu(obuPayloadSize)` (AV2 v1.0.0 § 5.17.2).
 ///
-/// `reader` reads from the OBU payload and `obu_payload_size` is `obuPayloadSize` (the
-/// payload length). On `muh_cancel_flag` the parser returns after `metadata_type`,
-/// leaving the reader positioned for the OBU `trailing_bits()`. Otherwise it parses the
-/// bounded `metadata_unit(metadataPayloadSize)` and leaves the reader positioned for the
-/// trailing bits.
-///
 /// # Errors
-/// Returns [`Error::InvalidMetadata`] with [`MetadataErrorKind::UnitPayloadUnderflow`]
-/// when `obuPayloadSize - 2 - Leb128Bytes` underflows or the metadata unit child syntax
-/// overruns its declared size, or a descriptor / [`Error::UnexpectedEof`] error for
-/// truncated input.
+/// Returns [`Error::InvalidMetadata`], descriptor errors, or [`Error::UnexpectedEof`].
 pub fn parse_metadata_short(
     reader: &mut BitReader<'_>,
     obu_payload_size: usize,
 ) -> Result<MetadataShortObu> {
-    let first = reader.read_bits_u8(8)?;
-    let metadata_is_suffix = (first & 0x80) != 0;
-    let muh_layer_idc = (first >> 4) & 0x07;
-    let muh_cancel_flag = (first & 0x08) != 0;
-    let muh_persistence_idc = first & 0x07;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_metadata_short_with_reader(&mut sr, obu_payload_size)
+}
 
-    let (metadata_type_value, metadata_type_leb128_bytes) = read_leb128_bytes(reader)?;
-    let metadata_type = MetadataType::from_value(metadata_type_value);
+/// Parses `metadata_short_obu(obuPayloadSize)` (AV2 v1.0.0 § 5.17.2) while
+/// reporting syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidMetadata`], descriptor errors, or [`Error::UnexpectedEof`].
+pub fn parse_metadata_short_observed(
+    reader: &mut BitReader<'_>,
+    obu_payload_size: usize,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<MetadataShortObu> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_metadata_short_with_reader(&mut sr, obu_payload_size)
+}
 
-    let unit = if muh_cancel_flag {
-        None
-    } else {
-        let metadata_payload_size = obu_payload_size
-            .checked_sub(2)
-            .and_then(|value| value.checked_sub(usize::from(metadata_type_leb128_bytes)))
-            .ok_or_else(|| metadata_error(reader, MetadataErrorKind::UnitPayloadUnderflow))?;
-        let mut unit_reader = reader.take_bytes(metadata_payload_size)?;
-        Some(parse_metadata_unit(
-            &mut unit_reader,
-            metadata_payload_size,
+pub(crate) fn parse_metadata_short_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    obu_payload_size: usize,
+) -> Result<MetadataShortObu> {
+    sr.in_struct("metadata_short_obu", Some("5.17.2"), |sr| {
+        let metadata_is_suffix = sr.read_flag("metadata_is_suffix")?;
+        let muh_layer_idc = sr.read_bits_u8("muh_layer_idc", 3)?;
+        let muh_cancel_flag = sr.read_flag("muh_cancel_flag")?;
+        let muh_persistence_idc = sr.read_bits_u8("muh_persistence_idc", 3)?;
+
+        let (metadata_type_value, metadata_type_leb128_bytes) =
+            read_leb128_bytes(sr, "metadata_type")?;
+        let metadata_type = MetadataType::from_value(metadata_type_value);
+
+        let unit = if muh_cancel_flag {
+            None
+        } else {
+            let Some(metadata_payload_size) = obu_payload_size
+                .checked_sub(2)
+                .and_then(|value| value.checked_sub(usize::from(metadata_type_leb128_bytes)))
+            else {
+                let err = metadata_error(sr.reader(), MetadataErrorKind::UnitPayloadUnderflow);
+                return sr.fail(sr.rel_bit(), None, err);
+            };
+            let origin = sr.origin_abs_bit();
+            let mut unit_reader = sr.take_bytes_sub(metadata_payload_size, "metadata_unit")?;
+            let mut sub = SyntaxReader::with_origin(&mut unit_reader, origin, sr.observer_mut());
+            Some(parse_metadata_unit(
+                &mut sub,
+                metadata_payload_size,
+                metadata_type,
+            )?)
+        };
+
+        Ok(MetadataShortObu {
+            metadata_is_suffix,
+            muh_layer_idc,
+            muh_cancel_flag,
+            muh_persistence_idc,
             metadata_type,
-        )?)
-    };
-
-    Ok(MetadataShortObu {
-        metadata_is_suffix,
-        muh_layer_idc,
-        muh_cancel_flag,
-        muh_persistence_idc,
-        metadata_type,
-        metadata_type_leb128_bytes,
-        unit,
+            metadata_type_leb128_bytes,
+            unit,
+        })
     })
 }
 
 /// Parses `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3).
 ///
-/// `obu_xlayer_id` comes from the OBU header and selects the layer-map branch
-/// (`muh_xlayer_map` is present only for a global OBU). The parser bounds each
-/// `metadata_unit(muh_payload_size)` and leaves the reader positioned for the OBU
-/// `trailing_bits()`. The `obu_mlayer_id` bound on `muh_mlayer_map` is a § 6.16.3
-/// conformance check handled by the validator, which reads the parsed
-/// [`MetadataGroupUnit::muh_mlayer_maps`].
-///
 /// # Errors
-/// Returns [`Error::InvalidMetadata`] with [`MetadataErrorKind::GroupUnitCountTooLarge`]
-/// for `metadata_unit_cnt_minus_1 >= 16383`, [`MetadataErrorKind::GroupHeaderUnderflow`]
-/// for a negative `headerRemainingBytes`, [`MetadataErrorKind::UnitPayloadUnderflow`] for
-/// an overrun metadata unit, or a descriptor / [`Error::UnexpectedEof`] error for
-/// truncated input.
+/// Returns [`Error::InvalidMetadata`], descriptor errors, or [`Error::UnexpectedEof`].
 pub fn parse_metadata_group(
     reader: &mut BitReader<'_>,
     obu_xlayer_id: ExtendedLayerId,
 ) -> Result<MetadataGroupObu> {
-    let first = reader.read_bits_u8(8)?;
-    let metadata_is_suffix = (first & 0x80) != 0;
-    let metadata_necessity_idc = (first >> 5) & 0x03;
-    let metadata_application_id = first & 0x1F;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_metadata_group_with_reader(&mut sr, obu_xlayer_id)
+}
 
-    let (metadata_unit_cnt_minus_1, _) = read_leb128_bytes(reader)?;
-    if metadata_unit_cnt_minus_1 >= 16383 {
-        return Err(metadata_error(
-            reader,
-            MetadataErrorKind::GroupUnitCountTooLarge,
-        ));
-    }
+/// Parses `metadata_group_obu()` (AV2 v1.0.0 § 5.17.3) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidMetadata`], descriptor errors, or [`Error::UnexpectedEof`].
+pub fn parse_metadata_group_observed(
+    reader: &mut BitReader<'_>,
+    obu_xlayer_id: ExtendedLayerId,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<MetadataGroupObu> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_metadata_group_with_reader(&mut sr, obu_xlayer_id)
+}
 
-    let unit_count = metadata_unit_cnt_minus_1 + 1;
-    let mut units = Vec::new();
-    for _ in 0..unit_count {
-        units.push(parse_metadata_group_unit(reader, obu_xlayer_id)?);
-    }
+pub(crate) fn parse_metadata_group_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    obu_xlayer_id: ExtendedLayerId,
+) -> Result<MetadataGroupObu> {
+    sr.in_struct("metadata_group_obu", Some("5.17.3"), |sr| {
+        let metadata_is_suffix = sr.read_flag("metadata_is_suffix")?;
+        let metadata_necessity_idc = sr.read_bits_u8("metadata_necessity_idc", 2)?;
+        let metadata_application_id = sr.read_bits_u8("metadata_application_id", 5)?;
 
-    Ok(MetadataGroupObu {
-        metadata_is_suffix,
-        metadata_necessity_idc,
-        metadata_application_id,
-        units,
+        let count_start = sr.rel_bit();
+        let (metadata_unit_cnt_minus_1, _) = read_leb128_bytes(sr, "metadata_unit_cnt_minus_1")?;
+        if metadata_unit_cnt_minus_1 >= 16383 {
+            let err = metadata_error(sr.reader(), MetadataErrorKind::GroupUnitCountTooLarge);
+            return sr.fail(count_start, Some("metadata_unit_cnt_minus_1"), err);
+        }
+
+        let unit_count = metadata_unit_cnt_minus_1 + 1;
+        let mut units = Vec::new();
+        for i in 0..unit_count {
+            let unit = sr.in_loop_item("unit", i as usize, |sr| {
+                parse_metadata_group_unit(sr, obu_xlayer_id)
+            })?;
+            units.push(unit);
+        }
+
+        Ok(MetadataGroupObu {
+            metadata_is_suffix,
+            metadata_necessity_idc,
+            metadata_application_id,
+            units,
+        })
     })
 }
 
-fn parse_metadata_group_unit(
-    reader: &mut BitReader<'_>,
+fn parse_metadata_group_unit<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     obu_xlayer_id: ExtendedLayerId,
 ) -> Result<MetadataGroupUnit> {
-    let (metadata_type_value, _) = read_leb128_bytes(reader)?;
+    let (metadata_type_value, _) = read_leb128_bytes(sr, "metadata_type")?;
     let metadata_type = MetadataType::from_value(metadata_type_value);
 
-    let header_byte = reader.read_bits_u8(8)?;
-    let muh_header_size = header_byte >> 1;
-    let muh_cancel_flag = (header_byte & 0x01) != 0;
+    let muh_header_size = sr.read_bits_u8("muh_header_size", 7)?;
+    let muh_cancel_flag = sr.read_flag("muh_cancel_flag")?;
 
     let mut header_remaining = i32::from(muh_header_size);
     let mut muh_payload_size = None;
@@ -545,56 +583,55 @@ fn parse_metadata_group_unit(
     let mut muh_mlayer_maps = Vec::new();
 
     if !muh_cancel_flag {
-        let (payload_size, payload_size_bytes) = read_leb128_bytes(reader)?;
+        let (payload_size, payload_size_bytes) = read_leb128_bytes(sr, "muh_payload_size")?;
         muh_payload_size = Some(payload_size);
         header_remaining -= i32::from(payload_size_bytes);
 
-        let layer_idc = reader.read_bits_u8(3)?;
-        muh_persistence_idc = Some(reader.read_bits_u8(3)?);
-        muh_priority = Some(reader.read_bits_u8(8)?);
-        muh_reserved_zero_2bits = Some(reader.read_bits_u8(2)?);
+        let layer_idc = sr.read_bits_u8("muh_layer_idc", 3)?;
+        muh_persistence_idc = Some(sr.read_bits_u8("muh_persistence_idc", 3)?);
+        muh_priority = Some(sr.read_bits_u8("muh_priority", 8)?);
+        muh_reserved_zero_2bits = Some(sr.read_bits_u8("muh_reserved_zero_2bits", 2)?);
         muh_layer_idc = Some(layer_idc);
         header_remaining -= 2;
 
         if layer_idc == LAYER_VALUES {
             if obu_xlayer_id.is_global() {
-                let xlayer_map = reader.read_bits(32)?;
+                let xlayer_map = sr.read_bits("muh_xlayer_map", 32)?;
                 muh_xlayer_map = Some(xlayer_map);
                 header_remaining -= 4;
                 for n in 0..31u32 {
                     if xlayer_map & (1 << n) != 0 {
-                        muh_mlayer_maps.push(reader.read_bits_u8(8)?);
+                        let m = sr.in_loop_item("xlayer", n as usize, |sr| {
+                            sr.read_bits_u8("muh_mlayer_map", 8)
+                        })?;
+                        muh_mlayer_maps.push(m);
                         header_remaining -= 1;
                     }
                 }
             } else {
-                muh_mlayer_maps.push(reader.read_bits_u8(8)?);
+                muh_mlayer_maps.push(sr.read_bits_u8("muh_mlayer_map", 8)?);
                 header_remaining -= 1;
             }
         }
     }
 
     if header_remaining < 0 {
-        return Err(metadata_error(
-            reader,
-            MetadataErrorKind::GroupHeaderUnderflow,
-        ));
+        let err = metadata_error(sr.reader(), MetadataErrorKind::GroupHeaderUnderflow);
+        return sr.fail(sr.rel_bit(), Some("muh_header_size"), err);
     }
 
     let header_extension_len = header_remaining as usize;
-    for _ in 0..header_extension_len {
-        reader.read_bits_u8(8)?;
+    if header_extension_len > 0 {
+        let _ = sr.read_raw_bytes("muh_header_extension_byte", header_extension_len)?;
     }
 
     let unit = match muh_payload_size {
         Some(payload_size) => {
             let payload_size = payload_size as usize;
-            let mut unit_reader = reader.take_bytes(payload_size)?;
-            Some(parse_metadata_unit(
-                &mut unit_reader,
-                payload_size,
-                metadata_type,
-            )?)
+            let origin = sr.origin_abs_bit();
+            let mut unit_reader = sr.take_bytes_sub(payload_size, "metadata_unit")?;
+            let mut sub = SyntaxReader::with_origin(&mut unit_reader, origin, sr.observer_mut());
+            Some(parse_metadata_unit(&mut sub, payload_size, metadata_type)?)
         }
         None => None,
     };
@@ -615,257 +652,358 @@ fn parse_metadata_group_unit(
     })
 }
 
-/// Parses `metadata_unit(metadataPayloadSize)` (AV2 v1.0.0 § 5.17.1) from a sub-reader
-/// already bounded to exactly `payload_size` bytes.
-fn parse_metadata_unit(
-    reader: &mut BitReader<'_>,
+fn parse_metadata_unit<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     payload_size: usize,
     metadata_type: MetadataType,
 ) -> Result<MetadataUnit> {
-    let payload = match parse_metadata_payload(reader, payload_size, metadata_type) {
-        Ok(payload) => payload,
-        Err(Error::UnexpectedEof { offset, .. }) => {
-            return Err(Error::InvalidMetadata {
-                offset,
-                bit_offset: crate::span::BitOffset::from_bits(0),
-                kind: MetadataErrorKind::UnitPayloadUnderflow,
-            });
-        }
-        Err(other) => return Err(other),
-    };
-    Ok(MetadataUnit {
-        metadata_type,
-        payload_size,
-        payload,
+    sr.in_struct("metadata_unit", Some("5.17.1"), |sr| {
+        let payload = match parse_metadata_payload(sr, payload_size, metadata_type) {
+            Ok(payload) => payload,
+            Err(Error::UnexpectedEof { offset, .. }) => {
+                return Err(Error::InvalidMetadata {
+                    offset,
+                    bit_offset: crate::span::BitOffset::from_bits(0),
+                    kind: MetadataErrorKind::UnitPayloadUnderflow,
+                });
+            }
+            Err(other) => return Err(other),
+        };
+        Ok(MetadataUnit {
+            metadata_type,
+            payload_size,
+            payload,
+        })
     })
 }
 
-fn parse_metadata_payload(
-    reader: &mut BitReader<'_>,
+fn parse_metadata_payload<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     payload_size: usize,
     metadata_type: MetadataType,
 ) -> Result<MetadataPayload> {
     Ok(match metadata_type {
-        MetadataType::ItutT35 => MetadataPayload::ItutT35(parse_itut_t35(reader, payload_size)?),
-        MetadataType::HdrCll => MetadataPayload::HdrCll(parse_hdr_cll(reader)?),
-        MetadataType::HdrMdcv => MetadataPayload::HdrMdcv(parse_hdr_mdcv(reader)?),
-        MetadataType::Timecode => MetadataPayload::Timecode(parse_timecode(reader)?),
-        MetadataType::BandingHints => MetadataPayload::BandingHints(parse_banding_hints(reader)?),
-        MetadataType::IccProfile => MetadataPayload::IccProfile(MetadataIccProfile {
-            payload_len: payload_size,
-        }),
-        MetadataType::ScanType => MetadataPayload::ScanType(parse_scan_type(reader)?),
+        MetadataType::ItutT35 => MetadataPayload::ItutT35(parse_itut_t35(sr, payload_size)?),
+        MetadataType::HdrCll => MetadataPayload::HdrCll(parse_hdr_cll(sr)?),
+        MetadataType::HdrMdcv => MetadataPayload::HdrMdcv(parse_hdr_mdcv(sr)?),
+        MetadataType::Timecode => MetadataPayload::Timecode(parse_timecode(sr)?),
+        MetadataType::BandingHints => MetadataPayload::BandingHints(parse_banding_hints(sr)?),
+        MetadataType::IccProfile => {
+            if payload_size > 0 {
+                let start = sr.rel_bit();
+                sr.observer_mut()
+                    .on_field_read(crate::syntax::SyntaxFieldRead {
+                        name: "icc_profile_byte",
+                        descriptor: SyntaxDescriptor::Bytes(payload_size),
+                        value: SyntaxValue::Bytes { len: payload_size },
+                        span: crate::span::BitSpan::new(
+                            start,
+                            (payload_size as u64).saturating_mul(8),
+                        ),
+                    });
+            }
+            MetadataPayload::IccProfile(MetadataIccProfile {
+                payload_len: payload_size,
+            })
+        }
+        MetadataType::ScanType => MetadataPayload::ScanType(parse_scan_type(sr)?),
         MetadataType::TemporalPointInfo => {
             MetadataPayload::TemporalPointInfo(MetadataTemporalPointInfo {
-                frame_presentation_time: reader.read_leb128()?,
+                frame_presentation_time: sr.read_leb128("frame_presentation_time")?,
             })
         }
         MetadataType::DecodedFrameHash => {
-            MetadataPayload::DecodedFrameHash(parse_decoded_frame_hash(reader)?)
+            MetadataPayload::DecodedFrameHash(parse_decoded_frame_hash(sr)?)
         }
-        MetadataType::UserDataUnregistered => MetadataPayload::UserDataUnregistered(
-            parse_user_data_unregistered(reader, payload_size)?,
-        ),
-        MetadataType::Reserved(_) => MetadataPayload::UnknownRaw(MetadataUnknownRaw {
-            raw_len: payload_size,
-        }),
+        MetadataType::UserDataUnregistered => {
+            MetadataPayload::UserDataUnregistered(parse_user_data_unregistered(sr, payload_size)?)
+        }
+        MetadataType::Reserved(_) => {
+            if payload_size > 0 {
+                let start = sr.rel_bit();
+                sr.observer_mut()
+                    .on_field_read(crate::syntax::SyntaxFieldRead {
+                        name: "metadata_unknown_payload",
+                        descriptor: SyntaxDescriptor::Bytes(payload_size),
+                        value: SyntaxValue::Bytes { len: payload_size },
+                        span: crate::span::BitSpan::new(
+                            start,
+                            (payload_size as u64).saturating_mul(8),
+                        ),
+                    });
+            }
+            MetadataPayload::UnknownRaw(MetadataUnknownRaw {
+                raw_len: payload_size,
+            })
+        }
     })
 }
 
-fn parse_hdr_cll(reader: &mut BitReader<'_>) -> Result<MetadataHdrCll> {
-    Ok(MetadataHdrCll {
-        max_cll: reader.read_bits(16)? as u16,
-        max_fall: reader.read_bits(16)? as u16,
+fn parse_hdr_cll<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<MetadataHdrCll> {
+    sr.in_struct("metadata_hdr_cll", Some("5.17.1"), |sr| {
+        Ok(MetadataHdrCll {
+            max_cll: sr.read_bits("max_cll", 16)? as u16,
+            max_fall: sr.read_bits("max_fall", 16)? as u16,
+        })
     })
 }
 
-fn parse_hdr_mdcv(reader: &mut BitReader<'_>) -> Result<MetadataHdrMdcv> {
-    let mut primary_chromaticity_x = [0u16; 3];
-    let mut primary_chromaticity_y = [0u16; 3];
-    for i in 0..3 {
-        primary_chromaticity_x[i] = reader.read_bits(16)? as u16;
-        primary_chromaticity_y[i] = reader.read_bits(16)? as u16;
-    }
-    Ok(MetadataHdrMdcv {
-        primary_chromaticity_x,
-        primary_chromaticity_y,
-        white_point_chromaticity_x: reader.read_bits(16)? as u16,
-        white_point_chromaticity_y: reader.read_bits(16)? as u16,
-        luminance_max: reader.read_bits(32)?,
-        luminance_min: reader.read_bits(32)?,
+fn parse_hdr_mdcv<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<MetadataHdrMdcv> {
+    sr.in_struct("metadata_hdr_mdcv", Some("5.17.1"), |sr| {
+        let mut primary_chromaticity_x = [0u16; 3];
+        let mut primary_chromaticity_y = [0u16; 3];
+        for i in 0..3 {
+            sr.in_loop_item("i", i, |sr| {
+                primary_chromaticity_x[i] = sr.read_bits("primary_chromaticity_x", 16)? as u16;
+                primary_chromaticity_y[i] = sr.read_bits("primary_chromaticity_y", 16)? as u16;
+                Ok(())
+            })?;
+        }
+        Ok(MetadataHdrMdcv {
+            primary_chromaticity_x,
+            primary_chromaticity_y,
+            white_point_chromaticity_x: sr.read_bits("white_point_chromaticity_x", 16)? as u16,
+            white_point_chromaticity_y: sr.read_bits("white_point_chromaticity_y", 16)? as u16,
+            luminance_max: sr.read_bits("luminance_max", 32)?,
+            luminance_min: sr.read_bits("luminance_min", 32)?,
+        })
     })
 }
 
-fn parse_itut_t35(reader: &mut BitReader<'_>, payload_size: usize) -> Result<MetadataItutT35> {
-    let itu_t_t35_country_code = reader.read_bits_u8(8)?;
-    let mut consumed = 1usize;
-    let itu_t_t35_country_code_extension_byte = if itu_t_t35_country_code == 0xFF {
-        let byte = reader.read_bits_u8(8)?;
-        consumed += 1;
-        Some(byte)
-    } else {
-        None
-    };
-    let payload_len = payload_size.saturating_sub(consumed);
-    Ok(MetadataItutT35 {
-        itu_t_t35_country_code,
-        itu_t_t35_country_code_extension_byte,
-        payload_len,
+fn parse_itut_t35<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    payload_size: usize,
+) -> Result<MetadataItutT35> {
+    sr.in_struct("metadata_itut_t35", Some("5.17.1"), |sr| {
+        let itu_t_t35_country_code = sr.read_bits_u8("itu_t_t35_country_code", 8)?;
+        let mut consumed = 1usize;
+        let itu_t_t35_country_code_extension_byte = if itu_t_t35_country_code == 0xFF {
+            let byte = sr.read_bits_u8("itu_t_t35_country_code_extension_byte", 8)?;
+            consumed += 1;
+            Some(byte)
+        } else {
+            sr.absent(
+                "itu_t_t35_country_code_extension_byte",
+                "itu_t_t35_country_code != 0xFF",
+            );
+            None
+        };
+        let payload_len = payload_size.saturating_sub(consumed);
+        if payload_len > 0 {
+            let start = sr.rel_bit();
+            sr.observer_mut()
+                .on_field_read(crate::syntax::SyntaxFieldRead {
+                    name: "itu_t_t35_payload_bytes",
+                    descriptor: SyntaxDescriptor::Bytes(payload_len),
+                    value: SyntaxValue::Bytes { len: payload_len },
+                    span: crate::span::BitSpan::new(start, (payload_len as u64).saturating_mul(8)),
+                });
+        }
+        Ok(MetadataItutT35 {
+            itu_t_t35_country_code,
+            itu_t_t35_country_code_extension_byte,
+            payload_len,
+        })
     })
 }
 
-fn parse_timecode(reader: &mut BitReader<'_>) -> Result<MetadataTimecode> {
-    let counting_type = reader.read_bits_u8(5)?;
-    let full_timestamp_flag = reader.read_flag()?;
-    let discontinuity_flag = reader.read_flag()?;
-    let cnt_dropped_flag = reader.read_flag()?;
-    let n_frames = reader.read_bits(9)? as u16;
+fn parse_timecode<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<MetadataTimecode> {
+    sr.in_struct("metadata_timecode", Some("5.17.1"), |sr| {
+        let counting_type = sr.read_bits_u8("counting_type", 5)?;
+        let full_timestamp_flag = sr.read_flag("full_timestamp_flag")?;
+        let discontinuity_flag = sr.read_flag("discontinuity_flag")?;
+        let cnt_dropped_flag = sr.read_flag("cnt_dropped_flag")?;
+        let n_frames = sr.read_bits("n_frames", 9)? as u16;
 
-    let mut seconds_value = None;
-    let mut minutes_value = None;
-    let mut hours_value = None;
-    if full_timestamp_flag {
-        seconds_value = Some(reader.read_bits_u8(6)?);
-        minutes_value = Some(reader.read_bits_u8(6)?);
-        hours_value = Some(reader.read_bits_u8(5)?);
-    } else {
-        let seconds_flag = reader.read_flag()?;
-        if seconds_flag {
-            seconds_value = Some(reader.read_bits_u8(6)?);
-            let minutes_flag = reader.read_flag()?;
-            if minutes_flag {
-                minutes_value = Some(reader.read_bits_u8(6)?);
-                let hours_flag = reader.read_flag()?;
-                if hours_flag {
-                    hours_value = Some(reader.read_bits_u8(5)?);
+        let mut seconds_value = None;
+        let mut minutes_value = None;
+        let mut hours_value = None;
+        if full_timestamp_flag {
+            seconds_value = Some(sr.read_bits_u8("seconds_value", 6)?);
+            minutes_value = Some(sr.read_bits_u8("minutes_value", 6)?);
+            hours_value = Some(sr.read_bits_u8("hours_value", 5)?);
+        } else {
+            let seconds_flag = sr.read_flag("seconds_flag")?;
+            if seconds_flag {
+                seconds_value = Some(sr.read_bits_u8("seconds_value", 6)?);
+                let minutes_flag = sr.read_flag("minutes_flag")?;
+                if minutes_flag {
+                    minutes_value = Some(sr.read_bits_u8("minutes_value", 6)?);
+                    let hours_flag = sr.read_flag("hours_flag")?;
+                    if hours_flag {
+                        hours_value = Some(sr.read_bits_u8("hours_value", 5)?);
+                    }
                 }
             }
         }
-    }
 
-    let time_offset_length = reader.read_bits_u8(5)?;
-    let time_offset_value = if time_offset_length > 0 {
-        Some(reader.read_bits(u32::from(time_offset_length))?)
-    } else {
-        None
-    };
+        let time_offset_length = sr.read_bits_u8("time_offset_length", 5)?;
+        let time_offset_value = if time_offset_length > 0 {
+            Some(sr.read_bits("time_offset_value", u32::from(time_offset_length))?)
+        } else {
+            sr.absent("time_offset_value", "time_offset_length == 0");
+            None
+        };
 
-    Ok(MetadataTimecode {
-        counting_type,
-        full_timestamp_flag,
-        discontinuity_flag,
-        cnt_dropped_flag,
-        n_frames,
-        seconds_value,
-        minutes_value,
-        hours_value,
-        time_offset_length,
-        time_offset_value,
+        Ok(MetadataTimecode {
+            counting_type,
+            full_timestamp_flag,
+            discontinuity_flag,
+            cnt_dropped_flag,
+            n_frames,
+            seconds_value,
+            minutes_value,
+            hours_value,
+            time_offset_length,
+            time_offset_value,
+        })
     })
 }
 
-fn parse_scan_type(reader: &mut BitReader<'_>) -> Result<MetadataScanType> {
-    Ok(MetadataScanType {
-        mps_pic_struct_type: reader.read_bits_u8(5)?,
-        mps_source_scan_type_idc: reader.read_bits_u8(2)?,
-        mps_duplicate_flag: reader.read_flag()?,
+fn parse_scan_type<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<MetadataScanType> {
+    sr.in_struct("metadata_scan_type", Some("5.17.1"), |sr| {
+        Ok(MetadataScanType {
+            mps_pic_struct_type: sr.read_bits_u8("mps_pic_struct_type", 5)?,
+            mps_source_scan_type_idc: sr.read_bits_u8("mps_source_scan_type_idc", 2)?,
+            mps_duplicate_flag: sr.read_flag("mps_duplicate_flag")?,
+        })
     })
 }
 
-fn parse_decoded_frame_hash(reader: &mut BitReader<'_>) -> Result<MetadataDecodedFrameHash> {
-    let hash_type = reader.read_bits_u8(4)?;
-    let per_plane = reader.read_flag()?;
-    let has_grain = reader.read_flag()?;
-    let is_monochrome = reader.read_flag()?;
-    let reserved = reader.read_bits_u8(1)?;
+fn parse_decoded_frame_hash<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<MetadataDecodedFrameHash> {
+    sr.in_struct("metadata_decoded_frame_hash", Some("5.17.1"), |sr| {
+        let hash_type = sr.read_bits_u8("hash_type", 4)?;
+        let per_plane = sr.read_flag("per_plane")?;
+        let has_grain = sr.read_flag("has_grain")?;
+        let is_monochrome = sr.read_flag("is_monochrome")?;
+        let reserved = sr.read_bits_u8("reserved_zero_1bit", 1)?;
 
-    let mut plane_hashes = Vec::new();
-    let mut frame_hash = None;
-    if per_plane {
-        let num_planes = if is_monochrome { 1 } else { 3 };
-        for _ in 0..num_planes {
-            plane_hashes.push(read_hash16(reader)?);
+        let mut plane_hashes = Vec::new();
+        let mut frame_hash = None;
+        if per_plane {
+            let num_planes = if is_monochrome { 1 } else { 3 };
+            for plane in 0..num_planes {
+                let hash = sr.in_loop_item("plane", plane, |sr| read_hash16(sr, "plane_hash"))?;
+                plane_hashes.push(hash);
+            }
+        } else {
+            frame_hash = Some(read_hash16(sr, "frame_hash")?);
         }
-    } else {
-        frame_hash = Some(read_hash16(reader)?);
-    }
 
-    Ok(MetadataDecodedFrameHash {
-        hash_type,
-        per_plane,
-        has_grain,
-        is_monochrome,
-        reserved,
-        plane_hashes,
-        frame_hash,
+        Ok(MetadataDecodedFrameHash {
+            hash_type,
+            per_plane,
+            has_grain,
+            is_monochrome,
+            reserved,
+            plane_hashes,
+            frame_hash,
+        })
     })
 }
 
-/// Reads a 16-byte hash value (`le(16)`), preserving the bytes in bitstream order.
-fn read_hash16(reader: &mut BitReader<'_>) -> Result<[u8; 16]> {
+fn read_hash16<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    name: &'static str,
+) -> Result<[u8; 16]> {
+    let bytes = sr.read_raw_bytes(name, 16)?;
     let mut hash = [0u8; 16];
-    for byte in &mut hash {
-        *byte = reader.read_bits_u8(8)?;
-    }
+    hash.copy_from_slice(&bytes);
     Ok(hash)
 }
 
-fn parse_user_data_unregistered(
-    reader: &mut BitReader<'_>,
+fn parse_user_data_unregistered<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     payload_size: usize,
 ) -> Result<MetadataUserDataUnregistered> {
-    let mut uuid_iso_iec_11578 = [0u8; 16];
-    for byte in &mut uuid_iso_iec_11578 {
-        *byte = reader.read_bits_u8(8)?;
-    }
-    let payload_len = payload_size.saturating_sub(16);
-    Ok(MetadataUserDataUnregistered {
-        uuid_iso_iec_11578,
-        payload_len,
+    sr.in_struct("metadata_user_data_unregistered", Some("5.17.1"), |sr| {
+        let uuid_iso_iec_11578 = read_hash16(sr, "uuid_iso_iec_11578")?;
+        let payload_len = payload_size.saturating_sub(16);
+        if payload_len > 0 {
+            let start = sr.rel_bit();
+            sr.observer_mut()
+                .on_field_read(crate::syntax::SyntaxFieldRead {
+                    name: "user_data_payload_byte",
+                    descriptor: SyntaxDescriptor::Bytes(payload_len),
+                    value: SyntaxValue::Bytes { len: payload_len },
+                    span: crate::span::BitSpan::new(start, (payload_len as u64).saturating_mul(8)),
+                });
+        }
+        Ok(MetadataUserDataUnregistered {
+            uuid_iso_iec_11578,
+            payload_len,
+        })
     })
 }
 
-fn parse_banding_hints(reader: &mut BitReader<'_>) -> Result<MetadataBandingHints> {
-    let coding_banding_present_flag = reader.read_flag()?;
-    let source_banding_present_flag = reader.read_flag()?;
-    let hints = if coding_banding_present_flag {
-        let banding_hints_flag = reader.read_flag()?;
-        if banding_hints_flag {
-            Some(parse_banding_hints_detail(reader)?)
+fn parse_banding_hints<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<MetadataBandingHints> {
+    sr.in_struct("metadata_banding_hints", Some("5.17.1"), |sr| {
+        let coding_banding_present_flag = sr.read_flag("coding_banding_present_flag")?;
+        let source_banding_present_flag = sr.read_flag("source_banding_present_flag")?;
+        let hints = if coding_banding_present_flag {
+            let banding_hints_flag = sr.read_flag("banding_hints_flag")?;
+            if banding_hints_flag {
+                Some(parse_banding_hints_detail(sr)?)
+            } else {
+                None
+            }
         } else {
             None
-        }
-    } else {
-        None
-    };
-    Ok(MetadataBandingHints {
-        coding_banding_present_flag,
-        source_banding_present_flag,
-        hints,
+        };
+        Ok(MetadataBandingHints {
+            coding_banding_present_flag,
+            source_banding_present_flag,
+            hints,
+        })
     })
 }
 
-fn parse_banding_hints_detail(reader: &mut BitReader<'_>) -> Result<BandingHintsDetail> {
-    let three_color_components_flag = reader.read_flag()?;
+fn parse_banding_hints_detail<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<BandingHintsDetail> {
+    let three_color_components_flag = sr.read_flag("three_color_components_flag")?;
     let num_components = if three_color_components_flag { 3 } else { 1 };
     let mut components = Vec::with_capacity(num_components);
-    for _ in 0..num_components {
-        let banding_in_component_present_flag = reader.read_flag()?;
-        let (max_band_width_minus_4, max_band_step_minus_1) = if banding_in_component_present_flag {
-            (Some(reader.read_bits_u8(6)?), Some(reader.read_bits_u8(4)?))
-        } else {
-            (None, None)
-        };
-        components.push(BandingComponent {
-            banding_in_component_present_flag,
-            max_band_width_minus_4,
-            max_band_step_minus_1,
-        });
+    for c in 0..num_components {
+        let comp = sr.in_loop_item("component", c, |sr| {
+            let banding_in_component_present_flag =
+                sr.read_flag("banding_in_component_present_flag")?;
+            let (max_band_width_minus_4, max_band_step_minus_1) =
+                if banding_in_component_present_flag {
+                    (
+                        Some(sr.read_bits_u8("max_band_width_minus_4", 6)?),
+                        Some(sr.read_bits_u8("max_band_step_minus_1", 4)?),
+                    )
+                } else {
+                    sr.absent(
+                        "max_band_width_minus_4",
+                        "!banding_in_component_present_flag",
+                    );
+                    sr.absent(
+                        "max_band_step_minus_1",
+                        "!banding_in_component_present_flag",
+                    );
+                    (None, None)
+                };
+            Ok(BandingComponent {
+                banding_in_component_present_flag,
+                max_band_width_minus_4,
+                max_band_step_minus_1,
+            })
+        })?;
+        components.push(comp);
     }
 
-    let band_units_information_present_flag = reader.read_flag()?;
+    let band_units_information_present_flag =
+        sr.read_flag("band_units_information_present_flag")?;
     let band_units = if band_units_information_present_flag {
-        Some(parse_band_units(reader)?)
+        Some(parse_band_units(sr)?)
     } else {
         None
     };
@@ -877,20 +1015,26 @@ fn parse_banding_hints_detail(reader: &mut BitReader<'_>) -> Result<BandingHints
     })
 }
 
-fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
-    let num_band_units_rows_minus_1 = reader.read_bits_u8(5)?;
-    let num_band_units_cols_minus_1 = reader.read_bits_u8(5)?;
-    let varying_size_band_units_flag = reader.read_flag()?;
+fn parse_band_units<O: SyntaxObserver>(sr: &mut SyntaxReader<'_, '_, O>) -> Result<BandUnits> {
+    let num_band_units_rows_minus_1 = sr.read_bits_u8("num_band_units_rows_minus_1", 5)?;
+    let num_band_units_cols_minus_1 = sr.read_bits_u8("num_band_units_cols_minus_1", 5)?;
+    let varying_size_band_units_flag = sr.read_flag("varying_size_band_units_flag")?;
 
     let varying_size = if varying_size_band_units_flag {
-        let band_block_in_luma_samples = reader.read_bits_u8(3)?;
+        let band_block_in_luma_samples = sr.read_bits_u8("band_block_in_luma_samples", 3)?;
         let mut vert_size_in_band_blocks_minus_1 = Vec::new();
-        for _ in 0..=num_band_units_rows_minus_1 {
-            vert_size_in_band_blocks_minus_1.push(reader.read_bits_u8(5)?);
+        for r in 0..=num_band_units_rows_minus_1 {
+            let v = sr.in_loop_item("row", usize::from(r), |sr| {
+                sr.read_bits_u8("vert_size_in_band_blocks_minus_1", 5)
+            })?;
+            vert_size_in_band_blocks_minus_1.push(v);
         }
         let mut horz_size_in_band_blocks_minus_1 = Vec::new();
-        for _ in 0..=num_band_units_cols_minus_1 {
-            horz_size_in_band_blocks_minus_1.push(reader.read_bits_u8(5)?);
+        for c in 0..=num_band_units_cols_minus_1 {
+            let h = sr.in_loop_item("col", usize::from(c), |sr| {
+                sr.read_bits_u8("horz_size_in_band_blocks_minus_1", 5)
+            })?;
+            horz_size_in_band_blocks_minus_1.push(h);
         }
         Some(VaryingBandUnits {
             band_block_in_luma_samples,
@@ -902,10 +1046,16 @@ fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
     };
 
     let mut banding_in_band_unit_present = Vec::new();
-    for _ in 0..=num_band_units_rows_minus_1 {
-        for _ in 0..=num_band_units_cols_minus_1 {
-            banding_in_band_unit_present.push(reader.read_flag()?);
-        }
+    for r in 0..=num_band_units_rows_minus_1 {
+        sr.in_loop_item("row", usize::from(r), |sr| {
+            for c in 0..=num_band_units_cols_minus_1 {
+                let flag = sr.in_loop_item("col", usize::from(c), |sr| {
+                    sr.read_flag("banding_in_band_unit_present")
+                })?;
+                banding_in_band_unit_present.push(flag);
+            }
+            Ok(())
+        })?;
     }
 
     Ok(BandUnits {
@@ -917,7 +1067,6 @@ fn parse_band_units(reader: &mut BitReader<'_>) -> Result<BandUnits> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

@@ -3,6 +3,7 @@
 
 //! Residual reconstruction kernel dispatch.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
@@ -191,9 +192,10 @@ impl ResidualPlanePlan {
         frame.neighbours_from_block_decoded(self.rect, self.tx, self.plane_id, block_decoded)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    pub(super) fn reconstruct<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -213,6 +215,7 @@ impl ResidualPlanePlan {
                     });
                 };
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_palette_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     palette,
@@ -229,6 +232,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Smooth { mode, use_tcq }) => {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_smooth_rect_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     mode,
@@ -251,6 +255,7 @@ impl ResidualPlanePlan {
             }) => {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_dip_rect_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     mode,
@@ -271,10 +276,7 @@ impl ResidualPlanePlan {
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
                 let luma = self.tile_edges(frame);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: luma.has_above(),
-                    left: luma.has_left(),
-                };
+                let edges = EdgeAvail::new(luma.has_above(), luma.has_left());
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge,
                     workspace,
@@ -288,6 +290,7 @@ impl ResidualPlanePlan {
                     h,
                 )?;
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     p_angle,
@@ -300,7 +303,7 @@ impl ResidualPlanePlan {
                     use_tcq,
                     Some(luma_context),
                     None,
-                    EdgeAvail { above: edges.above, left: edges.left },
+                    edges,
                     edge_filters,
                 )
             }
@@ -314,6 +317,7 @@ impl ResidualPlanePlan {
             }) => {
                 let edges = self.tile_edges(frame);
                 crate::pipeline::reconstruct::reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     p_angle,
@@ -346,6 +350,7 @@ impl ResidualPlanePlan {
                 };
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_above_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -362,6 +367,7 @@ impl ResidualPlanePlan {
                     )
                 } else {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -385,10 +391,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
@@ -413,6 +416,7 @@ impl ResidualPlanePlan {
                         h,
                     )?;
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_ibp_luma_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -428,13 +432,13 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_below_left(),
                         },
-                        EdgeAvail::new(edges.above, edges.left),
+                        edges,
                         use_tcq,
                         Some(luma_context),
                     )
                 } else {
-                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -449,7 +453,7 @@ impl ResidualPlanePlan {
                         use_tcq,
                         Some(luma_context),
                         None,
-                        availability,
+                        edges,
                         edge_filter,
                     )
                 }
@@ -466,6 +470,7 @@ impl ResidualPlanePlan {
                 let availability = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 if secondary_mrl {
                     crate::pipeline::reconstruct::reconstruct_general_intra_mrl_secondary_left_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -484,6 +489,7 @@ impl ResidualPlanePlan {
                     )
                 } else {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -514,6 +520,7 @@ impl ResidualPlanePlan {
             }) => {
                 let edges = self.tile_edges(frame);
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_mrl_luma_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     direction,
@@ -534,10 +541,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.luma_corner_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter(
                     intra_edge,
                     workspace,
@@ -562,6 +566,7 @@ impl ResidualPlanePlan {
                         h,
                     )?;
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_ibp_luma_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -577,13 +582,13 @@ impl ResidualPlanePlan {
                             edge_filter: secondary_filter,
                             num4_far: neighbours.num_above_right(),
                         },
-                        EdgeAvail::new(edges.above, edges.left),
+                        edges,
                         use_tcq,
                         Some(luma_context),
                     )
                 } else {
-                    let availability = EdgeAvail::new(edges.above, edges.left);
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -600,7 +605,7 @@ impl ResidualPlanePlan {
                         use_tcq,
                         Some(luma_context),
                         None,
-                        availability,
+                        edges,
                         edge_filter,
                     )
                 }
@@ -608,6 +613,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Cardinal { direction, use_tcq }) => {
                 let neighbours = self.tile_edges(frame);
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_neighbour_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     direction,
@@ -626,6 +632,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Luma(RectLumaPlan::Paeth { use_tcq }) => {
                 let neighbours = self.tile_edges(frame);
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    backend,
                     scratch,
                     workspace,
                     coeffs,
@@ -643,10 +650,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.plane_neighbours(frame, block_decoded);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filter = crate::prediction::intra_edge::unit_edge_filter_for_plane(
                     intra_edge.chroma(),
                     workspace,
@@ -662,6 +666,7 @@ impl ResidualPlanePlan {
                 let availability = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 if p_angle < 90 {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -681,6 +686,7 @@ impl ResidualPlanePlan {
                     )
                 } else {
                     crate::pipeline::reconstruct::reconstruct_general_intra_one_sided_left_neighbour_block_into(
+                        backend,
                         workspace,
                         coeffs,
                         p_angle,
@@ -706,10 +712,7 @@ impl ResidualPlanePlan {
                 let neighbours = self.tile_edges(frame);
                 let (w, h) = (1u32 << self.tx.width_log2(), 1u32 << self.tx.height_log2());
                 let apply_ibp = intra_edge.enable_ibp && !(w == 4 && h == 4);
-                let edges = crate::prediction::intra_edge::UnitEdges {
-                    above: neighbours.has_above(),
-                    left: neighbours.has_left(),
-                };
+                let edges = EdgeAvail::new(neighbours.has_above(), neighbours.has_left());
                 let edge_filters = crate::prediction::intra_edge::unit_middle_edge_filters(
                     intra_edge.chroma(),
                     workspace,
@@ -723,6 +726,7 @@ impl ResidualPlanePlan {
                     h,
                 )?;
                 crate::pipeline::reconstruct::reconstruct_general_intra_middle_neighbour_rect_block_into(
+                    backend,
                     workspace,
                     coeffs,
                     p_angle,
@@ -735,13 +739,14 @@ impl ResidualPlanePlan {
                     false,
                     None,
                     dpcm,
-                    EdgeAvail { above: edges.above, left: edges.left },
+                    edges,
                     edge_filters,
                 )
             }
             ResidualReconstructionPlan::Chroma { mode, dpcm } => {
                 let neighbours = self.plane_neighbours(frame, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
+                    backend,
                     scratch,
                     workspace,
                     coeffs,
@@ -773,6 +778,7 @@ impl ResidualPlanePlan {
             } => {
                 let neighbours = self.plane_neighbours(frame, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_cfl_block_into(
+                    backend,
                     scratch,
                     workspace,
                     coeffs,
@@ -795,6 +801,7 @@ impl ResidualPlanePlan {
                     && !(self.tx.width_log2() == 2 && self.tx.height_log2() == 2);
                 let neighbours = self.tile_edges(frame);
                 crate::pipeline::reconstruct::reconstruct_general_intra_block_rect_into(
+                    backend,
                     workspace,
                     coeffs,
                     self.plane_id,

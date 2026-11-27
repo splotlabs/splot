@@ -15,8 +15,7 @@ use splot_core::tables::conversion::{
 use splot_recon::{
     BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
     QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
-    SecondaryInverseTransform, ac_quantizer, dc_quantizer,
-    reconstruct_transform_block_residual_with_secondary, tx_size_index,
+    SecondaryInverseTransform, ac_quantizer, dc_quantizer, tx_size_index,
 };
 
 use super::cdf::BlockCdfRows;
@@ -25,7 +24,6 @@ use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::coeff_loop::fsc_block::{CoeffFscBranchError, decode_fsc_transform_block};
-use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchTxSetBaseConfig,
@@ -42,12 +40,27 @@ use super::coeff_state::{
     CUL_LEVEL_MASK, CoeffBlockLines, TileCoeffContextState, TileCoeffStateError,
 };
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
+use splot_recon::TransformClass;
+
+#[cfg(feature = "block-evidence")]
+macro_rules! residual_capture_path {
+    ($normal:expr, $instrumented:expr) => {
+        $instrumented
+    };
+}
+
+#[cfg(not(feature = "block-evidence"))]
+macro_rules! residual_capture_path {
+    ($normal:expr, $instrumented:expr) => {
+        $normal
+    };
+}
 
 pub(crate) mod cctx;
 mod luma_transform_partition;
 pub(crate) mod reconstruct;
 
-pub(crate) use cctx::add_cctx_pair_residual_in_place;
+pub(crate) use cctx::add_cctx_pair_residual_in_place_with;
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
 #[cfg(test)]
@@ -58,11 +71,13 @@ pub(crate) use luma_transform_partition::{
     LumaTransformPartitionContext, LumaTransformPartitionUnits,
 };
 use reconstruct::reconstruct_block_setup;
+#[cfg(test)]
+pub(crate) use reconstruct::reconstruct_general_intra_coeff_block_rect_with_prediction_into;
 pub(crate) use reconstruct::{
-    add_general_intra_coeff_block_residual_in_place,
-    reconstruct_general_intra_coeff_block_rect_into_frame,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into,
+    add_general_intra_coeff_block_residual_in_place_with,
+    reconstruct_general_intra_coeff_block_rect_into_frame_with,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into_with,
+    reconstruct_inter_coeff_block_residual_rect_into_with,
 };
 
 const TX_4X4: usize = 0;
@@ -309,6 +324,32 @@ fn resolve_block_qm(
         user,
     })
 }
+
+#[cfg(feature = "block-evidence")]
+pub(crate) fn evidence_dequant_params(
+    qindex: u32,
+    plane: PlaneId,
+    (width, height): (usize, usize),
+    plane_tx_type: usize,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> Result<DequantBlockParams, GeneralIntraResidualError> {
+    reconstruct_block_setup(
+        width * height,
+        qindex,
+        plane,
+        width.ilog2(),
+        height.ilog2(),
+        plane_tx_type,
+        use_tcq,
+        false,
+        false,
+        None,
+        bit_depth,
+    )
+    .map(|setup| setup.params)
+}
+
 const H_PRED: usize = 2;
 const D45_PRED: usize = 3;
 const D157_PRED: usize = 6;
@@ -421,7 +462,7 @@ const IST_REDUCE_SET_SIZE_ADST_ADST: usize = 4;
 
 #[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
-const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
+const INV_MOST_PROBABLE_STX_MAPPING: [[u8; IST_DIR_SIZE]; 12] = [
     [6, 1, 0, 5, 4, 3, 2],
     [1, 6, 0, 4, 2, 5, 3],
     [1, 6, 0, 4, 2, 5, 3],
@@ -438,7 +479,7 @@ const INV_MOST_PROBABLE_STX_MAPPING: [[usize; IST_DIR_SIZE]; 12] = [
 
 #[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
 #[rustfmt::skip]
-const INV_MOST_PROBABLE_STX_MAPPING_ADST: [[usize; IST_REDUCE_SET_SIZE_ADST_ADST]; 12] = [
+const INV_MOST_PROBABLE_STX_MAPPING_ADST: [[u8; IST_REDUCE_SET_SIZE_ADST_ADST]; 12] = [
     [3, 1, 0, 2],
     [1, 3, 0, 2],
     [1, 3, 0, 2],
@@ -512,6 +553,14 @@ pub(crate) struct IntraIstSyntax {
     pub(crate) most_probable_stx_set: Option<u8>,
 }
 
+#[cfg(feature = "block-evidence")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoefficientCoding {
+    Ordinary,
+    ForwardSkip,
+    HiddenDcParity,
+}
+
 /// One transform block's parsed coefficients, as a span of its row's arena.
 ///
 /// dav2d parses a frame's coefficients into one buffer owned by the frame
@@ -530,6 +579,9 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) plane_tx_type: u8,
     pub(crate) cctx_type: Option<u8>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
+    pub(crate) scan_order: bool,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) coding: CoefficientCoding,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
 }
@@ -545,6 +597,9 @@ impl LumaCoeffBlock {
             plane_tx_type: plane_tx_type as u8,
             cctx_type: None,
             intra_ist: None,
+            scan_order: false,
+            #[cfg(feature = "block-evidence")]
+            coding: CoefficientCoding::Ordinary,
             use_tcq: false,
             lossless,
         }
@@ -814,7 +869,7 @@ pub(crate) fn luma_tx_partition_allows(
     Ok((allow_horz || allow_vert).then_some((allow_horz, allow_vert)))
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_luma_tx_partition_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -939,7 +994,6 @@ pub(crate) fn block_size_table_usize(
 
 /// One transform block of a plane residual (§ 5.20.7.27), at plane sample
 /// position `(x, y)`.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PlaneCoeffBlock {
     pub(crate) plane: usize,
@@ -962,7 +1016,61 @@ pub(crate) struct PlaneCoeffBlock {
 }
 
 /// Reads `all_zero` and, for a nonzero block, its coefficients into `arena`.
-#[allow(
+#[cfg(feature = "block-evidence")]
+#[expect(
+    clippy::inline_always,
+    reason = "measured: the caller's descriptor stays in its frame"
+)]
+#[inline(always)]
+pub(crate) fn decode_general_intra_plane_coeffs_observed(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
+    block: &PlaneCoeffBlock,
+) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let scoped = work_unit.entropy_transform.is_some_and(|transform| {
+        let tx_size = plane_coeff_tx_size(block, block.segment_lossless.unwrap_or(false));
+        transform.plane.index() == block.plane
+            && transform.coded.x() == block.x
+            && transform.coded.y() == block.y
+            && Some(transform.coded.width()) == TX_WIDTH.get(tx_size).map(|width| *width as usize)
+            && Some(transform.coded.height())
+                == TX_HEIGHT.get(tx_size).map(|height| *height as usize)
+    });
+    if scoped {
+        symbols.set_entropy_observation_active(true);
+    }
+    let record_transform = symbols.observes_entropy();
+    if record_transform {
+        let _ = symbols.replace_entropy_scope_tag(Some([
+            block.plane as u32,
+            block.x as u32,
+            block.y as u32,
+            plane_coeff_tx_size(block, block.segment_lossless.unwrap_or(false)) as u32,
+        ]));
+    }
+    let result = decode_general_intra_plane_coeffs(work_unit, symbols, context, arena, block);
+    if record_transform {
+        let _ = symbols.replace_entropy_scope_tag(None);
+    }
+    if scoped {
+        symbols.set_entropy_observation_active(false);
+    }
+    result
+}
+
+#[inline]
+fn plane_coeff_tx_size(block: &PlaneCoeffBlock, lossless: bool) -> usize {
+    if lossless && !block.is_inter && !block.fsc_mode {
+        TX_4X4
+    } else {
+        block.tx_size
+    }
+}
+
+/// Reads one plane's coefficients into the arena.
+#[expect(
     clippy::inline_always,
     reason = "measured: the caller's descriptor stays in its frame"
 )]
@@ -975,11 +1083,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     block: &PlaneCoeffBlock,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let lossless = block.segment_lossless.unwrap_or(false);
-    let tx_size = if lossless && !block.is_inter && !block.fsc_mode {
-        TX_4X4
-    } else {
-        block.tx_size
-    };
+    let tx_size = plane_coeff_tx_size(block, lossless);
     let Some(tx) = TX_GEOMETRY.get(tx_size) else {
         return Err(invalid_reconstruction_state_error("transform size"));
     };
@@ -1000,6 +1104,22 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     );
     let cdfs = work_unit.cdf.tile_cdfs_mut();
     let rows = cdfs.block_rows_mut();
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        use splot_core::symbol::EntropySyntax;
+
+        let syntax = if block.plane == 2 {
+            EntropySyntax::new("all_zero", "v_txb_skip_ctx", [ctx as u16, 0, 0])
+        } else {
+            let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
+            EntropySyntax::new(
+                "all_zero",
+                "plane_type,tx_size_ctx,txb_skip_ctx",
+                [plane_type as u16, u16::from(tx.size_ctx), ctx as u16],
+            )
+        };
+        symbols.annotate_entropy(syntax);
+    }
     let row = if block.plane == 2 {
         row_at(rows.v_txb_skip(), ctx)
     } else {
@@ -1029,7 +1149,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 }
 
 /// The § 8.3.2 `all_zero` CDF of the transform block at `[x4, y4, w4, h4]` (plane 4x4 units).
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn txb_skip_selector(
     context: &TileCoeffContextState,
     plane: usize,
@@ -1055,7 +1175,7 @@ pub(crate) fn txb_skip_selector(
 
 /// The `all_zero` context of [`txb_skip_selector`] from the block's checked
 /// context spans: a `v_txb_skip` context for the V plane, else a `txb_skip` one.
-#[allow(clippy::inline_always, reason = "measured: once per transform block")]
+#[expect(clippy::inline_always, reason = "measured: once per transform block")]
 #[inline(always)]
 fn txb_skip_ctx(
     context: &TileCoeffContextState,
@@ -1149,6 +1269,10 @@ fn decode_nonzero_plane_coeffs(
     )?;
     let start_idx = arena.len();
     let coeff_count = start.coeff_count();
+    let scan_order =
+        !use_fsc && plane == 0 && metadata.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
+    #[cfg(feature = "block-evidence")]
+    let coding;
     if use_fsc {
         arena.resize(start_idx + coeff_count, 0);
         let quant_end = decode_fsc_transform_block(
@@ -1161,9 +1285,17 @@ fn decode_nonzero_plane_coeffs(
         );
         arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
+        #[cfg(feature = "block-evidence")]
+        {
+            coding = CoefficientCoding::ForwardSkip;
+        }
     } else {
-        let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
-        let extent = scan_extent(tx_class, tx, eob);
+        let tx_class = splot_recon::tx_class(plane_tx_type);
+        let extent = if scan_order {
+            eob
+        } else {
+            scan_extent(tx_class, tx, eob)
+        };
         arena.resize(start_idx + extent, 0);
         let quant_end = decode_ordinary_transform_block(
             context,
@@ -1174,20 +1306,38 @@ fn decode_nonzero_plane_coeffs(
                 start,
                 lines,
                 tx_class,
+                scan_order,
                 parity_hiding: base_config.parity_hiding,
                 use_tcq: base_config.use_tcq,
                 lossless,
             },
             &mut arena[start_idx..],
         );
-        arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
-        quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        #[cfg(feature = "block-evidence")]
+        {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |block| block.quant_end));
+            let ordinary = quant_end
+                .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+            coding = if ordinary.dc_parity_hidden {
+                CoefficientCoding::HiddenDcParity
+            } else {
+                CoefficientCoding::Ordinary
+            };
+        }
+        #[cfg(not(feature = "block-evidence"))]
+        {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
+            quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        }
     }
     LumaCoeffBlock {
         eob: eob as u16,
         intra_ist: metadata.intra_ist,
+        scan_order,
         cctx_type: metadata.cctx_type.map(|cctx| cctx as u8),
         use_tcq: base_config.use_tcq,
+        #[cfg(feature = "block-evidence")]
+        coding,
         ..LumaCoeffBlock::empty(plane_tx_type, lossless)
     }
     .with_span(start_idx..arena.len(), coeff_count)
@@ -1203,7 +1353,7 @@ fn staged_transform_tool_lossless_base_config(
     lossless: bool,
     metadata: TransformToolResidualMetadata,
 ) -> CoeffOrdinaryBranchTxSetBaseConfig {
-    let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
+    let luma_tx_class = splot_recon::tx_class(metadata.luma_tx_type);
     let luma_transform_block = plane == 0;
     let parity_hiding = frame_facts.allow_parity_hiding
         && !lossless
@@ -1212,7 +1362,7 @@ fn staged_transform_tool_lossless_base_config(
     let use_tcq = frame_facts.allow_tcq
         && !lossless
         && luma_transform_block
-        && luma_tx_class == CoeffTransformClass::TwoD;
+        && luma_tx_class == TransformClass::TwoD;
     CoeffOrdinaryBranchTxSetBaseConfig {
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly,
         uv_mode,
@@ -1282,7 +1432,7 @@ pub(crate) const fn is_cctx_geometry_allowed(
     is_420 || plane_width < 32 || plane_height < 32
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
+#[expect(clippy::inline_always, reason = "measured: once per nonzero block")]
 #[inline(always)]
 fn ensure_transform_tool_residual_handoff(
     cdfs: &mut TileCdfSubset,
@@ -1305,7 +1455,22 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
+        #[cfg(feature = "block-evidence")]
+        let transform = if symbols.observes_entropy() {
+            symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                "cctx_type",
+                "",
+                [0; 3],
+            ));
+            symbols.replace_entropy_scope_tag(None)
+        } else {
+            None
+        };
         metadata.cctx_type = Some(read_row(symbols, cdfs.block_rows_mut().cctx_type()));
+        #[cfg(feature = "block-evidence")]
+        if transform.is_some() {
+            let _ = symbols.replace_entropy_scope_tag(transform);
+        }
     }
     if lossless {
         if !is_inter && input.fsc_mode {
@@ -1379,9 +1544,8 @@ fn ensure_transform_tool_residual_handoff(
 }
 
 /// Whether § 5.20.8.2 infers `DCT_DCT` instead of reading a transform type.
-#[allow(
+#[expect(
     clippy::inline_always,
-    clippy::fn_params_excessive_bools,
     reason = "a predicate on the per-block coefficient path"
 )]
 #[inline(always)]
@@ -1638,9 +1802,7 @@ const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
 /// § 8.3.2 `InterTxTypeLong` context from the last coefficient position.
 ///
 /// `eob` is the non-zero-block end of block, which `read_nonzero_coeff_eob` builds
-/// from an `eob_pt` of 1..=11: below 3 it is the point itself, and above it
-/// starts at `EOB_GROUP_START[3]` = 3. It is never 0, so the last-position
-/// conversion is total.
+/// from a point in 1..=11. Its minimum is 1, so subtracting one is safe.
 fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
     let eob = eob.saturating_sub(1);
     let tx = TX_GEOMETRY
@@ -1836,8 +1998,12 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
     GeneralIntraResidualError::InvalidReconstructionState { context }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn reconstruct_general_intra_block_rect_with_prediction_core<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
@@ -1852,6 +2018,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     secondary: Option<&SecondaryInverseTransform>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")] capture_origin: Option<(usize, usize)>,
 ) -> Result<(), GeneralIntraResidualError> {
     let setup = reconstruct_block_setup(
         prediction.len(),
@@ -1874,18 +2041,13 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     }
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
-        let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
-        let residual_scratch = &mut scratch.residual[..setup.samples];
-        reconstruct_transform_block_residual_with_secondary(
-            prediction,
-            block.quant,
-            &setup.params,
-            &setup.transform()?,
-            secondary,
-            dequant_scratch,
-            residual_scratch,
-            out.as_mut_slice(),
-        )
+        let residual = reconstruct::intra_residual(backend, block, &setup, secondary, scratch)?;
+        #[cfg(feature = "block-evidence")]
+        if let Some((x, y)) = capture_origin {
+            let size = splot_recon::IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
+            reconstruct::record_residual(plane_id, x, y, size, residual, false);
+        }
+        splot_recon::reconstruct_add_residual_with(backend, prediction, residual, bit_depth, out)
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
     Ok(())
@@ -1955,14 +2117,12 @@ fn intra_secondary_transform_kernel(
         return Err(invalid_reconstruction_state_error("intra IST mode"));
     }
     let base = if plane_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
-        INV_MOST_PROBABLE_STX_MAPPING_ADST[mode]
-            .get(most_probable_stx_set)
-            .copied()
+        INV_MOST_PROBABLE_STX_MAPPING_ADST[mode].get(most_probable_stx_set)
     } else {
-        INV_MOST_PROBABLE_STX_MAPPING[mode]
-            .get(most_probable_stx_set)
-            .copied()
+        INV_MOST_PROBABLE_STX_MAPPING[mode].get(most_probable_stx_set)
     }
+    .copied()
+    .map(usize::from)
     .ok_or_else(|| invalid_reconstruction_state_error("intra IST set"))?;
     if plane_tx_type == ADST_ADST {
         Ok(base + 7)

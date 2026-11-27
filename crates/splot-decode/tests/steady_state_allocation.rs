@@ -9,7 +9,7 @@
 //! binary and run as one sequential test. A second test running beside them
 //! would land its own allocations inside the measured region.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![expect(clippy::unwrap_used)]
 
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{

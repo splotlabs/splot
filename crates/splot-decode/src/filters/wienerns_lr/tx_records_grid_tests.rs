@@ -589,7 +589,7 @@ fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
     ));
 }
 
-/// A genuine out-of-frame ORIGIN (`row >= rows` or `col >= cols`) is STILL a hard
+/// A genuine out-of-frame origin (`row >= rows` or `col >= cols`) is still a hard
 /// error, matching the §5.20.3.2 `block_coded` model: AVM never emits such a record.
 #[test]
 fn tx_skip_grid_retention_rejects_out_of_frame_origin() {

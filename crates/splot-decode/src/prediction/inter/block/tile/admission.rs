@@ -66,8 +66,9 @@ impl<T: ReconSample> TileCommit<T> {
         }
     }
 
-    pub(super) fn replay(
+    pub(super) fn replay<B: splot_core::simd::SimdBackend>(
         &mut self,
+        backend: B,
         mut ready: ReadyReconRow<T>,
         motion: &MotionFieldUnits,
         temporal: &TemporalMvContext,
@@ -79,6 +80,7 @@ impl<T: ReconSample> TileCommit<T> {
         }
         self.ordered.with_installed(|scratch| {
             pixel_commit::replay_recon_row(
+                backend,
                 ready.row,
                 ready.tile_offset,
                 &mut self.next,
@@ -165,7 +167,10 @@ fn restore_active_commit<T: ReconSample>(
     Ok(())
 }
 
-pub(in crate::prediction::inter::block) fn project_temporal_band(
+pub(in crate::prediction::inter::block) fn project_temporal_band<
+    B: splot_core::simd::SimdBackend,
+>(
+    backend: B,
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
     reference_fields: &[Option<MotionFieldHandle>],
@@ -183,12 +188,11 @@ pub(in crate::prediction::inter::block) fn project_temporal_band(
             );
         }
     }
-    plan.project(temporal, index, |slot, band| {
+    plan.project(backend, temporal, index, |slot, band| {
         reference_fields.get(slot)?.as_ref()?.band(band)
     })
 }
 
-#[allow(clippy::large_enum_variant)]
 enum TileReconRow<T: ReconSample> {
     Unresolved {
         row: ReconRow,
@@ -543,7 +547,13 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute(&self, index: usize, worker: usize, surfaces: &SurfaceSource<T>) -> Result<()> {
+    fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+        surfaces: &SurfaceSource<T>,
+    ) -> Result<()> {
         let range = self
             .batch_range(index)
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
@@ -586,6 +596,7 @@ impl<T: ReconSample> TileRecon<T> {
                                 .flatten();
                         }
                         precompute_recon_row(
+                            backend,
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
@@ -617,8 +628,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn commit_batch(
+    fn commit_batch<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         index: usize,
         parse_progress: &super::ParseProgress,
         surfaces: &SurfaceSource<T>,
@@ -657,10 +669,12 @@ impl<T: ReconSample> TileRecon<T> {
                 commit.block_decoded_tile = Some(ready.row.tile);
             }
             if let Some(surface) = ready.surface.take() {
-                surface.publish_into(&mut commit.workspace)?;
+                if ready.surface_written {
+                    surface.publish_into(&mut commit.workspace)?;
+                }
                 surfaces.give(surface, worker);
             }
-            let spent = commit.replay(ready, &self.motion, &self.temporal, &context)?;
+            let spent = commit.replay(backend, ready, &self.motion, &self.temporal, &context)?;
             parse_progress.return_row_buffers(spent);
         }
         *self
@@ -706,8 +720,9 @@ pub(super) const PARSE_AHEAD_ROWS: usize = 4;
 
 /// Parses one tile a few superblock rows at a time and replays each batch in
 /// order, once every reference row is settled.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn run_ordinary_tile<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     parser: &mut TileParser<'_>,
     tile: &mut DecodeTileWorkUnit,
     resolve: &mut TileResolveState,
@@ -730,7 +745,17 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         while !reached_last && parsed < unit_count && pending.len() < PARSE_AHEAD_ROWS {
             let step = parser.next_unit(tile, &parse, row_buffers.pop(), true);
             let step = resolve_parser_step(step, |row| {
-                resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
+                #[cfg(feature = "block-evidence")]
+                let tile_index = tile.tile_num() as usize;
+                resolve.resolve_unit(
+                    &mut parser.mv_grid,
+                    context,
+                    temporal,
+                    row,
+                    tile_offset,
+                    #[cfg(feature = "block-evidence")]
+                    tile_index,
+                )?;
                 #[cfg(test)]
                 crate::prediction::inter::find_mv_stack::neighbour_state_tests::observe_resolved_unit(
                     &parser.mv_grid,
@@ -758,9 +783,10 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
                 row,
                 tile_offset,
                 surface: None,
+                surface_written: false,
                 bounds: super::row_gate::RowReferenceBounds::default(),
             };
-            let buffers = commit.replay(ready, motion, temporal, context)?;
+            let buffers = commit.replay(backend, ready, motion, temporal, context)?;
             row_buffers.push(buffers);
         }
     }
@@ -830,8 +856,14 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Precomputes one admitted batch on scheduler worker `worker` without
     /// entering the ordered commit spine.
-    pub(crate) fn precompute(&self, index: usize, worker: usize) -> Result<()> {
-        self.recon.precompute(index, worker, &self.pending_surfaces)
+    pub(crate) fn precompute<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+    ) -> Result<()> {
+        self.recon
+            .precompute(backend, index, worker, &self.pending_surfaces)
     }
 
     /// Whether batch `index` is parsed, resolved, and admitted by its
@@ -877,8 +909,13 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Projects temporal band `index`. A band reads only the same band of
     /// each reference field (§ 7.9.8), so it projects ahead of the resolve.
-    pub(crate) fn project(&self, index: usize) -> Result<()> {
+    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+    ) -> Result<()> {
         project_temporal_band(
+            backend,
             &self.temporal_plan,
             &self.recon.temporal,
             &self.recon.reference.ref_motion_fields,
@@ -949,12 +986,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             };
             row.replay_flags(grid, frame_mv_precision(context.core)?)?;
             row.return_terminal_error()?;
+            #[cfg(feature = "block-evidence")]
+            let tile_index = row.tile;
             state.resolve_unit(
                 grid,
                 &context,
                 &self.recon.temporal,
                 &mut row,
                 tile.tile_offset,
+                #[cfg(feature = "block-evidence")]
+                tile_index,
             )?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
@@ -964,6 +1005,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     row,
                     tile_offset: tile.tile_offset,
                     surface,
+                    surface_written: false,
                     bounds,
                 },
             )?;
@@ -1005,9 +1047,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
             quant_deltas,
             {
-                let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
-                    self.recon.sequence.general.chroma_format_idc,
-                );
+                let (x, y) = self.recon.sequence.general.chroma_format_idc.subsampling();
                 (usize::from(x), usize::from(y))
             },
         );
@@ -1170,15 +1210,20 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
+    pub(crate) fn frontier<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        row: usize,
+    ) -> Result<ScheduledFrameProgress<T>> {
         let mut frontier = self.frontier.lock();
-        let mut progress = self.frontier_link(row, &mut frontier)?;
+        let mut progress = self.frontier_link(backend, row, &mut frontier)?;
         progress.handed_rows = self.help_hand_over(&mut frontier)?;
         Ok(progress)
     }
 
-    fn frontier_link(
+    fn frontier_link<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         row: usize,
         frontier: &mut ScheduledFrontier<T>,
     ) -> Result<ScheduledFrameProgress<T>> {
@@ -1218,7 +1263,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                         "the frontier read a row the spine had not sealed"
                     );
                     deblock
-                        .advance_source(rows, safe_mi_end.get(), self.recon.params.bit_depth)
+                        .advance_source(
+                            backend,
+                            rows,
+                            safe_mi_end.get(),
+                            self.recon.params.bit_depth,
+                        )
                         .map_err(|error| {
                             crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                         })?;
@@ -1345,10 +1395,19 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(crate) fn commit(&self, index: usize, worker: usize) -> Result<ScheduledCommitProgress> {
-        let mut committed =
-            self.recon
-                .commit_batch(index, &self.parse_progress, &self.pending_surfaces, worker)?;
+    pub(crate) fn commit<B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
+        index: usize,
+        worker: usize,
+    ) -> Result<ScheduledCommitProgress> {
+        let mut committed = self.recon.commit_batch(
+            backend,
+            index,
+            &self.parse_progress,
+            &self.pending_surfaces,
+            worker,
+        )?;
         let handed = committed.state.handed_rows;
         if committed.state.closed_rows > handed {
             self.seal_committed_rows(&mut committed.state)?;
@@ -1502,7 +1561,6 @@ fn superblock_row_batches_into(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_scheduled_motion(
     reusable: &mut ScheduledTileWorkspace<impl ReconSample>,
     tiles: &[GeometryTile],
@@ -1537,7 +1595,7 @@ fn prepare_scheduled_motion(
 }
 
 /// Resolves a parsed tile and turns each unit into owned admission state.
-#[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
     parked: super::super::InterDecodeScratch<T>,
@@ -1628,12 +1686,15 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     resolve_states
         .try_reserve(geometry.tiles.len())
         .map_err(|_| inter_allocation!("inter admission resolve banks"))?;
-    resolve_states.extend(
-        geometry
-            .tiles
-            .iter()
-            .map(|_| TileResolveState::new(&sequence)),
-    );
+    for tile_geo in &geometry.tiles {
+        resolve_states.push(TileResolveState::new(
+            &sequence,
+            &core,
+            tile_geo.mi_rows.clone(),
+            tile_geo.mi_cols.clone(),
+            params.sb_h4,
+        ));
+    }
     let mut tiles = core::mem::take(&mut reusable.tiles);
     tiles.clone_from(&geometry.tiles);
     let mut sealed = progress
@@ -1871,7 +1932,9 @@ mod tests {
             ..
         } = temporal_projection_case()?;
 
-        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        }) else {
             return Err("pending publication must fail");
         };
 
@@ -1896,7 +1959,9 @@ mod tests {
         let handle = fields[0].as_ref().ok_or("reference handle")?;
         handle.fail();
 
-        let Err(error) = project_temporal_band(&plan, &temporal, &fields, 0) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        }) else {
             return Err("failed publication must fail");
         };
 
@@ -1926,12 +1991,16 @@ mod tests {
         handle.fail();
 
         assert!(matches!(handle.band_publication(0), Some(Some(_))));
-        project_temporal_band(&plan, &temporal, &fields, 0)
-            .map_err(|_| "published band must project")?;
+        crate::test_support::with_auto_backend!(backend => {
+            project_temporal_band(backend, &plan, &temporal, &fields, 0)
+        })
+        .map_err(|_| "published band must project")?;
         let mut read_again = false;
-        plan.project(&temporal, 0, |_, _| {
-            read_again = true;
-            None
+        crate::test_support::with_auto_backend!(backend => {
+            plan.project(backend, &temporal, 0, |_, _| {
+                read_again = true;
+                None
+            })
         })
         .map_err(|_| "resuming resolution must reuse its projection")?;
         assert!(!read_again);

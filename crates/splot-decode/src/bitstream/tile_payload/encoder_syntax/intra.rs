@@ -43,7 +43,6 @@ use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, publish_intra_leaf_state,
 };
-use super::super::tile_frontier::chroma_subsampling;
 use super::palette::{Palette, PlannedPalette, unit_map};
 use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
@@ -204,10 +203,33 @@ impl TxType {
     ];
 
     pub(super) fn from_value(value: usize) -> Result<Self> {
-        Self::ALL
-            .get(value)
-            .copied()
-            .ok_or(EncoderSyntaxError::Unsupported("transform type"))
+        Self::from_ordinal(value).ok_or(EncoderSyntaxError::Unsupported("transform type"))
+    }
+
+    pub(crate) fn from_ordinal(value: usize) -> Option<Self> {
+        Self::ALL.get(value).copied()
+    }
+
+    /// The canonical AV2 name for this transform type.
+    pub const fn av2_name(self) -> &'static str {
+        match self {
+            Self::DctDct => "DCT_DCT",
+            Self::AdstDct => "ADST_DCT",
+            Self::DctAdst => "DCT_ADST",
+            Self::AdstAdst => "ADST_ADST",
+            Self::FlipadstDct => "FLIPADST_DCT",
+            Self::DctFlipadst => "DCT_FLIPADST",
+            Self::FlipadstFlipadst => "FLIPADST_FLIPADST",
+            Self::AdstFlipadst => "ADST_FLIPADST",
+            Self::FlipadstAdst => "FLIPADST_ADST",
+            Self::Idtx => "IDTX",
+            Self::VDct => "V_DCT",
+            Self::HDct => "H_DCT",
+            Self::VAdst => "V_ADST",
+            Self::HAdst => "H_ADST",
+            Self::VFlipadst => "V_FLIPADST",
+            Self::HFlipadst => "H_FLIPADST",
+        }
     }
 }
 
@@ -379,7 +401,7 @@ impl Recon {
         sb_size4: usize,
     ) -> Result<Self> {
         let chroma = seq.general.chroma_format_idc;
-        let (sub_x, sub_y) = chroma_subsampling(chroma);
+        let (sub_x, sub_y) = chroma.subsampling();
         let size = core
             .frame_size
             .ok_or(EncoderSyntaxError::Unsupported("missing frame size"))?;
@@ -714,7 +736,7 @@ impl IntraTileSyntax {
         }
         let uv_mode = block_modes.coeff_uv_mode();
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
-        let (sub_x, sub_y) = chroma_subsampling(self.chroma);
+        let (sub_x, sub_y) = self.chroma.subsampling();
         let (mi_rows, mi_cols) = (self.frame.mi_rows(), self.frame.mi_cols());
         let (mut plan_index, mut units) = core::mem::take(&mut self.recon.spare_units);
         plan_index.clear();
@@ -964,17 +986,18 @@ impl IntraTileSyntax {
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
         let [u_index, v_index] = [leaf.plan_index(u_index)?, leaf.plan_index(v_index)?];
         let _quant = self.tools.quant_scopes();
-        leaf.plan
-            .reconstruct_cctx_pair(
-                [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
-                (u.tx_type as usize, usize::from(u.cctx)),
+        self.backend
+            .enter(PairScope {
+                plan: &leaf.plan,
+                units: [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
+                tx_cctx: (u.tx_type as usize, usize::from(u.cctx)),
                 scratch,
                 workspace,
                 block_decoded,
-                self.tools.qindex,
-                leaf.intra_edge,
-                leaf.luma_context,
-            )
+                qindex: self.tools.qindex,
+                intra_edge: leaf.intra_edge,
+                luma_context: leaf.luma_context,
+            })
             .map_err(rule("CCTX reconstruction"))
     }
 
@@ -1064,20 +1087,22 @@ impl IntraTileSyntax {
             _ => None,
         };
         let _quant = self.tools.quant_scopes();
-        leaf.plan
-            .reconstruct_unit(
-                leaf.plan_index(index)?,
+        let unit_index = leaf.plan_index(index)?;
+        self.backend
+            .enter(UnitScope {
+                plan: &leaf.plan,
+                unit_index,
                 quant,
                 eob,
-                (tx_type as usize, use_tcq, ist),
+                block_meta: (tx_type as usize, use_tcq, ist),
                 palette_map,
                 scratch,
                 workspace,
                 block_decoded,
-                (self.tools.qindex, self.tools.lossless),
-                leaf.intra_edge,
-                leaf.luma_context,
-            )
+                quant_lossless: (self.tools.qindex, self.tools.lossless),
+                intra_edge: leaf.intra_edge,
+                luma_context: leaf.luma_context,
+            })
             .map_err(rule("reconstruction"))
     }
 
@@ -1399,4 +1424,84 @@ fn plane_id(plane: usize) -> Result<PlaneId> {
         .get(plane)
         .copied()
         .ok_or(EncoderSyntaxError::Unsupported("plane index"))
+}
+
+struct PairScope<'a> {
+    plan: &'a crate::residual::pipeline::GeneralIntraResidualPlan,
+    units: [(usize, &'a [i32], usize); 2],
+    tx_cctx: (usize, usize),
+    scratch: &'a mut crate::pipeline::general_intra::GeneralIntraReconScratch<u16>,
+    workspace: &'a mut CurrentFrameWorkspace<u16>,
+    block_decoded: &'a crate::bitstream::tile_payload::TileBlockDecodedState,
+    qindex: u32,
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    luma_context: LumaTransformTypeContext,
+}
+
+impl
+    splot_core::simd::SimdScope<
+        core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError>,
+    > for PairScope<'_>
+{
+    fn run<B: splot_core::simd::SimdBackend>(
+        self,
+        backend: B,
+    ) -> core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError> {
+        self.plan.reconstruct_cctx_pair(
+            backend.narrow(),
+            self.units,
+            self.tx_cctx,
+            self.scratch,
+            self.workspace,
+            self.block_decoded,
+            self.qindex,
+            self.intra_edge,
+            self.luma_context,
+        )
+    }
+}
+
+struct UnitScope<'a> {
+    plan: &'a crate::residual::pipeline::GeneralIntraResidualPlan,
+    unit_index: usize,
+    quant: &'a [i32],
+    eob: usize,
+    block_meta: (
+        usize,
+        bool,
+        Option<crate::bitstream::tile_payload::IntraIstSyntax>,
+    ),
+    palette_map: Option<&'a [u8]>,
+    scratch: &'a mut crate::pipeline::general_intra::GeneralIntraReconScratch<u16>,
+    workspace: &'a mut CurrentFrameWorkspace<u16>,
+    block_decoded: &'a crate::bitstream::tile_payload::TileBlockDecodedState,
+    quant_lossless: (u32, bool),
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    luma_context: LumaTransformTypeContext,
+}
+
+impl
+    splot_core::simd::SimdScope<
+        core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError>,
+    > for UnitScope<'_>
+{
+    fn run<B: splot_core::simd::SimdBackend>(
+        self,
+        backend: B,
+    ) -> core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError> {
+        self.plan.reconstruct_unit(
+            backend.narrow(),
+            self.unit_index,
+            self.quant,
+            self.eob,
+            self.block_meta,
+            self.palette_map,
+            self.scratch,
+            self.workspace,
+            self.block_decoded,
+            self.quant_lossless,
+            self.intra_edge,
+            self.luma_context,
+        )
+    }
 }

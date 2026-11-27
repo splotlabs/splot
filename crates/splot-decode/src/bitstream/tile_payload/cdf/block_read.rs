@@ -17,7 +17,7 @@ pub(crate) enum BlockSymbolTraceReadError {
 }
 
 impl TileCdfSubset {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -28,6 +28,10 @@ impl TileCdfSubset {
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
         let row = self.rows.row_mut(selector)?;
+        #[cfg(feature = "block-evidence")]
+        if symbol_decoder.observes_entropy() {
+            annotate_symbol(symbol_decoder, selector);
+        }
         match symbol_decoder.read_trusted_row(row) {
             Some(symbol) => Ok(Symbol::new(symbol as u8)),
             None => Ok(symbol_decoder.read_symbol_u16(row)?),
@@ -36,7 +40,7 @@ impl TileCdfSubset {
 
     /// [`Self::read_block_symbol_trace`] with the inter mode-info rows read
     /// through [`read_row`], so a constant selector reads a fixed-arity row.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -46,6 +50,10 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         symbols: &mut SymbolDecoder<'_>,
     ) -> Result<u8, BlockSymbolTraceReadError> {
+        #[cfg(feature = "block-evidence")]
+        if symbols.observes_entropy() {
+            annotate_symbol(symbols, selector);
+        }
         let tile = &mut self.rows;
         let rows = &mut tile.block;
         let symbol = match selector {
@@ -136,8 +144,45 @@ impl TileCdfSubset {
     }
 }
 
+#[cfg(feature = "block-evidence")]
+#[cold]
+fn annotate_symbol(symbols: &SymbolDecoder<'_>, selector: TileCdfSelector) {
+    use splot_core::symbol::EntropySyntax;
+
+    let (key, context, values) = match selector {
+        TileCdfSelector::Skip { ctx } => ("skip", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::Intrabc { ctx } => ("intrabc", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::UseDip { ctx } => ("use_dip", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::UseAmvd { index, ctx } => {
+            ("use_amvd", "index,ctx", [index as u16, ctx as u16, 0])
+        }
+        TileCdfSelector::MrlIndex { ctx } => ("mrl_index", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::MrlSecIndex { ctx } => ("mrl_sec_index", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::IsCfl { ctx } => ("is_cfl", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::FscMode { ctx, bsize_group } => (
+            "fsc_mode",
+            "ctx,bsize_group",
+            [ctx as u16, bsize_group as u16, 0],
+        ),
+        TileCdfSelector::UseExtendWarp { ctx } => ("use_extend_warp", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::UseLocalWarp { ctx } => ("use_local_warp", "ctx", [ctx as u16, 0, 0]),
+        TileCdfSelector::UseDpcmY => ("use_dpcm_y", "", [0; 3]),
+        TileCdfSelector::UseDpcmUv => ("use_dpcm_uv", "", [0; 3]),
+        TileCdfSelector::SecTxType {
+            is_inter,
+            tx_size_sqr,
+        } => (
+            "sec_tx_type",
+            "is_inter,tx_size_sqr",
+            [is_inter as u16, tx_size_sqr as u16, 0],
+        ),
+        _ => return,
+    };
+    symbols.annotate_entropy(EntropySyntax::new(key, context, values));
+}
+
 /// A trusted read of a decoder-owned row in the tile's update mode.
-#[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
+#[expect(clippy::inline_always, reason = "measured: per-block symbol read")]
 #[inline(always)]
 pub(crate) fn read_row<const L: usize>(
     symbols: &mut SymbolDecoder<'_>,
@@ -148,7 +193,7 @@ pub(crate) fn read_row<const L: usize>(
 
 /// `rows[ctx]` with the context clamped into the array: every context the
 /// decoder derives is in range, so the clamp only keeps the read panic-free.
-#[allow(clippy::inline_always, reason = "measured: per-symbol row")]
+#[expect(clippy::inline_always, reason = "measured: per-symbol row")]
 #[inline(always)]
 pub(crate) fn row_at<T, const C: usize>(rows: &mut [T; C], ctx: usize) -> &mut T {
     &mut rows[ctx.min(C - 1)]

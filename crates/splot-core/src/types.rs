@@ -13,6 +13,9 @@ pub const GLOBAL_XLAYER_ID: ExtendedLayerId = ExtendedLayerId::from_bits(31);
 pub struct TemporalLayerId(u8);
 
 impl TemporalLayerId {
+    /// Temporal layer id 0 (the base temporal layer).
+    pub const BASE: Self = Self(0);
+
     /// Creates a temporal layer id from a value already known to fit the 2-bit
     /// `obu_tlayer_id` field (for example, just read from the bitstream).
     #[must_use]
@@ -38,6 +41,9 @@ impl TemporalLayerId {
 pub struct EmbeddedLayerId(u8);
 
 impl EmbeddedLayerId {
+    /// Embedded layer id 0 (the base embedded layer).
+    pub const BASE: Self = Self(0);
+
     /// Creates an embedded layer id from a value already known to fit the 3-bit
     /// `obu_mlayer_id` field.
     #[must_use]
@@ -314,6 +320,16 @@ impl ObuType {
                 | Self::Switch
                 | Self::RasFrame
                 | Self::BridgeFrame
+        )
+    }
+
+    /// `true` for leading frame OBU types (`OBU_LEADING_TILE_GROUP`,
+    /// `OBU_LEADING_SEF`, `OBU_LEADING_TIP`; AV2 v1.0.0 § 2, § 7.4.4).
+    #[must_use]
+    pub const fn is_leading_frame(self) -> bool {
+        matches!(
+            self,
+            Self::LeadingTileGroup | Self::LeadingSef | Self::LeadingTip
         )
     }
 

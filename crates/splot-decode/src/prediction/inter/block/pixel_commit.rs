@@ -14,11 +14,11 @@
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
+use splot_core::simd::SimdBackend;
+use splot_recon::{BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::super::mc::WorkspaceSink;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers};
@@ -27,8 +27,9 @@ use crate::Result;
 use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 /// Commits one parsed row into the frame, in tile order.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn replay_recon_row<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn replay_recon_row<B: SimdBackend, T: ReconSample>(
+    backend: B,
     mut row: ReconRow,
     tile_offset: splot_core::span::ByteOffset,
     expected_ordinal: &mut usize,
@@ -135,6 +136,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 has_intra = true;
                             }
                             command.reconstruct(
+                                backend,
                                 &mut residual_planes,
                                 &residual_coeffs,
                                 scratch.general_intra_mut(),
@@ -143,12 +145,16 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 tile_offset,
                             )
                         }
-                        ReconCommandMut::Intrabc(command) => {
-                            command.reconstruct(&residual_blocks, &residual_coeffs, workspace)
-                        }
+                        ReconCommandMut::Intrabc(command) => command.reconstruct(
+                            backend,
+                            &residual_blocks,
+                            &residual_coeffs,
+                            workspace,
+                        ),
                         ReconCommandMut::Inter(command) => scratch.reconstruct(
+                            backend,
                             command,
-                            &mut WorkspaceSink::Frame(workspace),
+                            &mut CurrentFrameSurface::Frame(workspace),
                             block_decoded,
                             &mut folded,
                             &residual_blocks,

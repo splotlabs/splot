@@ -58,7 +58,7 @@ pub(crate) struct EncoderCompoundMotion {
     /// `(RefFrame[0], RefFrame[1])` as list indices.
     pub(crate) ref_frames: (i8, i8),
     /// `YMode`; a skip-mode block codes `NEAR_NEARMV`.
-    pub(crate) y_mode: CompoundYMode,
+    pub(crate) y_mode: CompoundMode,
     /// `skip_mode`.
     pub(crate) skip_mode: bool,
     /// `RefMvIdx` of the paired stack.
@@ -66,7 +66,7 @@ pub(crate) struct EncoderCompoundMotion {
     /// The two second-DRL indices of `NEAR_NEARMV` and `NEAR_NEWMV`.
     pub(crate) independent_idx: Option<[usize; 2]>,
     /// The signed differences, in the slots the decoder reads them into.
-    pub(crate) mvd: [Mv; 2],
+    pub(crate) mvd: [MotionVector; 2],
     /// `jmvd_scale_mode`.
     pub(crate) jmvd_scale_mode: u8,
     /// `use_amvd`, where the decoder reads it (`allow_amvd_mode`, § 5.20.7.6).
@@ -114,15 +114,15 @@ impl CompoundRefinement {
 
 impl EncoderMotion {
     /// The motion vector differences in coding order (§ 5.20.7.7).
-    pub(crate) fn coded_mvds(self) -> Vec<Mv> {
+    pub(crate) fn coded_mvds(self) -> Vec<MotionVector> {
         match self {
             Self::Single(single) if single.mode == SINGLE_MODE_NEWMV => vec![single.mvd],
             Self::Warp(warp) => warp.mvd.into_iter().collect(),
             Self::Compound(compound) if !compound.skip_mode => match compound.y_mode {
-                CompoundYMode::NearNew => vec![compound.mvd[1]],
-                CompoundYMode::NewNear | CompoundYMode::JointNew => vec![compound.mvd[0]],
-                CompoundYMode::NewNew => compound.mvd.to_vec(),
-                CompoundYMode::NearNear | CompoundYMode::GlobalGlobal => Vec::new(),
+                CompoundMode::NearNew => vec![compound.mvd[1]],
+                CompoundMode::NewNear | CompoundMode::JointNew => vec![compound.mvd[0]],
+                CompoundMode::NewNew => compound.mvd.to_vec(),
+                CompoundMode::NearNear | CompoundMode::GlobalGlobal => Vec::new(),
             },
             _ => Vec::new(),
         }
@@ -182,7 +182,7 @@ impl EncoderInterTile {
                 compound.use_amvd,
                 matches!(
                     compound.y_mode,
-                    CompoundYMode::JointNew | CompoundYMode::NewNew
+                    CompoundMode::JointNew | CompoundMode::NewNew
                 ) && mvd_sign_derivation_block_scope_allowed(
                     if compound.local_warp {
                         MotionMode::LocalWarp
@@ -339,8 +339,8 @@ impl EncoderInterTile {
             use_optflow: false,
             ref_frame0: compound.ref_frames.0,
             ref_frame1: compound.ref_frames.1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
+            mv0: MotionVector::ZERO,
+            mv1: MotionVector::ZERO,
         };
         let facts = &self.ref_facts;
         let reads_optflow = compound_switchable_opfl_reachable(opfl, facts, block, n4w, n4h)?;
@@ -433,7 +433,7 @@ impl EncoderInterTile {
         let (global, interp) = match motion {
             EncoderMotion::Single(single) => (single.mode == SINGLE_MODE_GLOBALMV, single.interp),
             EncoderMotion::Compound(compound) => (
-                compound.y_mode == CompoundYMode::GlobalGlobal,
+                compound.y_mode == CompoundMode::GlobalGlobal,
                 compound.interp,
             ),
             EncoderMotion::Warp(_) => return Ok((ReconInterpolationFilter::EightTap, None)),
@@ -460,9 +460,9 @@ impl EncoderInterTile {
         let (n4w, n4h) = block_size4(frontier)?;
         let needs = if compound {
             let y_mode = if global {
-                CompoundYMode::GlobalGlobal
+                CompoundMode::GlobalGlobal
             } else {
-                CompoundYMode::NearNear
+                CompoundMode::NearNear
             };
             compound_needs_interp_filter(n4w, n4h, y_mode, false)
         } else {
@@ -537,14 +537,14 @@ impl EncoderInterTile {
     pub(crate) fn coded_lists(&self, compound: &EncoderCompoundMotion) -> Result<[bool; 2]> {
         Ok(match compound.y_mode {
             _ if compound.skip_mode => [false; 2],
-            CompoundYMode::NearNew => [false, true],
-            CompoundYMode::NewNear => [true, false],
-            CompoundYMode::NewNew => [true; 2],
-            CompoundYMode::JointNew => {
+            CompoundMode::NearNew => [false, true],
+            CompoundMode::NewNear => [true, false],
+            CompoundMode::NewNew => [true; 2],
+            CompoundMode::JointNew => {
                 let base_list = self.joint_projection(compound.ref_frames)?.base_list;
                 [base_list == 0, base_list == 1]
             }
-            CompoundYMode::NearNear | CompoundYMode::GlobalGlobal => [false; 2],
+            CompoundMode::NearNear | CompoundMode::GlobalGlobal => [false; 2],
         })
     }
 
@@ -554,24 +554,24 @@ impl EncoderInterTile {
         &mut self,
         frontier: &DecodeBlockFrontier,
         compound: EncoderCompoundMotion,
-        targets: [Mv; 2],
-    ) -> Result<[Mv; 2]> {
+        targets: [MotionVector; 2],
+    ) -> Result<[MotionVector; 2]> {
         let lists = self.coded_lists(&compound)?;
         let base = self.motion_vectors(
             frontier,
             EncoderMotion::Compound(EncoderCompoundMotion {
-                mvd: [Mv::ZERO; 2],
+                mvd: [MotionVector::ZERO; 2],
                 ..compound
             }),
         )?;
-        let mut mvd = [Mv::ZERO; 2];
+        let mut mvd = [MotionVector::ZERO; 2];
         for list in (0..2).filter(|&list| lists[list]) {
-            let slot = if compound.y_mode == CompoundYMode::JointNew {
+            let slot = if compound.y_mode == CompoundMode::JointNew {
                 0
             } else {
                 list
             };
-            mvd[slot] = Mv {
+            mvd[slot] = MotionVector {
                 row: targets[list].row - base[list].row,
                 col: targets[list].col - base[list].col,
             };
@@ -770,7 +770,7 @@ impl EncoderInterTile {
         } else if compound.local_warp {
             return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
-        if y_mode == CompoundYMode::JointNew {
+        if y_mode == CompoundMode::JointNew {
             let (selector, modes) = if compound.use_amvd {
                 (
                     TileCdfSelector::JmvdAdaptiveScaleMode,
@@ -789,7 +789,7 @@ impl EncoderInterTile {
             _ if !y_mode.reads_drl_idx() => {}
             Some([first, second]) => {
                 drl_symbols(out, selector, 0, max_drl, first)?;
-                let min = if pair.0 == pair.1 && y_mode == CompoundYMode::NearNear {
+                let min = if pair.0 == pair.1 && y_mode == CompoundMode::NearNear {
                     first + 1
                 } else {
                     0
@@ -831,8 +831,8 @@ impl EncoderInterTile {
                     use_optflow: compound.use_optflow,
                     ref_frame0: compound.ref_frames.0,
                     ref_frame1: compound.ref_frames.1,
-                    mv0: Mv::ZERO,
-                    mv1: Mv::ZERO,
+                    mv0: MotionVector::ZERO,
+                    mv1: MotionVector::ZERO,
                 },
                 n4w,
                 n4h,
@@ -862,7 +862,7 @@ impl EncoderInterTile {
             ref_mv_idx: compound.ref_mv_idx as u8,
             independent_idx: compound.independent_idx.map(|idx| idx.map(|i| i as u8)),
             mvd: compound.mvd,
-            joint: (compound.y_mode == CompoundYMode::JointNew)
+            joint: (compound.y_mode == CompoundMode::JointNew)
                 .then(|| self.joint_projection(compound.ref_frames))
                 .transpose()?,
             jmvd_scale_mode: compound.jmvd_scale_mode,
@@ -962,9 +962,9 @@ fn comp_ref_bit(selector: TileCdfSelector, pair: (i8, i8)) -> u8 {
 }
 
 /// The `is_joint` or `compound_mode` value that reads as `y_mode`.
-fn compound_mode_symbol(selector: TileCdfSelector, y_mode: CompoundYMode) -> u8 {
+fn compound_mode_symbol(selector: TileCdfSelector, y_mode: CompoundMode) -> u8 {
     match selector {
-        TileCdfSelector::IsJoint { .. } => u8::from(y_mode == CompoundYMode::JointNew),
+        TileCdfSelector::IsJoint { .. } => u8::from(y_mode == CompoundMode::JointNew),
         TileCdfSelector::CompoundModeSameRefs { .. } => (0..4)
             .find(|&v| same_refs_compound_mode(v) == y_mode)
             .unwrap_or(0),

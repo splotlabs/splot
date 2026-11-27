@@ -3,7 +3,7 @@
 
 //! Closed-loop-key sequence activation integration tests.
 
-#![allow(clippy::unwrap_used)]
+#![expect(clippy::unwrap_used)]
 
 use core::num::NonZeroU64;
 

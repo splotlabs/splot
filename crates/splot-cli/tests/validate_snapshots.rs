@@ -4,7 +4,7 @@
 //! Text and JSON output-control snapshots (CLI-VALIDATE-OUTPUT-CONTROLS).
 //! Capped and summary-only reports retain the full report exit code.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::path::Path;
 use std::process::Command;

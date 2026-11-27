@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` raw output tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{
@@ -357,4 +357,477 @@ fn decode_raw_directory_output_path_emits_output_error_text_and_cleans_temp_file
     );
     assert!(output.is_dir(), "directory output path was replaced");
     assert_eq!(read_dir_names(&parent), before_entries);
+}
+
+#[test]
+fn decode_temporal_layer_and_output_mask_flags_match_library() {
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+    let dep8 = conformance_vector("syn-tlayer2-dependent-8bit.ivf");
+    let dep8_bytes = std::fs::read(&dep8).unwrap();
+    for (flag_val, selection) in [
+        ("0", splot_decode::TemporalLayerSelection::BASE_ONLY),
+        ("all", splot_decode::TemporalLayerSelection::All),
+    ] {
+        let output = temp_output("raw");
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--temporal-layer",
+            flag_val,
+            dep8.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &dep8_bytes,
+                splot_decode::DecodeOptions::default().with_temporal_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+
+    let sparse = conformance_vector("syn-tlayer4-sparse-dependencies.obu");
+    let sparse_bytes = std::fs::read(&sparse).unwrap();
+    for (mask_arg, mask) in [("4", 4u8), ("0x8", 8u8)] {
+        let output = temp_output("raw");
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--temporal-output-mask",
+            mask_arg,
+            sparse.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(0));
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &sparse_bytes,
+                splot_decode::DecodeOptions::default().with_temporal_layer_selection(
+                    splot_decode::TemporalLayerSelection::OutputMask(mask),
+                ),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decode_rejects_invalid_and_conflicting_temporal_flags() {
+    let input = conformance_vector("syn-tlayer2-dependent-8bit.ivf");
+    for extra in [
+        &["--temporal-layer", "0", "--temporal-output-mask", "2"][..],
+        &["--temporal-layer", "4"][..],
+        &["--temporal-output-mask", "0"][..],
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn decode_embedded_layer_and_output_mask_flags_match_decode_options() {
+    let input = conformance_vector("syn-mlayer2-crossref-8bit.obu");
+    let bytes = std::fs::read(&input).unwrap();
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+
+    for (args_extra, selection) in [
+        (
+            &["--embedded-layer", "all"][..],
+            splot_decode::EmbeddedLayerSelection::All,
+        ),
+        (
+            &["--embedded-layer", "0"][..],
+            splot_decode::EmbeddedLayerSelection::BASE_ONLY,
+        ),
+        (
+            &["--embedded-layer", "1"][..],
+            splot_decode::EmbeddedLayerSelection::Target(
+                splot_core::types::EmbeddedLayerId::from_bits(1),
+            ),
+        ),
+        (
+            &["--embedded-output-mask", "2"][..],
+            splot_decode::EmbeddedLayerSelection::OutputMask(0b10),
+        ),
+        (
+            &["--embedded-output-mask", "0x3"][..],
+            splot_decode::EmbeddedLayerSelection::OutputMask(0b11),
+        ),
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(args_extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "expected exit 0 for {args_extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &bytes,
+                splot_decode::DecodeOptions::default().with_embedded_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+}
+
+#[test]
+fn decode_rejects_invalid_and_conflicting_embedded_flags() {
+    let input = conformance_vector("syn-mlayer2-crossref-8bit.obu");
+    for extra in [
+        &["--embedded-layer", "0", "--embedded-output-mask", "2"][..],
+        &["--embedded-layer", "8"][..],
+        &["--embedded-output-mask", "0"][..],
+        &["--embedded-output-mask", "256"][..],
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn decode_extended_layer_and_output_mask_flags_match_decode_options() {
+    let iso_input = conformance_vector("syn-xlayer3-7-global-lcr-isolation.obu");
+    let iso_bytes = std::fs::read(&iso_input).unwrap();
+    let context =
+        splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::default()).unwrap();
+
+    for (args_extra, selection) in [
+        (
+            &["--extended-layer", "3"][..],
+            splot_decode::ExtendedLayerSelection::Target(
+                splot_core::types::ExtendedLayerId::from_bits(3),
+            ),
+        ),
+        (
+            &["--extended-layer", "7"][..],
+            splot_decode::ExtendedLayerSelection::Target(
+                splot_core::types::ExtendedLayerId::from_bits(7),
+            ),
+        ),
+        (
+            &["--extended-output-mask", "8"][..],
+            splot_decode::ExtendedLayerSelection::OutputMask(1 << 3),
+        ),
+        (
+            &["--extended-output-mask", "0x80"][..],
+            splot_decode::ExtendedLayerSelection::OutputMask(1 << 7),
+        ),
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(args_extra);
+        args.extend_from_slice(&[iso_input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "expected exit 0 for {args_extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut expected = Vec::new();
+        context
+            .decode_raw_bytes(
+                &iso_bytes,
+                splot_decode::DecodeOptions::default().with_extended_layer_selection(selection),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), expected);
+    }
+
+    let mixed_input = conformance_vector("syn-xlayer3-7-layered-mixed.obu");
+    let mixed_bytes = std::fs::read(&mixed_input).unwrap();
+    let mixed_out = temp_output("raw");
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        "--extended-layer",
+        "3",
+        "--embedded-layer",
+        "0",
+        "--temporal-layer",
+        "0",
+        mixed_input.to_str().unwrap(),
+        "-o",
+        mixed_out.to_str().unwrap(),
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let mut expected_3d = Vec::new();
+    context
+        .decode_raw_bytes(
+            &mixed_bytes,
+            splot_decode::DecodeOptions::default()
+                .with_extended_layer_selection(splot_decode::ExtendedLayerSelection::Target(
+                    splot_core::types::ExtendedLayerId::from_bits(3),
+                ))
+                .with_embedded_layer_selection(splot_decode::EmbeddedLayerSelection::BASE_ONLY)
+                .with_temporal_layer_selection(splot_decode::TemporalLayerSelection::BASE_ONLY),
+            &mut expected_3d,
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&mixed_out).unwrap(), expected_3d);
+
+    for (fmt, ext, flag, extra_args) in [
+        ("raw", "raw", "--extended-layer", &[][..]),
+        (
+            "y4m",
+            "y4m",
+            "--extended-layer",
+            &["--frame-rate", "25:1"][..],
+        ),
+    ] {
+        let rej_out = temp_output(ext);
+        let mut args = vec!["decode", "--output-format", fmt, flag, "all"];
+        args.extend_from_slice(extra_args);
+        args.extend_from_slice(&[iso_input.to_str().unwrap(), "-o", rej_out.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_ne!(out.status.code(), Some(0));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("multiple_extended_layers_flat_output"),
+            "stderr was: {stderr}"
+        );
+    }
+
+    let rej_mask = temp_output("raw");
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        "--extended-output-mask",
+        "0x88",
+        iso_input.to_str().unwrap(),
+        "-o",
+        rej_mask.to_str().unwrap(),
+    ]);
+    assert_ne!(out.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("multiple_extended_layers_flat_output"));
+}
+
+#[test]
+fn decode_rejects_invalid_and_conflicting_extended_flags() {
+    let input = conformance_vector("syn-xlayer3-7-global-lcr-isolation.obu");
+    for extra in [
+        &["--extended-layer", "3", "--extended-output-mask", "8"][..],
+        &["--extended-layer", "31"][..],
+        &["--extended-output-mask", "0"][..],
+        &["--extended-output-mask", "0x80000000"][..],
+    ] {
+        let output = temp_output("raw");
+        let mut args = vec!["decode", "--output-format", "raw"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&[input.to_str().unwrap(), "-o", output.to_str().unwrap()]);
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {extra:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn decode_operating_point_selection_and_conflict_flags() {
+    let input = conformance_vector("syn-msdo-ops-random-access.obu");
+    let bytes = std::fs::read(&input).unwrap();
+    let context = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(
+        splot_decode::ThreadCount::from(1usize),
+    ))
+    .unwrap();
+
+    let out_raw = temp_output("raw");
+    let res = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        "--operating-point",
+        "global:0:1",
+        input.to_str().unwrap(),
+        "-o",
+        out_raw.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        res.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&res.stderr)
+    );
+    let mut expected_raw = Vec::new();
+    context
+        .decode_raw_bytes(
+            &bytes,
+            splot_decode::DecodeOptions::default().with_operating_point_selection(
+                splot_decode::OperatingPointSelection::Global {
+                    ops_id: 0,
+                    op_index: 1,
+                },
+            ),
+            &mut expected_raw,
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&out_raw).unwrap(), expected_raw);
+
+    for (flag_val, op, expected_frames) in [
+        (
+            "global:0:0",
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 0,
+                op_index: 0,
+            },
+            6usize,
+        ),
+        (
+            "global:1:0",
+            splot_decode::OperatingPointSelection::Global {
+                ops_id: 1,
+                op_index: 0,
+            },
+            9usize,
+        ),
+        (
+            "local:3:2:0",
+            splot_decode::OperatingPointSelection::Local {
+                xlayer_id: splot_core::types::ExtendedLayerId::from_bits(3),
+                ops_id: 2,
+                op_index: 0,
+            },
+            9usize,
+        ),
+    ] {
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "hash",
+            "--operating-point",
+            flag_val,
+            input.to_str().unwrap(),
+        ]);
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "flag={flag_val}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let expected_report = context
+            .decode_hash_report_bytes(
+                &bytes,
+                splot_decode::DecodeOptions::default().with_operating_point_selection(op),
+            )
+            .unwrap();
+        assert_eq!(expected_report.frames.len(), expected_frames);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for frame in &expected_report.frames {
+            assert!(
+                stdout.contains(&frame.hashes[0].digest_hex),
+                "missing frame digest for {flag_val} in stdout: {stdout}"
+            );
+        }
+
+        let rej_raw = temp_output("raw");
+        let raw_fail = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--operating-point",
+            flag_val,
+            input.to_str().unwrap(),
+            "-o",
+            rej_raw.to_str().unwrap(),
+        ]);
+        assert_ne!(raw_fail.status.code(), Some(0));
+        assert!(
+            String::from_utf8_lossy(&raw_fail.stderr)
+                .contains("multiple_extended_layers_flat_output")
+        );
+    }
+
+    for bad_args in [
+        &["--output-format", "hash", "--operating-point", "bad"][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:16:0",
+        ][..],
+        &["--output-format", "hash", "--operating-point", "global:0:7"][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "local:31:0:0",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:0:1",
+            "--extended-layer",
+            "3",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "global:0:1",
+            "--temporal-layer",
+            "0",
+        ][..],
+        &[
+            "--output-format",
+            "hash",
+            "--operating-point",
+            "local:3:2:0",
+            "--embedded-layer",
+            "0",
+        ][..],
+    ] {
+        let mut args = vec!["decode"];
+        args.extend_from_slice(bad_args);
+        args.push(input.to_str().unwrap());
+        let out = splot(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected exit 2 for {bad_args:?}, stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }

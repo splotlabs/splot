@@ -9,7 +9,7 @@
 //! the dominant direction (`yDir`) and variance (`var`) of an 8x8 luma block from
 //! the pre-shifted (`>> (BitDepth - 8)`, minus 128) reconstructed samples using the
 //! § 7.18.2 `partial[][]` accumulation and the `Div_Table` cost; the § 7.18.3
-//! `constrain` clamp ([`cdef_constrain`], `#s-7-18-3`); and the § 7.18.3 per-sample
+//! `constrain` clamp (`#s-7-18-3`); and the § 7.18.3 per-sample
 //! primary/secondary tap accumulation ([`cdef_filter_sample`], `#s-7-18-3`), which
 //! combines the center sample, the two primary directional taps, and the four
 //! secondary directional taps (each already fetched and availability-flagged by the
@@ -41,17 +41,21 @@ use fearless_simd::{
 };
 
 use crate::ReconSample;
+use splot_core::simd::SimdBackend;
+
+mod direction_backend;
+pub use direction_backend::{
+    CdefDirectionBackend, cdef_direction_padded_with, cdef_direction_padded_with_backend,
+};
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
-/// AV2 § 7.18.3 `Cdef_Pri_Taps[2][2]`: primary-tap weights, selected by
-/// `(priStr >> coeffShift) & 1`.
-const CDEF_PRI_TAPS: [[i32; 2]; 2] = [[4, 2], [3, 3]];
-
-/// AV2 § 7.18.3 `Cdef_Sec_Taps[2][2]`: secondary-tap weights, selected by
-/// `(priStr >> coeffShift) & 1`.
-const CDEF_SEC_TAPS: [[i32; 2]; 2] = [[2, 1], [2, 1]];
+/// AV2 § 7.18.3 primary-tap weights for the strength's parity.
+fn cdef_primary_taps(strength: i32, coeff_shift: u32) -> [i32; 2] {
+    let parity = (strength >> coeff_shift) & 1;
+    [4 - parity, 2 + parity]
+}
 
 /// AV2 § 7.18.3 `Cdef_Directions[8][2][2]`: the `(dy, dx)` neighbour offsets for
 /// direction `dir` and tap index `k` (`[dir][k][0]` is the row offset, `[dir][k][1]`
@@ -113,7 +117,8 @@ pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) ->
 
 /// [`cdef_direction_padded`] for a block of a luma segment, as
 /// [`CdefLumaSegment::block`] gives it.
-pub fn cdef_direction_segment(
+#[cfg(test)]
+pub(crate) fn cdef_direction_segment(
     pad: &[u16; CDEF_SEGMENT_BLOCK_AREA],
     coeff_shift: u32,
 ) -> (usize, i32) {
@@ -121,7 +126,7 @@ pub fn cdef_direction_segment(
 }
 
 /// The eight pre-shifted rows of the block at row 2, column 2 of `pad`.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     simd: S,
@@ -140,7 +145,7 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_strided<const STRIDE: usize, const AREA: usize>(
     pad: &[u16; AREA],
@@ -187,7 +192,7 @@ const fn cdef_cost_weights(len: usize, lane: usize) -> [[i32; 8]; 2] {
 /// the last three ending one or five lanes up. Every cost weighs entry `n`
 /// like entry `len - 1 - n`, so the reversed order of partials 3 and 4 does
 /// not change it.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn cdef_direction_rows<S: SimdToken>(simd: S, rows: [i16x8<S>; 8]) -> (usize, i32) {
     let zero = i16x8::splat(simd, 0);
@@ -288,7 +293,6 @@ fearless_simd::kernel!(
     /// 3 (reversed) above. A partial's entries spill past lane 7 into a second
     /// register, which is reversed so that each entry meets its equal-weight
     /// mirror in one multiply-add.
-    #[allow(clippy::inline_always)]
     #[inline(always)]
     fn cdef_direction_avx2(_t: Avx2, rows: [i16x8<Avx2>; 8]) -> (usize, i32) {
         use core::arch::x86_64::{
@@ -386,7 +390,8 @@ fearless_simd::kernel!(
 /// Returns `0` when `threshold` is `0`; otherwise it signs and clamps `diff` toward
 /// zero by `threshold - (Abs(diff) >> dampingAdj)` where `dampingAdj = Max(0, damping
 /// - FloorLog2(threshold))`.
-pub fn cdef_constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
+#[cfg(test)]
+pub(crate) fn cdef_constrain(diff: i32, threshold: i32, damping: i32) -> i32 {
     if threshold == 0 {
         return 0;
     }
@@ -440,9 +445,8 @@ pub fn cdef_filter_sample(
     damping: i32,
     coeff_shift: u32,
 ) -> i32 {
-    let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let pri_taps = cdef_primary_taps(pri_str, coeff_shift);
+    let sec_taps = [2, 1];
     let pri_adj = constrain_damping_adj(pri_str, damping);
     let sec_adj = constrain_damping_adj(sec_str, damping);
 
@@ -488,7 +492,7 @@ pub const CDEF_PADDED_AREA: usize = u8::MAX as usize + 97;
 pub const CDEF_UNAVAILABLE: u16 = i16::MAX as u16;
 
 /// Blocks in one row segment of the strip scratch that
-/// [`cdef_filter_block_segment`] and [`cdef_filter_block_chroma_pair_segment`]
+/// `cdef_filter_block_segment` and `cdef_filter_block_chroma_pair_segment`
 /// read: the segment is gathered once for all of its blocks.
 pub const CDEF_SEGMENT_BLOCKS: usize = 4;
 
@@ -615,7 +619,7 @@ const CDEF_PAIR_SEGMENT_TAP_STARTS: CdefTapStarts = cdef_tap_starts(
 );
 
 /// Two consecutive 8-lane rows of one tap view as one 16-lane vector.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
     simd: S,
@@ -631,7 +635,7 @@ fn cdef_row_pair<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
 }
 
 /// [`cdef_row_pair`] as `i16` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_row_pair_i16<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
     simd: S,
@@ -643,21 +647,21 @@ fn cdef_row_pair_i16<S: SimdToken, const STRIDE: usize, const SPAN: usize>(
 
 /// `i8` lanes widened to `i16`, through the lower half of a doubled vector,
 /// which AVX2 widens in one instruction.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn widen_i8<S: SimdToken>(simd: S, lanes: i8x16<S>) -> i16x16<S> {
     simd.widen_i8x32(simd.combine_i8x16(lanes, lanes)).0
 }
 
 /// [`widen_i8`] for `u8` lanes.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn widen_u8<S: SimdToken>(simd: S, lanes: u8x16<S>) -> u16x16<S> {
     simd.widen_u8x32(simd.combine_u8x16(lanes, lanes)).0
 }
 
 /// `i16` lanes narrowed to `i8` with saturation.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn narrow_i16<S: SimdToken>(simd: S, lanes: i16x16<S>) -> i8x16<S> {
     let (low, high) = simd.split_i16x16(lanes);
@@ -665,7 +669,7 @@ fn narrow_i16<S: SimdToken>(simd: S, lanes: i16x16<S>) -> i8x16<S> {
 }
 
 /// `(8 + sum - (sum < 0)) >> 4`, the § 7.18.3 rounding of a tap sum.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_round<S: SimdToken>(sum: i16x16<S>) -> i16x16<S> {
     (sum + 8 + (sum >> 15)) >> 4
@@ -673,7 +677,7 @@ fn cdef_round<S: SimdToken>(sum: i16x16<S>) -> i16x16<S> {
 
 /// Writes the two 8-lane rows of `filtered` to rows `row` and `row + 1` of
 /// `out`, `W` samples each; the second only when it is below `h`.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_store_row_pair<S: SimdToken, const W: usize, T: ReconSample>(
     filtered: u16x16<S>,
@@ -702,7 +706,7 @@ fn cdef_store_row_pair<S: SimdToken, const W: usize, T: ReconSample>(
 }
 
 /// [`cdef_store_row_pair`] of the row pair `lanes`.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_store_rows<const W: usize, E: Copy>(
     lanes: [E; 16],
@@ -746,7 +750,7 @@ impl<S: SimdToken> CdefConstrain<S> {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply(self, diff: i16x16<S>) -> i16x16<S> {
         let clip = self
@@ -768,7 +772,7 @@ type CdefTapViews<'a, E, const SPAN: usize> =
 /// `pad` that starts at its displacement from the block's first sample. The
 /// scratch leaves room for a view from any byte start, so the compiler knows
 /// that the view is in bounds.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_tap_views<
     'a,
@@ -830,7 +834,7 @@ type CdefRowsArgs<'a, const AREA: usize, T> = (
 /// rows the layout holds; rows at or past `h` are computed and discarded.
 /// With `HAS_UNAVAILABLE`, taps equal to [`CDEF_UNAVAILABLE`] leave the max
 /// unchanged and constrain to zero.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows<
     S: SimdToken,
@@ -850,9 +854,8 @@ fn cdef_filter_rows<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain::new(simd, filter.sec_str, filter.damping);
     let unavailable = i16x16::splat(simd, CDEF_UNAVAILABLE as i16);
@@ -917,7 +920,7 @@ impl<S: SimdToken> CdefConstrain8<S> {
 
     /// `constrain(tap - center)` as `sign * min(|diff|, clip)`, which is the
     /// clamp to `[-clip, clip]` that [`CdefConstrain::apply`] computes.
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply(self, tap: u8x16<S>, center: u8x16<S>) -> i8x16<S> {
         let diff = tap.max(center) - tap.min(center);
@@ -928,7 +931,7 @@ impl<S: SimdToken> CdefConstrain8<S> {
 
     /// `constrain(diff)` on a tap difference in `i8` lanes; the wrapping
     /// `abs` read as `u8` is `|diff|` also for `-128`.
-    #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+    #[expect(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
     fn apply_diff(self, diff: i8x16<S>) -> i8x16<S> {
         let magnitude = diff.abs().bitcast::<u8x16<S>>();
@@ -956,7 +959,7 @@ fn cdef_u8_lanes_fit(filter: &CdefBlockFilter) -> bool {
 /// so a tap's constrain is one vector operation per step instead of two.
 /// § 7.18.3 reads only tap differences and clamps to tap values, so the
 /// result moved back by `base` is the same as the `i16` kernel's.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_8bit<
     S: SimdToken,
@@ -976,9 +979,8 @@ fn cdef_filter_rows_8bit<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain8::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(simd, filter.sec_str, filter.damping);
     let base_u8 = u8x16::splat(simd, base as u8);
@@ -1029,7 +1031,7 @@ fn cdef_filter_rows_8bit<
     Some(())
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_output_row<const W: usize, E>(
     out: &mut [E],
@@ -1055,7 +1057,7 @@ macro_rules! cdef_by_families {
 /// Copies a block's centre samples, the output of a block with no active
 /// tap family; into `u8` storage, `W <= 8` centre samples narrow as one
 /// zero-padded lane group, and a sample above 255 fails the copy.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_copy_centre_rows<
     S: SimdToken,
@@ -1110,7 +1112,7 @@ fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
 /// difference constrains to zero like the true one, the rounded sum moves
 /// the centre by less than 128, and the `min`/`max` clamp reads the
 /// differences, so the result is the same as the `i16` kernel's.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_diff8<
     S: SimdToken,
@@ -1129,9 +1131,8 @@ fn cdef_filter_rows_diff8<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let pri = CdefConstrain8::new(simd, filter.pri_str, filter.damping);
     let sec = CdefConstrain8::new(simd, filter.sec_str, filter.damping);
     let pair = |view, row| cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, row);
@@ -1219,7 +1220,7 @@ fn shr_or_zero(value: i32, shift: i32) -> i32 {
 /// the difference itself, so the weighted sum is the weighted sum of the
 /// (clipped) taps minus the centre times the active weight, 12 per tap
 /// family.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_rows_clamped<
     S: SimdToken,
@@ -1239,9 +1240,8 @@ fn cdef_filter_rows_clamped<
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
         cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
-    let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
+    let pri_taps = cdef_primary_taps(filter.pri_str, filter.coeff_shift).map(|tap| tap as i16);
+    let sec_taps = [2i16, 1];
     let weight = -12 * (i16::from(PRI) + i16::from(SEC));
     let (pri_str, sec_str) = (filter.pri_str as i16, filter.sec_str as i16);
     let pair = |view, row| cdef_row_pair_i16::<S, STRIDE, SPAN>(simd, view, row);
@@ -1287,7 +1287,6 @@ fn cdef_filter_rows_clamped<
 
 /// Dispatches [`cdef_filter_rows`] on which tap families are active; with
 /// neither, the block is its centre samples.
-#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_filter_block_rows<
     S: SimdToken,
@@ -1364,6 +1363,25 @@ pub fn cdef_filter_block_interior_to_valid_stride<T: ReconSample>(
     cdef_filter_block_padded_to_valid_stride::<false, _>(pad, w, h, filter, out, out_stride)
 }
 
+/// Variant of [`cdef_filter_block_interior_to_valid_stride`] using `backend`.
+#[doc(hidden)]
+pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, false>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
 /// SIMD CDEF filtering for a padded boundary block.
 ///
 /// Tap slots outside the active filter region must contain [`CDEF_UNAVAILABLE`].
@@ -1380,6 +1398,25 @@ pub fn cdef_filter_block_boundary_to_valid_stride<T: ReconSample>(
     cdef_filter_block_padded_to_valid_stride::<true, _>(pad, w, h, filter, out, out_stride)
 }
 
+/// Variant of [`cdef_filter_block_boundary_to_valid_stride`] using `backend`.
+#[doc(hidden)]
+pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, true>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
 fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: ReconSample>(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
@@ -1388,38 +1425,49 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool, T: Reco
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
+    baseline_simd!(simd => {
+        cdef_filter_block_to_valid_stride_simd::<_, T, HAS_UNAVAILABLE>(
+            simd, pad, w, h, filter, out, out_stride,
+        )
+    })
+}
+
+fn cdef_filter_block_to_valid_stride_simd<
+    S: SimdToken,
+    T: ReconSample,
+    const HAS_UNAVAILABLE: bool,
+>(
+    simd: S,
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T],
+    out_stride: usize,
+) -> bool {
+    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
     let (w, h) = (w.min(8), h.min(8));
     let mut block = [0u16; 64];
-    if w == 0 || !cdef_filter_block_padded::<HAS_UNAVAILABLE>(pad, h, filter, &mut block) {
+    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+    if w == 0
+        || cdef_filter_block_rows::<
+            _,
+            _,
+            8,
+            HAS_UNAVAILABLE,
+            CDEF_PADDED_SIDE,
+            2,
+            8,
+            SPAN,
+            CDEF_PADDED_AREA,
+        >(simd, args)
+        .is_none()
+    {
         return false;
     }
     let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
     let size = (w, h, unfiltered);
-    baseline_simd!(simd => cdef_publish_block(simd, &block, size, out, out_stride)).is_some()
-}
-
-/// § 7.18.3 over one padded block into the first `h` rows of the 8x8
-/// `block`, every row 8 lanes wide whatever the block's width.
-fn cdef_filter_block_padded<const HAS_UNAVAILABLE: bool>(
-    pad: &[u16; CDEF_PADDED_AREA],
-    h: usize,
-    filter: &CdefBlockFilter,
-    block: &mut [u16; 64],
-) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    baseline_simd!(simd => cdef_filter_block_rows::<
-        _,
-        _,
-        8,
-        HAS_UNAVAILABLE,
-        CDEF_PADDED_SIDE,
-        2,
-        8,
-        SPAN,
-        CDEF_PADDED_AREA,
-    >(simd, args))
-    .is_some()
+    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
@@ -1494,11 +1542,36 @@ pub fn cdef_filter_block_chroma_pair(
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
+    baseline_simd!(simd => cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out))
+}
+
+/// Variant of [`cdef_filter_block_chroma_pair`] using the caller's
+/// startup-selected static SIMD backend `backend`.
+pub fn cdef_filter_block_chroma_pair_with<B: SimdBackend>(
+    backend: B,
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => {
+        cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out)
+    })
+}
+
+fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
+    simd: S,
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
     if h > 4 {
         return false;
     }
     let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
-    baseline_simd!(simd => cdef_filter_block_rows::<
+    cdef_filter_block_rows::<
         _,
         _,
         8,
@@ -1508,16 +1581,18 @@ pub fn cdef_filter_block_chroma_pair(
         4,
         { 3 * CDEF_PAIR_STRIDE + 8 },
         CDEF_PADDED_AREA,
-    >(simd, args))
+    >(simd, args)
     .is_some()
 }
 
 mod segment;
 pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
-    CdefUnitFilters, cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment,
-    cdef_filter_segment, cdef_publish_chroma_pair,
+    CdefUnitFilters, cdef_filter_segment, cdef_filter_segment_with, cdef_publish_chroma_pair,
+    cdef_publish_chroma_pair_with,
 };
+#[cfg(test)]
+pub(crate) use segment::{cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment};
 
 /// The `constrain` dampingAdj, which depends only on the per-call strengths
 /// and is therefore derived once per sample instead of once per tap.
@@ -1585,7 +1660,6 @@ mod tests {
     }
 
     /// § 7.18.2 as written, one sample at a time.
-    #[allow(clippy::needless_range_loop)]
     fn spec_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
         let mut partial = [[0i32; 15]; 8];
         for i in 0..8 {

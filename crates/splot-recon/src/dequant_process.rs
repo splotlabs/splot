@@ -27,7 +27,10 @@
 
 use std::sync::Arc;
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase as _, i32x8, u8x16, u32x8, u64x2};
+use fearless_simd::{
+    Bytes as _, Select as _, Simd, SimdBase as _, SimdInt as _, i32x8, u8x16, u32x8, u64x2,
+};
+use splot_core::simd::SimdBackend;
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -167,6 +170,32 @@ pub fn dequantize_block(
     quant: &[i32],
     out: &mut [i32],
 ) -> Result<usize> {
+    let (written, out) = prepare_dequant_block(params, quant, out)?;
+    baseline_simd!(simd => dequantize_groups(simd, params, quant, out))?;
+    Ok(written)
+}
+
+/// Typed [`dequantize_block`] using caller-selected `backend` without baseline re-probing.
+///
+/// # Errors
+/// Returns the same shape, buffer, and denominator errors as [`dequantize_block`].
+pub fn dequantize_block_with<B: SimdBackend>(
+    backend: B,
+    params: &DequantBlockParams,
+    quant: &[i32],
+    out: &mut [i32],
+) -> Result<usize> {
+    let (written, out) = prepare_dequant_block(params, quant, out)?;
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => dequantize_groups(simd, params, quant, out))?;
+    Ok(written)
+}
+
+fn prepare_dequant_block<'a>(
+    params: &DequantBlockParams,
+    quant: &[i32],
+    out: &'a mut [i32],
+) -> Result<(usize, &'a mut [i32])> {
     let (tx_width, tx_height) = (params.tx_width, params.tx_height);
     if !matches!(tx_width, 4 | 8 | 16 | 32) || !matches!(tx_height, 4 | 8 | 16 | 32) {
         return Err(ReconError::InvalidDequantBlockShape {
@@ -192,8 +221,7 @@ pub fn dequantize_block(
             dq_denom: params.dq_denom,
         });
     }
-    baseline_simd!(simd => dequantize_groups(simd, params, quant, out))?;
-    Ok(written)
+    Ok((written, out))
 }
 
 /// Dequantizes `quant` into the as long `out` with the § 7.14.4 quantizer
@@ -205,7 +233,7 @@ pub fn dequantize_block(
 /// weighted by its quantization-matrix row under `useQm` — the values the
 /// per-coefficient [`dequant_coefficient`] writes, in the same slots. A last
 /// group shorter than eight loads zero-padded and stores only its own lanes.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
 )]
@@ -309,7 +337,7 @@ fn qm_weighted_lanes<S: Simd>(simd: S, q: u32x8<S>, m: i32x8<S>) -> u32x8<S> {
 
 /// [`dequant_coefficient`] of eight lanes with per-lane quantizers `q2`, a
 /// power-of-two `dq_denom` of `1 << denom_shift` and the clamp bound.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
 )]
@@ -322,7 +350,7 @@ pub(crate) fn dequant_lanes<S: Simd>(
     bound: i32,
 ) -> i32x8<S> {
     let sign = coeff >> (i32::BITS - 1);
-    let magnitude: u32x8<S> = ((coeff ^ sign) - sign).bitcast();
+    let magnitude = coeff.unsigned_abs();
     let product = (magnitude * q2) & 0x00FF_FFFF;
     let shift = QUANT_TABLE_BITS;
     let scaled: i32x8<S> = ((product + (1 << (shift - 1))) >> (shift + denom_shift)).bitcast();
@@ -460,7 +488,6 @@ pub fn qm_weighted_quantizer(q: u32, m: i32) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use splot_tables::tables::quantizer::QM_OFFSET;
 
@@ -837,5 +864,68 @@ mod tests {
             quantization_matrix_weight(&outside_col),
             Err(ReconError::InvalidQuantizerMatrixIndex { qm_offset: 0, .. })
         ));
+    }
+
+    #[test]
+    fn dequantize_block_with_matches_compatibility_route() {
+        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+
+        struct Probe<'a> {
+            params: &'a DequantBlockParams,
+            quant: &'a [i32],
+        }
+        impl SimdScope<Result<Vec<i32>>> for Probe<'_> {
+            fn run<B: SimdBackend>(self, backend: B) -> Result<Vec<i32>> {
+                let len = self.params.tx_width * self.params.tx_height;
+                let mut out = vec![0i32; len];
+                let written = dequantize_block_with(backend, self.params, self.quant, &mut out)?;
+                out.truncate(written);
+                Ok(out)
+            }
+        }
+
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            for (tx_width, tx_height, prefix) in [(4, 4, 5usize), (8, 8, 19), (16, 8, 41)] {
+                let quant: Vec<i32> = (0..prefix)
+                    .map(|i| {
+                        if i % 2 == 0 {
+                            i as i32 * 37
+                        } else {
+                            -(i as i32 * 29)
+                        }
+                    })
+                    .collect();
+                for qm in [
+                    None,
+                    Some(QmDequant {
+                        seg_level: 1,
+                        plane_is_chroma: bit_depth == BitDepth::Ten,
+                        qm_offset: 0,
+                        user: None,
+                    }),
+                ] {
+                    let params = DequantBlockParams {
+                        tx_width,
+                        tx_height,
+                        dc_quant: 120,
+                        ac_quant: 210,
+                        dq_denom: 2,
+                        bit_depth,
+                        qm: qm.clone(),
+                    };
+                    let mut compat = vec![0i32; tx_width * tx_height];
+                    let written = dequantize_block(&params, &quant, &mut compat).unwrap();
+                    compat.truncate(written);
+                    let typed = resolved
+                        .enter(Probe {
+                            params: &params,
+                            quant: &quant,
+                        })
+                        .unwrap();
+                    assert_eq!(typed, compat);
+                }
+            }
+        }
     }
 }

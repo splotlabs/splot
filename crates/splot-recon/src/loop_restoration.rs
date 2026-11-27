@@ -13,7 +13,9 @@
 //! Feature tracking: `RECON-LOOP-RESTORATION-SOURCE-SAMPLE`,
 //! `RECON-LOOP-RESTORATION-SOURCE-READ`.
 
-use crate::{DecodedFrameInfo, FrameRef, PlaneId, PlaneSize, ReconError, ReconSample, Result};
+#[cfg(test)]
+use crate::{DecodedFrameInfo, FrameRef, PlaneSize};
+use crate::{PlaneId, ReconError, ReconSample, Result};
 
 /// Source frame selected by AV2 § 7.20.2 for a loop-restoration sample.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,7 +186,8 @@ impl LoopRestorationPlaneBounds {
 /// caller-resolved chroma subsampling does not match the source frame format,
 /// the backing storage cannot cover the coded plane coordinate, or the selected
 /// sample cannot represent the frame bit depth.
-pub fn loop_restoration_source_sample_value<T: ReconSample>(
+#[cfg(test)]
+pub(crate) fn loop_restoration_source_sample_value<T: ReconSample>(
     plane: PlaneId,
     x: isize,
     y: isize,
@@ -211,6 +214,7 @@ pub fn loop_restoration_source_sample_value<T: ReconSample>(
     Ok(LoopRestorationSourceSampleValue { sample, value })
 }
 
+#[cfg(test)]
 fn validate_source_plane_pair<T: ReconSample>(
     plane: PlaneId,
     curr_frame: FrameRef<'_, T>,
@@ -232,6 +236,7 @@ fn validate_source_plane_pair<T: ReconSample>(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_source_subsampling_matches_frame(
     plane: PlaneId,
     bounds: &LoopRestorationSourceBounds,
@@ -254,6 +259,7 @@ fn validate_source_subsampling_matches_frame(
     Ok(())
 }
 
+#[cfg(test)]
 fn read_frame_sample<T: ReconSample>(
     frame: FrameRef<'_, T>,
     plane: PlaneId,
@@ -321,6 +327,7 @@ fn read_frame_sample<T: ReconSample>(
     Ok(*sample)
 }
 
+#[cfg(test)]
 fn storage_plane_size(info: DecodedFrameInfo, plane: PlaneId) -> Result<PlaneSize> {
     match plane {
         PlaneId::Y => Ok(info.storage_luma_size()),
@@ -427,7 +434,6 @@ fn shifted_bound(value: usize, shift: u8, context: &'static str) -> Result<isize
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};

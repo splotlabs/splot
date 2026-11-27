@@ -47,7 +47,6 @@ pub(crate) fn is_screen_content(frame: &SourceFrame) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use splot_core::annexb::parse_annex_b_obus_partial;
     use splot_core::bitio::BitReader;

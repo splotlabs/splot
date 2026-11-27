@@ -3,8 +3,6 @@
 
 //! Shared tile-payload test helpers.
 
-#![allow(clippy::unwrap_used)]
-
 use splot_core::symbol::{CdfUpdateMode, Symbol};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 

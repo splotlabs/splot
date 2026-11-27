@@ -19,6 +19,7 @@ use super::{
     luma_segment_error,
 };
 use crate::Result;
+use crate::lr_madd::{LrBackend, LrSimdOp};
 
 /// Output columns per chunk.
 const CHUNK: usize = 32;
@@ -68,8 +69,9 @@ impl<const R: usize> FlatChunks<R> {
 
     /// Finds the flat chunks of the `width`-column output whose padded source
     /// `window` starts at source row `first`.
-    pub(crate) fn update<T: LumaSimdSource>(
+    pub(crate) fn update<L: LrBackend, T: LumaSimdSource>(
         &mut self,
+        backend: L,
         window: &[&[T]],
         first: usize,
         width: usize,
@@ -81,20 +83,21 @@ impl<const R: usize> FlatChunks<R> {
         self.mask = 0;
         let full = (width / CHUNK).min(MAX_CHUNKS);
         for chunk in 0..full {
-            self.update_chunk(window, first, chunk, CHUNK + 2 * R);
+            self.update_chunk(backend, window, first, chunk, CHUNK + 2 * R);
         }
         if full < MAX_CHUNKS && !width.is_multiple_of(CHUNK) && width % CHUNK + 2 * R >= LANES {
-            self.update_chunk(window, first, full, width % CHUNK + 2 * R);
+            self.update_chunk(backend, window, first, full, width % CHUNK + 2 * R);
         }
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "a constant reach unrolls the row check"
     )]
     #[inline(always)]
-    fn update_chunk<T: LumaSimdSource>(
+    fn update_chunk<L: LrBackend, T: LumaSimdSource>(
         &mut self,
+        backend: L,
         window: &[&[T]],
         first: usize,
         chunk: usize,
@@ -105,7 +108,14 @@ impl<const R: usize> FlatChunks<R> {
         }
         let known = self.flat_until[chunk].saturating_sub(first);
         self.flat_until[chunk] = 0;
-        match flat_value(window, CHUNK * chunk, reach, known, self.values[chunk]) {
+        match flat_value(
+            backend,
+            window,
+            CHUNK * chunk,
+            reach,
+            known,
+            self.values[chunk],
+        ) {
             Ok(value) => {
                 self.mask |= 1 << chunk;
                 self.values[chunk] = value;
@@ -149,8 +159,9 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
     /// Filters the group, writing each flat chunk's value instead of
     /// filtering it.
     #[inline(never)]
-    pub(super) fn filter<O: LumaSimdOutput>(
+    pub(super) fn filter<L: LrBackend, O: LumaSimdOutput>(
         &self,
+        backend: L,
         output: &mut [O],
         params: &WienerNsLumaFilter<'_>,
         prepared_classes: &[PreparedLumaClass],
@@ -176,7 +187,14 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
                             ) else {
                                 return Err(error());
                             };
-                            filter_luma_segment_simd(filtered, window, col, class, self.max_sample);
+                            filter_luma_segment_simd(
+                                backend,
+                                filtered,
+                                window,
+                                col,
+                                class,
+                                self.max_sample,
+                            );
                         }
                         if let Some((value, run_end)) = run {
                             output
@@ -193,26 +211,59 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
     }
 }
 
+struct FlatValueOp<'a, T> {
+    window: &'a [&'a [T]],
+    start: usize,
+    width: usize,
+    known: usize,
+    value: u16,
+}
+
+impl<T: LumaSimdSource> LrSimdOp<core::result::Result<u16, usize>> for FlatValueOp<'_, T> {
+    #[expect(
+        clippy::inline_always,
+        reason = "a constant width unrolls the row check"
+    )]
+    #[inline(always)]
+    fn run<S: Simd>(self, simd: S) -> core::result::Result<u16, usize> {
+        flat_value_lanes(
+            simd,
+            self.window,
+            self.start,
+            self.width,
+            self.known,
+            self.value,
+        )
+    }
+}
+
 /// The one value the `width` columns from `start` of every row of `window`
 /// hold, given that the first `known` rows hold `value`; otherwise the
 /// window row that every window holding it shows two values in. Rows go
 /// bottom up, so that row stays in the next windows longest.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "a constant width unrolls the row check"
 )]
 #[inline(always)]
-fn flat_value<T: LumaSimdSource>(
+fn flat_value<L: LrBackend, T: LumaSimdSource>(
+    backend: L,
     window: &[&[T]],
     start: usize,
     width: usize,
     known: usize,
     value: u16,
 ) -> core::result::Result<u16, usize> {
-    crate::lr_madd::lr_simd!(simd => flat_value_lanes(simd, window, start, width, known, value))
+    backend.run(FlatValueOp {
+        window,
+        start,
+        width,
+        known,
+        value,
+    })
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "a constant width unrolls the row check"
 )]
@@ -253,7 +304,6 @@ fn flat_value_lanes<S: Simd, T: LumaSimdSource>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::super::{
         WIENER_NS_LUMA_COEFFS, WienerNsLumaPaddedSource, WienerNsLumaScratch,
@@ -262,6 +312,7 @@ mod tests {
     };
     use super::*;
     use crate::BitDepth;
+    use crate::lr_madd::BaselineLr;
 
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
 
@@ -370,7 +421,7 @@ mod tests {
                 let mut samples = vec![vec![7u16; width + 2 * R]; rows];
                 samples[row][col] = 8;
                 let mut flat = FlatChunks::<R>::new();
-                flat.update(&window(&samples), 0, width);
+                flat.update(BaselineLr, &window(&samples), 0, width);
                 assert_eq!(
                     flat.mask & 1 == 0,
                     col < CHUNK + 2 * R,
@@ -395,14 +446,19 @@ mod tests {
             }
             let mut flat = FlatChunks::<R>::new();
             for first in (0..source.len() - rows).step_by(4) {
-                flat.update(&window(&source[first..first + rows]), first, width);
+                flat.update(
+                    BaselineLr,
+                    &window(&source[first..first + rows]),
+                    first,
+                    width,
+                );
                 let uneven = (first..first + rows).contains(&odd.0);
                 assert_eq!(flat.any(), !uneven, "{odd:?} first {first}");
             }
         }
         let source = vec![vec![5u16; 64 + 2 * R]; rows];
         let mut flat = FlatChunks::<R>::new();
-        flat.update(&window(&source), 0, 64);
+        flat.update(BaselineLr, &window(&source), 0, 64);
         assert_eq!(flat.split(0, 40), (0, Some((5, 32))));
         assert_eq!(flat.split(32, 40), (32, Some((5, 40))));
     }

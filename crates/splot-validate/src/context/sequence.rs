@@ -110,14 +110,14 @@ impl DistinctMlayerTracker {
 }
 
 impl ValidatorContext {
-    /// Returns the activated in-band sequence header's general fields for `xlayer`,
+    /// Returns the activated sequence header's general fields for `xlayer`,
     /// if any. The fields are copied out so callers can keep mutating `self`.
     pub(super) fn active_general_for(
         &self,
         xlayer: ExtendedLayerId,
     ) -> Option<(SequenceHeaderId, SequenceHeaderGeneral)> {
         let id = *self.active_sequence_by_xlayer.get(&xlayer)?;
-        let header = self.sequence_headers.get(&id)?;
+        let header = self.hls.sequence_header(xlayer, id)?;
         Some((id, header.general))
     }
 
@@ -153,7 +153,12 @@ impl ValidatorContext {
         xlayer: ExtendedLayerId,
     ) -> Option<(SequenceHeaderId, SequenceHeaderGeneral)> {
         let resolved = self.active_general_for(xlayer)?;
-        if self.frame_confirmed_xlayers.contains(&xlayer) || self.sequence_headers.len() == 1 {
+        if self.frame_confirmed_xlayers.contains(&xlayer)
+            || self
+                .hls
+                .layer(xlayer)
+                .is_some_and(|layer| layer.sequences.iter().flatten().count() == 1)
+        {
             Some(resolved)
         } else {
             None
@@ -182,6 +187,7 @@ impl ValidatorContext {
     pub(super) fn on_sequence_activation(
         &mut self,
         xlayer: ExtendedLayerId,
+        activation_offset: ByteOffset,
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
@@ -203,7 +209,11 @@ impl ValidatorContext {
                     .cloned()
                     .collect();
                 if !relevant.is_empty() {
-                    pending.push((record.offset, record.ops_id, relevant));
+                    pending.push((
+                        record.offset.unwrap_or(activation_offset),
+                        record.ops_id,
+                        relevant,
+                    ));
                 }
             }
         }
@@ -211,7 +221,7 @@ impl ValidatorContext {
             self.check_ops_entries_against_active(offset, ops_id, &entries, options, report);
         }
         self.check_substream_max_ceilings(xlayer, options, report);
-        self.note_annex_a_iop_activation(xlayer, options);
+        self.note_annex_a_iop_activation(xlayer, activation_offset, options);
     }
 
     pub(super) fn observe_sequence_header(
@@ -240,10 +250,11 @@ impl ValidatorContext {
             return;
         }
 
-        self.hls
-            .record_sequence_header(u32::from(general.seq_header_id.get()));
         self.rap_replay.note_resend(
-            RapHlsKey::SequenceHeader(u32::from(general.seq_header_id.get())),
+            RapHlsKey::SequenceHeader(
+                obu.header.extended_layer_id,
+                u32::from(general.seq_header_id.get()),
+            ),
             obu.header.extended_layer_id,
         );
 
@@ -254,7 +265,6 @@ impl ValidatorContext {
         let xlayer = obu.header.extended_layer_id;
         let fingerprint = payload_fingerprint(obu.payload);
 
-        // TODO(spec: AV2-7.3.6-CODED-EXTENDED-LAYER-UNIT): enforce cross-extended-layer
         let tu_index = self.cvs.tu_index;
         match self.sequence_fingerprints.entry((xlayer, seq_header_id)) {
             Entry::Vacant(slot) => {
@@ -282,9 +292,13 @@ impl ValidatorContext {
         }
 
         let new_general = sequence_header.general;
-        self.sequence_header_offsets
-            .insert(seq_header_id, obu.offset);
-        let previous_header = self.sequence_headers.insert(seq_header_id, sequence_header);
+        let previous_header = self.hls.layer_mut(xlayer).sequences
+            [usize::from(seq_header_id.get())]
+        .replace(Box::new(StoredSequenceHeader {
+            header: sequence_header,
+            offset: Some(obu.offset),
+            fingerprint,
+        }));
         self.active_sequence_by_xlayer
             .entry(xlayer)
             .or_insert(seq_header_id);
@@ -292,42 +306,22 @@ impl ValidatorContext {
         self.snapshot_lcr_association(xlayer, seq_header_id, new_general.seq_lcr_id.get());
 
         let agreement_inputs_changed = previous_header.as_ref().is_some_and(|previous| {
-            let old = previous.general;
+            let old = previous.header.general;
             old.mlayer_dependency_map != new_general.mlayer_dependency_map
                 || old.tlayer_dependency_map != new_general.tlayer_dependency_map
                 || old.seq_lcr_id != new_general.seq_lcr_id
         });
-        let annex_a_value_space_changed = previous_header.as_ref().is_some_and(|previous| {
-            annex_a_value_space_fingerprint(&previous.general)
-                != annex_a_value_space_fingerprint(&new_general)
-        });
-        let lcr_agreement_values_changed = previous_header.as_ref().is_some_and(|previous| {
-            lcr_agreement_value_fingerprint(&previous.general)
-                != lcr_agreement_value_fingerprint(&new_general)
-        });
-        let mut layers_to_check = BTreeSet::new();
-        if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
-            layers_to_check.insert(xlayer);
-        }
-        if agreement_inputs_changed || annex_a_value_space_changed || lcr_agreement_values_changed {
-            layers_to_check.extend(
-                self.active_sequence_by_xlayer
-                    .iter()
-                    .filter(|(_, id)| **id == seq_header_id)
-                    .map(|(layer, _)| *layer),
-            );
-        }
         if agreement_inputs_changed {
             self.emitted_dependency_findings
-                .retain(|key| key.seq_header_id() != seq_header_id);
+                .retain(|key| key.sequence() != (xlayer, seq_header_id));
         }
         let external_hls_suppresses = external_declares_sequence_header(options);
-        for layer in layers_to_check {
-            self.on_sequence_activation(layer, options, report);
-            self.check_monotonic_output_order_agreement(layer, obu.offset, options, report);
+        if self.active_sequence_by_xlayer.get(&xlayer) == Some(&seq_header_id) {
+            self.on_sequence_activation(xlayer, obu.offset, options, report);
+            self.check_monotonic_output_order_agreement(xlayer, obu.offset, options, report);
             if !external_hls_suppresses {
                 let byte_offset = obu.offset.saturating_add(1);
-                self.retroactive_distinct_mlayer_check(layer, byte_offset, report);
+                self.retroactive_distinct_mlayer_check(xlayer, byte_offset, report);
             }
         }
     }
@@ -364,7 +358,10 @@ impl ValidatorContext {
             return;
         };
 
-        let Some(sequence_header) = self.sequence_headers.get(seq_header_id) else {
+        let Some(sequence_header) = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, *seq_header_id)
+        else {
             report.push(sequence_state_error(
                 "sequence-state/unknown-sequence-header-id",
                 "7.3.8",

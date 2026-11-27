@@ -163,7 +163,7 @@ impl CcsoState {
         }
     }
 
-    #[allow(clippy::inline_always, reason = "measured: a per-leaf guard")]
+    #[expect(clippy::inline_always, reason = "measured: a per-leaf guard")]
     #[inline(always)]
     pub(crate) fn read_for_block(
         &mut self,

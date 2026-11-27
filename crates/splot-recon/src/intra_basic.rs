@@ -6,6 +6,7 @@
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -87,6 +88,138 @@ impl<'a, T: ReconSample> IntraPaethEdges<'a, T> {
     }
 }
 
+#[derive(Clone, Copy)]
+struct BaselinePaeth;
+
+#[derive(Clone, Copy)]
+struct TypedPaeth<B: SimdBackend>(B);
+
+trait PaethRunner: Copy {
+    fn paeth<O: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        left: &[O],
+        above: &[O],
+        top_left: u16,
+        output: &mut [O],
+        stride_samples: usize,
+    );
+}
+
+impl PaethRunner for BaselinePaeth {
+    #[inline]
+    fn paeth<O: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        left: &[O],
+        above: &[O],
+        top_left: u16,
+        output: &mut [O],
+        stride_samples: usize,
+    ) {
+        baseline_simd!(
+            simd => paeth_rows(simd, size, left, above, top_left, output, stride_samples)
+        );
+    }
+}
+
+impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
+    #[inline]
+    fn paeth<O: IntraLaneSample>(
+        self,
+        size: IntraRectBlockSize,
+        left: &[O],
+        above: &[O],
+        top_left: u16,
+        output: &mut [O],
+        stride_samples: usize,
+    ) {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => {
+            paeth_rows(
+                simd,
+                size,
+                left,
+                above,
+                top_left,
+                output,
+                stride_samples,
+            );
+        });
+    }
+}
+
+fn prepare_paeth_inputs<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraPaethEdges<'_, T>,
+    output_len: usize,
+    stride_samples: usize,
+) -> Result<()> {
+    validate_sample_type::<T>(bit_depth)?;
+    validate_intra_edge_samples(IntraPaethEdge::Left, edges.left, size.height(), bit_depth)?;
+    validate_intra_edge_samples(IntraPaethEdge::Above, edges.above, size.width(), bit_depth)?;
+    validate_intra_edge_samples(
+        IntraPaethEdge::TopLeft,
+        core::slice::from_ref(&edges.top_left),
+        1,
+        bit_depth,
+    )?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "PAETH intra prediction output buffer length",
+    )?;
+    Ok(())
+}
+
+fn predict_intra_paeth_rect_into_with_runner<R: PaethRunner, T: ReconSample>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    edges: IntraPaethEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    prepare_paeth_inputs(bit_depth, size, edges, output.len(), stride_samples)?;
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u16_slice(edges.left),
+        T::u16_slice(edges.above),
+        T::u16_slice_mut(output),
+    ) {
+        runner.paeth(
+            size,
+            left,
+            above,
+            edges.top_left.to_u16(),
+            output,
+            stride_samples,
+        );
+        return Ok(());
+    }
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u8_slice(edges.left),
+        T::u8_slice(edges.above),
+        T::u8_slice_mut(output),
+    ) {
+        runner.paeth(
+            size,
+            left,
+            above,
+            edges.top_left.to_u16(),
+            output,
+            stride_samples,
+        );
+        return Ok(());
+    }
+
+    Err(ReconError::SampleTypeUnsupportedBitDepth {
+        sample_type: T::TYPE_NAME,
+        bit_depth,
+    })
+}
+
 /// Writes rectangular AV2 §7.13.2.2 basic/PAETH prediction into caller storage.
 ///
 /// `output` points at the top-left destination sample and `stride_samples` is
@@ -104,73 +237,36 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    validate_sample_type::<T>(bit_depth)?;
-    validate_intra_edge_samples(IntraPaethEdge::Left, edges.left, size.height(), bit_depth)?;
-    validate_intra_edge_samples(IntraPaethEdge::Above, edges.above, size.width(), bit_depth)?;
-    validate_intra_edge_samples(
-        IntraPaethEdge::TopLeft,
-        core::slice::from_ref(&edges.top_left),
-        1,
+    predict_intra_paeth_rect_into_with_runner(
+        BaselinePaeth,
         bit_depth,
-    )?;
-    validate_output_shape(
         size,
-        output.len(),
+        edges,
+        output,
         stride_samples,
-        "PAETH intra prediction output buffer length",
-    )?;
-    if let (Some(left), Some(above), Some(output)) = (
-        T::u16_slice(edges.left),
-        T::u16_slice(edges.above),
-        T::u16_slice_mut(output),
-    ) {
-        predict_paeth_lanes(
-            size,
-            left,
-            above,
-            edges.top_left.to_u16(),
-            output,
-            stride_samples,
-        );
-        return Ok(());
-    }
-    if let (Some(left), Some(above), Some(output)) = (
-        T::u8_slice(edges.left),
-        T::u8_slice(edges.above),
-        T::u8_slice_mut(output),
-    ) {
-        predict_paeth_lanes(
-            size,
-            left,
-            above,
-            edges.top_left.to_u16(),
-            output,
-            stride_samples,
-        );
-        return Ok(());
-    }
-
-    Err(ReconError::SampleTypeUnsupportedBitDepth {
-        sample_type: T::TYPE_NAME,
-        bit_depth,
-    })
+    )
 }
 
-/// Writes the § 7.13.2.2 PAETH prediction in 16 `i16` lanes: 16 columns of
-/// a row, or `16 / w` rows of a narrower block.
+/// Typed [`predict_intra_paeth_rect_into`] using caller-selected `backend`.
 ///
-/// With `base = above + left - topLeft`, `pLeft = |above - topLeft|`,
-/// `pTop = |left - topLeft|` and `pTopLeft = |above + left - 2 * topLeft|`.
-/// The validated samples are at most 10 bits, so every term fits `i16`.
-fn predict_paeth_lanes<O: IntraLaneSample>(
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_paeth_rect_into`].
+pub fn predict_intra_paeth_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
     size: IntraRectBlockSize,
-    left: &[O],
-    above: &[O],
-    top_left: u16,
-    output: &mut [O],
+    edges: IntraPaethEdges<'_, T>,
+    output: &mut [T],
     stride_samples: usize,
-) {
-    baseline_simd!(simd => paeth_rows(simd, size, left, above, top_left, output, stride_samples));
+) -> Result<()> {
+    predict_intra_paeth_rect_into_with_runner(
+        TypedPaeth(backend),
+        bit_depth,
+        size,
+        edges,
+        output,
+        stride_samples,
+    )
 }
 
 #[inline]
@@ -252,7 +348,6 @@ fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -513,5 +608,75 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_route() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 3)] {
+                    let size = rect_size(log2_w, log2_h);
+                    let stride = size.width() + 4;
+                    let left8: Vec<u8> = (0..size.height()).map(|i| (i * 17 + 5) as u8).collect();
+                    let above8: Vec<u8> = (0..size.width()).map(|i| (i * 23 + 9) as u8).collect();
+                    let edges8 = IntraPaethEdges::new(&left8[..], &above8[..], 101u8);
+                    let mut compat8 = vec![3u8; stride * size.height()];
+                    let mut typed8 = Vec::from(compat8.as_slice());
+                    predict_intra_paeth_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        edges8,
+                        &mut compat8,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_paeth_rect_into_with(
+                        backend,
+                        BitDepth::Eight,
+                        size,
+                        edges8,
+                        &mut typed8,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed8, compat8);
+
+                    let left10: Vec<u16> = (0..size.height())
+                        .map(|i| (i as u16 * 59 + 11) % 1024)
+                        .collect();
+                    let above10: Vec<u16> = (0..size.width())
+                        .map(|i| (i as u16 * 83 + 17) % 1024)
+                        .collect();
+                    let edges10 = IntraPaethEdges::new(&left10[..], &above10[..], 417u16);
+                    let mut compat10 = vec![7u16; stride * size.height()];
+                    let mut typed10 = Vec::from(compat10.as_slice());
+                    predict_intra_paeth_rect_into(
+                        BitDepth::Ten,
+                        size,
+                        edges10,
+                        &mut compat10,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_paeth_rect_into_with(
+                        backend,
+                        BitDepth::Ten,
+                        size,
+                        edges10,
+                        &mut typed10,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed10, compat10);
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

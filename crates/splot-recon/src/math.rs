@@ -127,7 +127,8 @@ pub fn resolve_division(num: i32, den: i32, shift: u8) -> i16 {
 
 /// AV2 § 4.8 `Clip1` over a block of `Round2(s, InterRound1)` predictor values,
 /// clamping each to `[0, max_sample]` for the single-reference write path.
-pub fn clip1_predicted_samples(values: Vec<i32>, max_sample: i32) -> Vec<u16> {
+#[cfg(test)]
+pub(crate) fn clip1_predicted_samples(values: Vec<i32>, max_sample: i32) -> Vec<u16> {
     values
         .into_iter()
         .map(|value| value.clamp(0, max_sample) as u16)

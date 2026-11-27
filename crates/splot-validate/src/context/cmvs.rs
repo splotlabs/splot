@@ -264,9 +264,9 @@ impl CmvsTracker {
     /// configuration record present. Under the MSDO-alone boundary rules such a temporal
     /// unit ENDS the CMVS (§ 7.3.2 end condition 2 fires — "does not contain an OBU_MSDO
     /// and does not have an activated global LCR", and there is no MSDO); under the
-    /// MSDO+activated-global-LCR rules it does NOT end (the activated global LCR makes end
+    /// MSDO+activated-global-LCR rules it does not end (the activated global LCR makes end
     /// condition 2 false), so the two boundary sets diverge here. Whether the global LCR is
-    /// genuinely *activated* (making the divergence real and decidable) is confirmed by the
+    /// *activated* (making the divergence real and decidable) is confirmed by the
     /// caller against the association chain; this only reports the structural candidate.
     pub(super) fn last_completed_is_boundary_divergence_candidate(&self) -> bool {
         self.last_completed.is_some_and(|f| {

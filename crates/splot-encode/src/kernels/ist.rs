@@ -6,14 +6,16 @@
 //! row and the primary coefficients `x` at the layout's output positions; the
 //! outputs go to the input positions and every other coefficient is zero.
 
-use fearless_simd::{Level, SimdBase as _, dispatch, i32x8};
+use fearless_simd::{
+    Level, SimdBase as _, SimdCombine as _, SimdWiden as _, dispatch, i8x16, i32x8,
+};
 
 use splot_recon::SecondaryTransformLayout;
 use splot_recon::math::round2_signed_i32;
 
 use super::KernelError;
 
-const LANES: usize = 8;
+const LANES: usize = 16;
 
 /// The clipped primary coefficients the kernel columns weigh, after checking
 /// that `coeffs` holds every layout position.
@@ -86,8 +88,11 @@ pub(crate) fn forward_simd(
         {
             let mut acc = i32x8::splat(simd, 0);
             for (k, v) in row.chunks_exact(LANES).zip(x.chunks_exact(LANES)) {
-                let k: [i8; LANES] = core::array::from_fn(|i| k[i]);
-                acc += i32x8::load_array(simd, k.map(i32::from)) * i32x8::from_slice(simd, v);
+                let (lo, hi) = i8x16::from_slice(simd, k).widen();
+                let (low0, low1) = lo.widen();
+                let (high0, high1) = hi.widen();
+                acc += low0.combine(low1) * i32x8::from_slice(simd, &v[..8]);
+                acc += high0.combine(high1) * i32x8::from_slice(simd, &v[8..]);
             }
             *sum = acc.reduce_sum();
         }
@@ -97,7 +102,6 @@ pub(crate) fn forward_simd(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use proptest::prelude::*;
     use splot_recon::{

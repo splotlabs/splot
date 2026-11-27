@@ -18,6 +18,9 @@ use crate::Result;
 use crate::pipeline::inflight::FrameSlotWriter;
 use parking_lot::Mutex;
 
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{BlockEvidenceState, DecodeStage};
+
 const MI_SIZE: usize = 4;
 
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
@@ -25,6 +28,8 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     plane_sizes: [Option<splot_recon::PlaneSize>; 3],
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")]
+    stage_capture: Option<Arc<BlockEvidenceState>>,
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
@@ -51,6 +56,8 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     mi_cols: usize,
     subsampling: (usize, usize),
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")]
+    stage_capture: Option<Arc<BlockEvidenceState>>,
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
@@ -78,6 +85,7 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     max_sample_fits: bool,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     lr_plane_ends: [usize; 2],
+    lr_max_block_height: usize,
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
@@ -100,24 +108,17 @@ type WindowPlanes<'a, T> = (
     [Option<crate::filters::source::FramePlane<'a, T>>; 3],
 );
 
-/// A filled stripe window, with the planes loop restoration filters in the
-/// stripe and its `stripe_in_place` result.
+type LrBlockRanges = [core::ops::Range<usize>; 3];
+
 type FilledWindow<T> = (
     crate::filters::source::DeblockedWindow<T>,
-    [bool; 3],
+    LrBlockRanges,
     [bool; 3],
 );
 
 /// The terminal freeze's result: the frame of a private sink, or `None` once a
 /// slot writer settled it, plus the records handed back to the scratch.
 pub(crate) type FrozenFrame<T> = Result<(Option<DecodedFrame<T>>, super::FrameFilterRecords)>;
-
-/// One completed stripe whose index and samples move together into publication.
-pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
-    stripe: usize,
-    frame: final_filters::FilteredStripe<T>,
-    direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
-}
 
 /// One scheduled stripe with its private deblocked input window.
 pub(crate) struct OwnedFilterJob<T: ReconSample> {
@@ -246,6 +247,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             filter_records: super::FrameFilterRecords::default(),
+            #[cfg(feature = "block-evidence")]
+            stage_capture: None,
             cdef_grid: None,
             ccso_grid: None,
             gdf_grid: None,
@@ -268,6 +271,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// decoded-frame info is known before the samples are filtered.
     pub(crate) const fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
         self.info
+    }
+
+    #[cfg(feature = "block-evidence")]
+    pub(crate) fn set_stage_capture(&mut self, capture: Option<Arc<BlockEvidenceState>>) {
+        self.stage_capture = capture;
     }
 
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
@@ -315,6 +323,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<OwnedFilterSetup<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
+        let info = self.info;
+        let pixel_format = info.pixel_format();
+        let subsampling = (
+            usize::from(pixel_format.subsampling_x()),
+            usize::from(pixel_format.subsampling_y()),
+        );
         self.lossless_grid = lossless_grid(
             &core,
             (mi_rows, mi_cols),
@@ -322,7 +336,36 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &self.filter_records.chroma_deblock_blocks,
             &mut self.filter_records.lossless_cells,
         )?;
-        if self.needs_lr_tx_skip_grid(&core) {
+        let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
+        #[cfg(test)]
+        let bru_lr_pre_blocks = has_bru_lr_audit_sink().then(|| lr_source_blocks.clone());
+        let lr_source_blocks = final_filters::filter_lr_source_blocks_for_bru(
+            lr_source_blocks,
+            self.filter_records.bru_modes.as_deref(),
+            subsampling,
+        )?;
+        #[cfg(test)]
+        if let Some(pre_bru_blocks) = bru_lr_pre_blocks {
+            record_bru_lr_audit(
+                &core,
+                disable_loopfilters_across_tiles,
+                mi_rows,
+                mi_cols,
+                self.filter_records.bru_modes.as_deref(),
+                self.gdf_grid.as_ref(),
+                pre_bru_blocks,
+                &lr_source_blocks,
+            );
+        }
+        let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
+        let (lr_source_blocks, lr_plane_ends) =
+            final_filters::lr_source_blocks_by_plane(lr_source_blocks);
+        let lr_max_block_height = lr_source_blocks
+            .iter()
+            .map(|block| block.height)
+            .max()
+            .unwrap_or(0);
+        if super::lr_uses_tx_skip(&core) && lr_plane_ends[0] > 0 {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
         let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols)?;
@@ -331,20 +374,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &mut self.filter_records.cdef_strengths,
         )
         .map(|()| core::mem::take(&mut self.filter_records.cdef_strengths));
-        let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
-        let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
-        let (lr_source_blocks, lr_plane_ends) =
-            final_filters::lr_source_blocks_by_plane(lr_source_blocks);
         let mut stripes = core::mem::take(&mut self.filter_records.stripes);
         let mut ranges = core::mem::take(&mut stripes.ranges);
         crate::filters::gdf::stripe_ranges_into(&core, self.luma_height, &mut ranges)?;
         let mut stripe_lifecycles = core::mem::take(&mut stripes.lifecycles);
-        let info = self.info;
-        let pixel_format = info.pixel_format();
-        let subsampling = (
-            usize::from(pixel_format.subsampling_x()),
-            usize::from(pixel_format.subsampling_y()),
-        );
         let ccso_config = self
             .ccso_grid
             .as_ref()
@@ -384,6 +417,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             mut filter_records,
+            #[cfg(feature = "block-evidence")]
+            stage_capture,
             cdef_grid,
             ccso_grid,
             gdf_grid,
@@ -403,6 +438,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             pixel_format,
+            #[cfg(feature = "block-evidence")]
+            stage_capture,
             cdef_grid,
             cdef_skip_grid,
             cdef_strengths,
@@ -419,6 +456,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
             lr_source_blocks,
             lr_plane_ends,
+            lr_max_block_height,
             lr_unit_filters,
             ranges,
             filter_records,
@@ -435,8 +473,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(setup)
     }
 
-    pub(crate) fn into_filtered_frame(
+    pub(crate) fn into_filtered_frame<B: splot_core::simd::SimdBackend>(
         self,
+        backend: B,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
@@ -446,7 +485,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
-        let (frame, _shell) = frontier.run_inline()?.finish(writer);
+        let (frame, _shell) = frontier.run_inline(backend)?.finish(writer);
         frame
     }
 }
@@ -477,6 +516,29 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
             .progress
             .frontier_rows()
             .ok_or_else(lr_pipeline_state_error)?;
+        #[cfg(feature = "block-evidence")]
+        if let Some(capture) = &setup.stage_capture
+            && let Some((plane, region)) = capture.stage_region()
+        {
+            let _ = rows.with_plane_rows_mut(
+                plane,
+                region.y(),
+                region.y() + region.height(),
+                |samples, stride, _, _, origin| {
+                    capture.record_stage(
+                        DecodeStage::Reconstruction,
+                        plane,
+                        region,
+                        true,
+                        |x, y| {
+                            samples
+                                .get((y - origin) * stride + x)
+                                .map(|value| i32::from(value.to_u16()))
+                        },
+                    );
+                },
+            );
+        }
         let deblock = match setup.core.deblocking_filter_params {
             Some(filter) if filter.apply_deblocking_filter == [false; 4] => None,
             Some(filter) => crate::filters::deblock::FrameDeblock::prepare_owned(
@@ -525,7 +587,10 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
     ///
     /// # Errors
     /// Returns the deblock's or the window copy's own diagnostic.
-    pub(crate) fn advance(&mut self) -> Result<Option<OwnedFilterJob<T>>> {
+    pub(crate) fn advance<B: splot_core::simd::SimdBackend>(
+        &mut self,
+        backend: B,
+    ) -> Result<Option<OwnedFilterJob<T>>> {
         let setup = self
             .setup
             .as_ref()
@@ -535,6 +600,7 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
             return Ok(None);
         };
         advance_deblock_for_stripe(
+            backend,
             self.deblock.as_mut(),
             &mut self.rows,
             range,
@@ -549,9 +615,12 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
         Ok(Some(job))
     }
 
-    pub(crate) fn run_inline(mut self) -> Result<OwnedFilterFinish<T>> {
-        while let Some(job) = self.advance()? {
-            job.run()?;
+    pub(crate) fn run_inline<B: splot_core::simd::SimdBackend>(
+        mut self,
+        backend: B,
+    ) -> Result<OwnedFilterFinish<T>> {
+        while let Some(job) = self.advance(backend)? {
+            job.run(backend)?;
         }
         self.finish()
     }
@@ -662,18 +731,25 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         [luma, lr[1], lr[2]]
     }
 
-    fn lr_stripe_blocks(
-        &self,
-        range: (usize, usize),
-    ) -> (
-        [&[crate::bitstream::tile_payload::WienerNsLrSourceBlock]; 3],
-        [bool; 3],
-    ) {
-        let [y_end, u_end] = self.lr_plane_ends;
-        let (y_runs, rest) = self.lr_source_blocks.split_at(y_end);
-        let (u_runs, v_runs) = rest.split_at(u_end - y_end);
-        self.chain()
-            .lr_stripe_blocks(range, [y_runs, u_runs, v_runs])
+    fn lr_block_ranges(&self, (start, end): (usize, usize)) -> LrBlockRanges {
+        let [u, v] = self.lr_plane_ends;
+        let planes = [0..u, u..v, v..self.lr_source_blocks.len()];
+        core::array::from_fn(|plane| {
+            let shift = if plane == 0 { 0 } else { self.subsampling.1 };
+            let start_y = start >> shift;
+            let range = &planes[plane];
+            let blocks = &self.lr_source_blocks[range.clone()];
+            let earliest_overlapping_y =
+                start_y.saturating_sub(self.lr_max_block_height.saturating_sub(1));
+            let first = blocks.partition_point(|block| block.y < earliest_overlapping_y);
+            let near = final_filters::lr_blocks_near_rows(
+                &blocks[first..],
+                start_y,
+                end.div_ceil(1 << shift),
+            );
+            let base = range.start + first;
+            base + near.start..base + near.end
+        })
     }
 
     fn ready_stripe(&self, stripe: usize, final_rows: usize) -> Result<Option<(usize, usize)>> {
@@ -719,7 +795,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         let range = self
             .ready_stripe(stripe, frame.final_luma_rows())?
             .ok_or_else(lr_pipeline_state_error)?;
-        let (_, active_lr) = self.lr_stripe_blocks(range);
+        let blocks = self.lr_block_ranges(range);
+        let active_lr = blocks.each_ref().map(|rows| !rows.is_empty());
         let in_place = self.stripe_in_place(range, active_lr);
         let [all, chroma, luma] = in_place;
         let skip = [all || luma, chroma, chroma];
@@ -733,7 +810,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             self.give_window(window);
             return Err(error);
         }
-        Ok((window, active_lr, in_place))
+        Ok((window, blocks, in_place))
     }
 
     /// The planes whose window holds only the rows the first and the last
@@ -763,30 +840,36 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.
-    fn run_window(
+    fn run_window<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         stripe: usize,
-        (window, active_lr, in_place): FilledWindow<T>,
+        (window, blocks, in_place): FilledWindow<T>,
     ) -> Result<()> {
-        let result = self.run_filled(stripe, &window, [active_lr, in_place]);
+        let result = self.run_filled(backend, stripe, &window, blocks, in_place);
         self.give_window(window);
         result
     }
 
     /// Claims, filters and publishes one stripe from its filled window.
-    fn run_filled(
+    fn run_filled<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         stripe: usize,
         window: &crate::filters::source::DeblockedWindow<T>,
-        plan: [[bool; 3]; 2],
+        blocks: LrBlockRanges,
+        in_place: [bool; 3],
     ) -> Result<()> {
-        self.claim(stripe)
-            .and_then(|range| {
-                let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
-                let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
-                self.run_claimed_planes(stripe, range, &(planes, lower), plan)
-            })
-            .and_then(|filtered| self.publish(filtered))
+        let range = self.claim(stripe)?;
+        let planes = window.planes().ok_or_else(lr_pipeline_state_error)?;
+        let lower = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| window.lower(plane));
+        let mut direct = self
+            .progress
+            .direct_stripe(stripe)
+            .ok_or_else(lr_pipeline_state_error)?;
+        let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
+        let frame = self.run_planes(backend, range, &(planes, lower), target, blocks, in_place)?;
+        self.publish(stripe, frame, direct)
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
@@ -829,38 +912,23 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         Ok(())
     }
 
-    fn run_claimed_planes(
+    fn publish(
         &self,
         stripe: usize,
-        range: &(usize, usize),
-        deblocked: &WindowPlanes<'_, T>,
-        plan: [[bool; 3]; 2],
-    ) -> Result<OwnedFilteredStripe<T>> {
-        let mut direct = self
-            .progress
-            .direct_stripe(stripe)
-            .ok_or_else(lr_pipeline_state_error)?;
-        let target = direct.take_target().ok_or_else(lr_pipeline_state_error)?;
-        Ok(OwnedFilteredStripe {
-            stripe,
-            frame: self.run_planes(range, deblocked, target, plan)?,
-            direct,
-        })
-    }
-
-    /// Moves one completed stripe into the frame output exactly once.
-    pub(crate) fn publish(&self, stripe: OwnedFilteredStripe<T>) -> Result<()> {
+        frame: final_filters::FilteredStripe<T>,
+        direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
+    ) -> Result<()> {
         let chain = self.chain();
-        chain.validate_filter_stripe(PlaneId::Y, &stripe.frame.y)?;
-        if let Some(plane) = stripe.frame.u.as_ref() {
+        chain.validate_filter_stripe(PlaneId::Y, &frame.y)?;
+        if let Some(plane) = frame.u.as_ref() {
             chain.validate_filter_stripe(PlaneId::U, plane)?;
         }
-        if let Some(plane) = stripe.frame.v.as_ref() {
+        if let Some(plane) = frame.v.as_ref() {
             chain.validate_filter_stripe(PlaneId::V, plane)?;
         }
         {
             let mut state = self.stripe_state.lock();
-            let Some(lifecycle) = state.get_mut(stripe.stripe) else {
+            let Some(lifecycle) = state.get_mut(stripe) else {
                 return Err(lr_pipeline_state_error());
             };
             if *lifecycle != StripeLifecycle::Claimed {
@@ -868,7 +936,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        let OwnedFilteredStripe { frame, direct, .. } = stripe;
         if !frame.y.is_direct()
             || frame.u.as_ref().is_some_and(|plane| !plane.is_direct())
             || frame.v.as_ref().is_some_and(|plane| !plane.is_direct())
@@ -907,8 +974,68 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
-    fn cdef_ccso_range<'d>(
+    #[cfg(feature = "block-evidence")]
+    fn capture_filter(
         &self,
+        stage: DecodeStage,
+        range: (usize, usize),
+        applied: bool,
+        plane: Option<crate::filters::source::FramePlane<'_, T>>,
+    ) {
+        let Some(capture) = &self.stage_capture else {
+            return;
+        };
+        let Some((id, _)) = capture.stage_region() else {
+            return;
+        };
+        let Some(plane) = plane else { return };
+        let scale = 1
+            << (if id == PlaneId::Y {
+                0
+            } else {
+                self.subsampling.1
+            });
+        let top = range.0 / scale;
+        let bottom = range.1.div_ceil(scale);
+        if let Ok(rect) = splot_recon::PlaneRect::new(0, top, plane.width(), bottom - top) {
+            capture.record_stage(stage, id, rect, applied, |x, y| {
+                plane.row(y)?.get(x).map(|value| i32::from(value.to_u16()))
+            });
+        }
+    }
+
+    #[cfg(feature = "block-evidence")]
+    fn capture_cdef_ccso(
+        &self,
+        stage: DecodeStage,
+        range: (usize, usize),
+        cdef: &crate::filters::cdef::CdefFrame<'_, T>,
+        applied: impl FnOnce(PlaneId) -> bool,
+    ) {
+        let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        else {
+            return;
+        };
+        let filtered = match plane {
+            PlaneId::Y => Some(&cdef.filtered_y),
+            PlaneId::U => cdef.filtered_u.as_ref(),
+            PlaneId::V => cdef.filtered_v.as_ref(),
+        };
+        self.capture_filter(
+            stage,
+            range,
+            applied(plane),
+            filtered.and_then(|filtered| filtered.view().ok()),
+        );
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn cdef_ccso_range<'d, B: splot_core::simd::SimdBackend>(
+        &self,
+        backend: B,
         deblocked: crate::filters::source::DeblockedPlanes<'d, T>,
         chain: &StripeChain<'_>,
         start: usize,
@@ -916,7 +1043,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
         luma_output: bool,
     ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
+        #[cfg(feature = "block-evidence")]
+        let primary = target.is_some()
+            && self
+                .stage_capture
+                .as_ref()
+                .and_then(|capture| capture.stage_region())
+                .is_some_and(|(plane, _)| luma_output || plane != PlaneId::Y);
         let mut cdef = crate::filters::cdef::cdef_stripe_into(
+            backend,
             deblocked,
             self.cdef_strengths.as_deref(),
             &self.cdef_units,
@@ -937,8 +1072,22 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             _ => None,
         })
         .map_err(|plane| filter_error(plane, "CDEF stripe output"))?;
+        #[cfg(feature = "block-evidence")]
+        if primary {
+            self.capture_cdef_ccso(DecodeStage::Cdef, (start, end), &cdef, |plane| {
+                let identity = crate::filters::cdef::cdef_stripe_identity(
+                    self.cdef_strengths.as_deref(),
+                    chain.cdef_grid,
+                    self.cdef_skip_grid.as_ref(),
+                    (self.mi_rows, self.mi_cols),
+                    (start, end),
+                );
+                !identity[usize::from(plane != PlaneId::Y)]
+            });
+        }
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             crate::filters::ccso::ccso_stripe(
+                backend,
                 &mut cdef,
                 grid,
                 config,
@@ -947,6 +1096,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 self.filter_records.bru_modes.as_deref(),
             )
             .map_err(|error| ccso_filter_error(&error))?;
+        }
+        #[cfg(feature = "block-evidence")]
+        if primary {
+            self.capture_cdef_ccso(DecodeStage::Ccso, (start, end), &cdef, |plane| {
+                chain
+                    .ccso_grid
+                    .and(self.ccso_config.as_ref())
+                    .is_some_and(|config| config.filters_plane(plane))
+            });
         }
         Ok(cdef)
     }
@@ -960,8 +1118,9 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// the stripe already holds are resolved from it first, so any overlap
     /// between the two is redundant rather than wrong. `GDF_READ_RADIUS` is the
     /// widest of the stripe-crossing readers, so one fringe serves them all.
-    fn cdef_overlap_planes(
+    fn cdef_overlap_planes<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
         chain: &StripeChain<'_>,
         start: usize,
@@ -978,8 +1137,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                           range_start: usize,
                           range_end: usize|
          -> Result<()> {
-            let fringe =
-                self.cdef_ccso_range(deblocked, chain, range_start, range_end, None, true)?;
+            let fringe = self.cdef_ccso_range(
+                backend,
+                deblocked,
+                chain,
+                range_start,
+                range_end,
+                None,
+                true,
+            )?;
             overlap.y.push(fringe.filtered_y);
             overlap.u.extend(fringe.filtered_u);
             overlap.v.extend(fringe.filtered_v);
@@ -1007,6 +1173,14 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// whether none changes its luma and the chroma filters read no luma past
     /// the stripe, so the luma target serves as the deblocked luma.
     fn stripe_in_place(&self, (start, end): (usize, usize), active_lr: [bool; 3]) -> [bool; 3] {
+        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
+        let unfiltered = |plane: PlaneId| {
+            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
+        };
+
+        if !unfiltered(PlaneId::U) || !unfiltered(PlaneId::V) {
+            return [false; 3];
+        }
         let [luma, chroma] = crate::filters::cdef::cdef_stripe_identity(
             self.cdef_strengths.as_deref(),
             self.cdef_grid.as_ref(),
@@ -1014,33 +1188,55 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             (self.mi_rows, self.mi_cols),
             (start, end),
         );
-        let ccso = self.ccso_grid.as_ref().and(self.ccso_config.as_ref());
-        let unfiltered = |plane: PlaneId| {
-            !active_lr[plane.index()] && !ccso.is_some_and(|config| config.filters_plane(plane))
-        };
-        let chroma = chroma && unfiltered(PlaneId::U) && unfiltered(PlaneId::V);
         let luma = luma && !self.gdf_active && unfiltered(PlaneId::Y);
-        let chroma_reads_luma = active_lr[PlaneId::U.index()]
-            || active_lr[PlaneId::V.index()]
-            || ccso.is_some_and(|config| {
-                config.filters_plane(PlaneId::U) || config.filters_plane(PlaneId::V)
-            });
-        [
-            chroma && luma,
-            chroma,
-            luma && !chroma && !chroma_reads_luma,
-        ]
+        [chroma && luma, chroma, luma && !chroma]
     }
 
-    fn run_planes(
+    fn run_planes<B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         &(start, end): &(usize, usize),
         &(deblocked, lower): &WindowPlanes<'_, T>,
         mut target: crate::pipeline::frame_progress::DirectStripeTarget<T>,
-        [active_lr, [all_in_place, chroma_in_place, luma_in_place]]: [[bool; 3]; 2],
+        blocks: LrBlockRanges,
+        [all_in_place, chroma_in_place, luma_in_place]: [bool; 3],
     ) -> Result<final_filters::FilteredStripe<T>> {
         let chain = self.chain();
-        let (plane_blocks, _) = self.lr_stripe_blocks((start, end));
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        {
+            let views = [Some(deblocked.y), deblocked.u, deblocked.v];
+            let direct = target
+                .get(plane)
+                .filter(|dest| dest.holds_deblocked())
+                .and_then(crate::pipeline::frame_progress::DirectPlaneTarget::rows);
+            let view = direct.or(views[plane.index()]);
+            let deb = self.core.deblocking_filter_params.is_some_and(|params| {
+                let switches = params.apply_deblocking_filter;
+                match plane {
+                    PlaneId::Y => switches[0] || switches[1],
+                    PlaneId::U => switches[2],
+                    PlaneId::V => switches[3],
+                }
+            });
+            self.capture_filter(DecodeStage::Deblock, (start, end), deb, view);
+            if all_in_place
+                || (luma_in_place && plane == PlaneId::Y)
+                || (chroma_in_place && plane != PlaneId::Y)
+            {
+                for stage in [
+                    DecodeStage::Cdef,
+                    DecodeStage::Ccso,
+                    DecodeStage::Restoration,
+                    DecodeStage::Gdf,
+                ] {
+                    self.capture_filter(stage, (start, end), false, view);
+                }
+            }
+        }
         let mut in_place = |plane: PlaneId| {
             target
                 .take(plane)
@@ -1074,7 +1270,32 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 filtered_u: u,
                 filtered_v: v,
                 ..
-            } = self.cdef_ccso_range(deblocked, &chain, start, end, Some(target), false)?;
+            } =
+                self.cdef_ccso_range(backend, deblocked, &chain, start, end, Some(target), false)?;
+            #[cfg(feature = "block-evidence")]
+            if let Some((plane, _)) = self
+                .stage_capture
+                .as_ref()
+                .and_then(|capture| capture.stage_region())
+            {
+                let filtered = match plane {
+                    PlaneId::Y => None,
+                    PlaneId::U => u.as_ref(),
+                    PlaneId::V => v.as_ref(),
+                };
+                self.capture_filter(
+                    DecodeStage::Restoration,
+                    (start, end),
+                    false,
+                    filtered.and_then(|filtered| filtered.view().ok()),
+                );
+                self.capture_filter(
+                    DecodeStage::Gdf,
+                    (start, end),
+                    false,
+                    filtered.and_then(|filtered| filtered.view().ok()),
+                );
+            }
             return Ok(final_filters::FilteredStripe { y: luma, u, v });
         }
         let deblocked = if chroma_in_place {
@@ -1086,6 +1307,8 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         } else {
             deblocked
         };
+        let plane_blocks = blocks.map(|range| &self.lr_source_blocks[range]);
+        let active_lr = plane_blocks.map(|runs| !runs.is_empty());
         let edges = lower.map(|plane| plane.is_some());
         let lr_copies: [bool; 3] = core::array::from_fn(|index| {
             edges[index]
@@ -1122,6 +1345,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 .map(|(core, edged)| core.over(edged))
         });
         let cdef = self.cdef_ccso_range(
+            backend,
             crate::filters::source::DeblockedPlanes {
                 y: full[0].or(planes[0]).ok_or_else(lr_pipeline_state_error)?,
                 u: full[1].or(planes[1]),
@@ -1141,8 +1365,13 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             filtered_u: cdef.filtered_u,
             filtered_v: cdef.filtered_v,
         };
-        let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
+        let cdef_overlap = if self.gdf_active || active_lr.contains(&true) {
+            self.cdef_overlap_planes(backend, deblocked, &chain, start, end)?
+        } else {
+            final_filters::CdefOverlap::default()
+        };
         let mut frame = chain.apply_lr_stripe(
+            backend,
             &self.core,
             cdef,
             &cdef_overlap,
@@ -1154,6 +1383,24 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 target: lr_target,
             },
         )?;
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        {
+            let filtered = match plane {
+                PlaneId::Y => Some(frame.post_lr_y.as_ref().unwrap_or(&frame.cdef_y)),
+                PlaneId::U => frame.post_lr_u.as_ref().or(frame.cdef_u.as_ref()),
+                PlaneId::V => frame.post_lr_v.as_ref().or(frame.cdef_v.as_ref()),
+            };
+            self.capture_filter(
+                DecodeStage::Restoration,
+                (start, end),
+                active_lr[plane.index()],
+                filtered.and_then(|filtered| filtered.view().ok()),
+            );
+        }
         if self.gdf_active {
             let (separate_cdef_luma, output_luma) =
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
@@ -1162,6 +1409,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                     (None, &mut frame.cdef_y)
                 };
             crate::filters::gdf::apply_stripe(
+                backend,
                 &self.core,
                 frame.deblocked_y,
                 separate_cdef_luma,
@@ -1172,9 +1420,29 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 self.bit_depth,
                 self.disable_loopfilters_across_tiles,
                 chain.gdf_reference,
+                self.filter_records.bru_modes.as_deref(),
             )?;
         }
         let mut filtered = frame.into_filtered();
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+            && !(chroma_in_place && plane != PlaneId::Y)
+        {
+            let output = match plane {
+                PlaneId::Y => Some(&filtered.y),
+                PlaneId::U => filtered.u.as_ref(),
+                PlaneId::V => filtered.v.as_ref(),
+            };
+            self.capture_filter(
+                DecodeStage::Gdf,
+                (start, end),
+                self.gdf_active && plane == PlaneId::Y,
+                output.and_then(|output| output.view().ok()),
+            );
+        }
         if let Some([u, v]) = chroma {
             (filtered.u, filtered.v) = (u, v);
         }
@@ -1242,12 +1510,12 @@ impl<T: ReconSample> OwnedFilterJob<T> {
     }
 
     /// Claims and runs one stripe, then publishes it exactly once.
-    pub(crate) fn run(self) -> Result<()> {
+    pub(crate) fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<()> {
         self.setup
             .as_ref()
             .as_ref()
             .ok_or_else(lr_pipeline_state_error)?
-            .run_window(self.stripe, self.window)
+            .run_window(backend, self.stripe, self.window)
     }
 }
 
@@ -1348,7 +1616,8 @@ const TILE_ROW_FRINGE_MARGIN: usize = 8;
 ///
 /// The private window lets the stripe chain run while deblock continues in
 /// place below it.
-fn advance_deblock_for_stripe<T: ReconSample>(
+fn advance_deblock_for_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     sections: Option<&mut crate::filters::deblock::FrameDeblock>,
     source: &mut crate::pipeline::frame_progress::FrontierRows<T>,
     range: &(usize, usize),
@@ -1361,6 +1630,7 @@ fn advance_deblock_for_stripe<T: ReconSample>(
         let reach = crate::filters::deblock::DEBLOCK_PASS_1_REACH << subsampling_y;
         sections
             .advance_source(
+                backend,
                 source,
                 needed.saturating_add(reach).div_ceil(MI_SIZE),
                 bit_depth,
@@ -1471,6 +1741,7 @@ impl StripeChain<'_> {
 }
 
 impl<T: ReconSample> WienerNsLrReconSink<T> {
+    #[cfg(test)]
     fn needs_lr_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
         super::lr_uses_tx_skip(core)
             && self
@@ -1558,3 +1829,137 @@ fn mi_extent(log2_width: u32, log2_height: u32) -> (usize, usize) {
 
 mod final_filters;
 pub(crate) mod full_recon;
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct BruLrFrameAudit {
+    pub(crate) use_bru: bool,
+    pub(crate) bru_inactive: bool,
+    pub(crate) disable_loopfilters_across_tiles: bool,
+    pub(crate) lr_uses_lr: bool,
+    pub(crate) plane_restoration_types: [splot_core::headers::frame::FrameRestorationType; 3],
+    pub(crate) gdf_frame_enable: bool,
+    pub(crate) gdf_per_block: bool,
+    pub(crate) gdf_enabled_units: usize,
+    pub(crate) gdf_total_units: usize,
+    pub(crate) allow_intrabc: bool,
+    pub(crate) allow_local_intrabc: bool,
+    pub(crate) allow_global_intrabc: bool,
+    pub(crate) intrabc_block_count: usize,
+    pub(crate) superblock_modes: Vec<(usize, usize, Option<u8>)>,
+    pub(crate) pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    pub(crate) post_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static BRU_LR_AUDIT_SINK: core::cell::RefCell<Option<Vec<BruLrFrameAudit>>> =
+        const { core::cell::RefCell::new(None) };
+    static BRU_INTRABC_BLOCKS: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_bru_intrabc_block() {
+    if has_bru_lr_audit_sink() {
+        BRU_INTRABC_BLOCKS.with(|count| count.set(count.get() + 1));
+    }
+}
+
+#[cfg(test)]
+fn has_bru_lr_audit_sink() -> bool {
+    BRU_LR_AUDIT_SINK.with(|sink| sink.borrow().is_some())
+}
+
+#[cfg(test)]
+#[expect(clippy::too_many_arguments)]
+fn record_bru_lr_audit(
+    core: &splot_core::headers::frame::FrameHeaderCore,
+    disable_loopfilters_across_tiles: bool,
+    mi_rows: usize,
+    mi_cols: usize,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
+    gdf_grid: Option<&crate::filters::gdf::GdfBlockGrid>,
+    pre_bru_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    post_bru_blocks: &[crate::bitstream::tile_payload::WienerNsLrSourceBlock],
+) {
+    use splot_core::headers::frame::FrameRestorationType;
+
+    let mut superblock_modes = Vec::new();
+    if let Some(modes) = bru_modes {
+        let sb_h4 = (modes.sb_samples() / MI_SIZE).max(1);
+        for mi_row in (0..mi_rows).step_by(sb_h4) {
+            for mi_col in (0..mi_cols).step_by(sb_h4) {
+                superblock_modes.push((mi_row, mi_col, modes.mode(mi_row, mi_col)));
+            }
+        }
+    }
+    let plane_restoration_types =
+        core.lr_params
+            .as_ref()
+            .map_or([FrameRestorationType::None; 3], |lr| {
+                core::array::from_fn(|plane| {
+                    lr.planes
+                        .get(plane)
+                        .map_or(FrameRestorationType::None, |cfg| cfg.restoration_type)
+                })
+            });
+    let gdf_frame_enable = core
+        .gdf_params
+        .as_ref()
+        .is_some_and(|gdf| gdf.gdf_frame_enable);
+    let gdf_per_block = core
+        .gdf_params
+        .as_ref()
+        .is_some_and(|gdf| gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true));
+    let (gdf_enabled_units, gdf_total_units) = gdf_grid.map_or(
+        (0, 0),
+        crate::filters::gdf::GdfBlockGrid::enabled_unit_counts,
+    );
+    let intrabc_block_count = BRU_INTRABC_BLOCKS.with(|count| count.replace(0));
+    let allow_intrabc = super::intrabc_records::frame_allows_intrabc(core);
+    let allow_local_intrabc = super::intrabc_records::frame_allows_local_intrabc(core);
+    let allow_global_intrabc = core.frame_is_intra != Some(false)
+        && core.intrabc.and_then(|params| params.allow_global_intrabc) == Some(true);
+    let record = BruLrFrameAudit {
+        use_bru: core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true),
+        bru_inactive: core.inter.as_ref().and_then(|inter| inter.bru_inactive) == Some(true),
+        disable_loopfilters_across_tiles,
+        lr_uses_lr: core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+        plane_restoration_types,
+        gdf_frame_enable,
+        gdf_per_block,
+        gdf_enabled_units,
+        gdf_total_units,
+        allow_intrabc,
+        allow_local_intrabc,
+        allow_global_intrabc,
+        intrabc_block_count,
+        superblock_modes,
+        pre_bru_blocks,
+        post_bru_blocks: post_bru_blocks.to_vec(),
+    };
+    BRU_LR_AUDIT_SINK.with(|sink| {
+        if let Some(records) = sink.borrow_mut().as_mut() {
+            records.push(record);
+        }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn with_bru_lr_audit<R>(f: impl FnOnce() -> R) -> (R, Vec<BruLrFrameAudit>) {
+    struct ResetGuard(Option<Vec<BruLrFrameAudit>>, usize);
+    impl Drop for ResetGuard {
+        fn drop(&mut self) {
+            BRU_LR_AUDIT_SINK.with(|sink| {
+                *sink.borrow_mut() = self.0.take();
+            });
+            BRU_INTRABC_BLOCKS.with(|count| count.set(self.1));
+        }
+    }
+    let previous = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().replace(Vec::new()));
+    let prev_intrabc = BRU_INTRABC_BLOCKS.with(|count| count.replace(0));
+    let _guard = ResetGuard(previous, prev_intrabc);
+    let result = f();
+    let captured = BRU_LR_AUDIT_SINK.with(|sink| sink.borrow_mut().take().unwrap_or_default());
+    (result, captured)
+}

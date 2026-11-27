@@ -12,7 +12,7 @@ use crate::span::{BitOffset, ByteOffset};
 
 /// Returns the eight bytes at `byte_index` as a big-endian window, reading
 /// bytes past the end of `data` as zero padding.
-#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn be_window(data: &[u8], byte_index: usize) -> u64 {
     if let Some(bytes) = byte_index
@@ -64,6 +64,15 @@ impl<'a> BitReader<'a> {
     #[must_use]
     pub const fn bit_offset(&self) -> BitOffset {
         BitOffset::from_bits(self.bit_pos)
+    }
+
+    /// Returns the absolute bit offset (`byte_offset * 8 + bit_offset`).
+    #[must_use]
+    pub const fn abs_bit_offset(&self) -> u64 {
+        self.byte_offset()
+            .get()
+            .saturating_mul(8)
+            .saturating_add(self.bit_pos as u64)
     }
 
     /// Returns `true` if the reader is positioned on a byte boundary.
@@ -431,7 +440,6 @@ impl<'a> BitReader<'a> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

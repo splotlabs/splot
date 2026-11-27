@@ -11,15 +11,17 @@
 //! runs the cells it covers, then each cell left takes the placement path.
 
 use super::block::{self, Window};
-use super::{CellPlacement, InterpolationFilter, ReferencePlaneView};
+use super::{CellPlacement, InterpolationFilter, ReferencePlaneView, SubpelRunner};
 use crate::format::ReconSample;
 use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u32x4, u64x2};
+use splot_core::simd::SimdBackend;
 
 /// The program kernel of a sample depth.
 pub(super) trait CellSample: block::Sample {
     /// Runs the cells of a program of `(filter, size)` that the program
     /// kernel covers into `planes`, and returns their bits.
-    fn program(
+    fn program<R: SubpelRunner>(
+        runner: R,
         planes: &mut [Option<Plane<'_, '_, Self>>; 2],
         shape: (usize, usize),
         cells: &[Cell],
@@ -29,25 +31,27 @@ pub(super) trait CellSample: block::Sample {
 
 impl CellSample for u8 {
     #[inline]
-    fn program(
+    fn program<R: SubpelRunner>(
+        runner: R,
         planes: &mut [Option<Plane<'_, '_, u8>>; 2],
         shape: (usize, usize),
         cells: &[Cell],
         clip: (i32, u16),
     ) -> Written {
-        super::eight_bit::program(planes, shape, cells, clip)
+        super::eight_bit::program(runner, planes, shape, cells, clip)
     }
 }
 
 impl CellSample for u16 {
     #[inline]
-    fn program(
+    fn program<R: SubpelRunner>(
+        runner: R,
         planes: &mut [Option<Plane<'_, '_, u16>>; 2],
         shape: (usize, usize),
         cells: &[Cell],
         clip: (i32, u16),
     ) -> Written {
-        super::sixteen_bit::program(planes, shape, cells, clip)
+        super::sixteen_bit::program(runner, planes, shape, cells, clip)
     }
 }
 
@@ -55,8 +59,11 @@ impl CellSample for u16 {
 /// or 8, of either sample depth whose references share `interp`, from each
 /// reference's [`CellPlacement`]; `false` without writing for any other size
 /// or an empty clip range.
+#[cfg(test)]
 #[inline]
-pub(super) fn compound_at<P: CellSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn compound_at<R: SubpelRunner, P: CellSample>(
+    runner: R,
     references: [&ReferencePlaneView<'_, P>; 2],
     interp: InterpolationFilter,
     size: usize,
@@ -70,13 +77,13 @@ pub(super) fn compound_at<P: CellSample>(
     }
     let windows = placements.map(|(start, _)| Window::new(interp, size, size, start));
     let bounds = placements.map(|(_, bounds)| bounds);
-    block::compound(references, windows, bounds, clip, output, stride)
+    block::compound(runner, references, windows, bounds, clip, output, stride)
 }
 
 /// The COMPOUND_AVERAGE `(a * f + b * (16 - f) + 8) >> 4` of two
 /// full-sample `N`-square windows, `N` 4 or 8, read from `origins` of their
 /// `(samples, stride)` sources, into `output`; `forward` lies in `0..=16`.
-#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[expect(clippy::inline_always, reason = "full-sample compound cell hot path")]
 #[inline(always)]
 fn fullpel_cell<S: Simd, const N: usize>(
     simd: S,
@@ -145,7 +152,7 @@ fn fullpel_cell<S: Simd, const N: usize>(
 }
 
 /// [`fullpel_cell`] of 16-bit windows, clipped to `max`.
-#[allow(clippy::inline_always, reason = "full-sample compound cell hot path")]
+#[expect(clippy::inline_always, reason = "full-sample compound cell hot path")]
 #[inline(always)]
 fn fullpel_cell_u16<S: Simd, const N: usize>(
     simd: S,
@@ -214,7 +221,8 @@ fn fullpel_cell_u16<S: Simd, const N: usize>(
 /// The COMPOUND_AVERAGE of two full-sample eight-bit `size`-square cells,
 /// 4 or 8, from `origins` of `sources`; `false` without writing for a
 /// `forward` outside `0..=16`.
-pub(super) fn fullpel_u8(
+pub(super) fn fullpel_u8<R: SubpelRunner>(
+    runner: R,
     sources: [(&[u8], usize); 2],
     origins: [usize; 2],
     size: usize,
@@ -223,17 +231,31 @@ pub(super) fn fullpel_u8(
     stride: usize,
 ) -> bool {
     let 0..=16 = forward else { return false };
-    baseline_simd!(simd => match (size, forward) {
+    runner.fullpel_u8(sources, origins, size, forward, output, stride);
+    true
+}
+
+#[inline]
+pub(super) fn fullpel_u8_simd<S: Simd>(
+    simd: S,
+    sources: [(&[u8], usize); 2],
+    origins: [usize; 2],
+    size: usize,
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) {
+    match (size, forward) {
         (4, 8) => fullpel_cell::<_, 4>(simd, sources, origins, 8, output, stride),
         (4, _) => fullpel_cell::<_, 4>(simd, sources, origins, forward, output, stride),
         (_, 8) => fullpel_cell::<_, 8>(simd, sources, origins, 8, output, stride),
         _ => fullpel_cell::<_, 8>(simd, sources, origins, forward, output, stride),
-    });
-    true
+    }
 }
 
 /// [`fullpel_u8`] of 16-bit cells, clipped to `clip.1`.
-pub(super) fn fullpel_u16(
+pub(super) fn fullpel_u16<R: SubpelRunner>(
+    runner: R,
     sources: [(&[u16], usize); 2],
     origins: [usize; 2],
     size: usize,
@@ -241,15 +263,29 @@ pub(super) fn fullpel_u16(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    let (forward, max) = clip;
+    let (forward, _) = clip;
     let 0..=16 = forward else { return false };
-    baseline_simd!(simd => match (size, forward) {
+    runner.fullpel_u16(sources, origins, size, clip, output, stride);
+    true
+}
+
+#[inline]
+pub(super) fn fullpel_u16_simd<S: Simd>(
+    simd: S,
+    sources: [(&[u16], usize); 2],
+    origins: [usize; 2],
+    size: usize,
+    clip: (i32, u16),
+    output: &mut [u16],
+    stride: usize,
+) {
+    let (forward, max) = clip;
+    match (size, forward) {
         (4, 8) => fullpel_cell_u16::<_, 4>(simd, sources, origins, (8, max), output, stride),
         (4, _) => fullpel_cell_u16::<_, 4>(simd, sources, origins, clip, output, stride),
         (_, 8) => fullpel_cell_u16::<_, 8>(simd, sources, origins, (8, max), output, stride),
         _ => fullpel_cell_u16::<_, 8>(simd, sources, origins, clip, output, stride),
-    });
-    true
+    }
 }
 
 /// The most cells one [`CompoundCells`] program holds.
@@ -322,15 +358,9 @@ pub(super) type Written = [[u64; PROGRAM_CELLS / 64]; 2];
 /// A [`CompoundCells`] cell: output `[row, col]` and both placements.
 pub(super) type Cell = ([u32; 2], [CellPlacement; 2]);
 
-/// Runs a [`CompoundCells`] program of `size`-square cells into each plane
-/// (U and V share one program), clipped to `bit_depth`. Each cell that
-/// [`super::subpel_compound_cell`] would store from its position and
-/// placements is stored the same way and sets bit `index % 64` of word
-/// `index / 64` of its plane's mask;
-/// every other cell is left unwritten for the caller to predict.
-#[doc(hidden)]
 #[inline]
-pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
+fn subpel_compound_cells_with_runner<R: SubpelRunner, T: ReconSample, O: ReconSample>(
+    runner: R,
     mut planes: [Option<CellPlane<'_, '_, T, O>>; 2],
     interp: InterpolationFilter,
     size: usize,
@@ -347,14 +377,57 @@ pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
             let views = [views[0].as_u8()?, views[1].as_u8()?];
             (*stride >= size).then_some((views, O::u8_slice_mut(output)?, *stride))
         });
-        return by_geometry(planes, |planes| program(planes, interp, size, cells, clip));
+        return by_geometry(planes, |planes| {
+            program(runner, planes, interp, size, cells, clip)
+        });
     }
     let planes = planes.each_mut().map(|plane| {
         let (views, output, stride) = plane.as_mut()?;
         let views = [views[0].as_u16()?, views[1].as_u16()?];
         (*stride >= size).then_some((views, O::u16_slice_mut(output)?, *stride))
     });
-    by_geometry(planes, |planes| program(planes, interp, size, cells, clip))
+    by_geometry(planes, |planes| {
+        program(runner, planes, interp, size, cells, clip)
+    })
+}
+
+/// Runs a [`CompoundCells`] program of `size`-square cells into each plane
+/// (U and V share one program), clipped to `bit_depth`. Each cell that
+/// `subpel_compound_cell` would store from its position and
+/// placements is stored the same way and sets bit `index % 64` of word
+/// `index / 64` of its plane's mask;
+/// every other cell is left unwritten for the caller to predict.
+#[doc(hidden)]
+#[inline]
+pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
+    planes: [Option<CellPlane<'_, '_, T, O>>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &mut CompoundCells,
+    clip: (i16, crate::format::BitDepth),
+) -> Written {
+    subpel_compound_cells_with_runner(super::BaselineSubpel, planes, interp, size, cells, clip)
+}
+
+/// Typed [`subpel_compound_cells`] using caller-selected `backend`.
+#[doc(hidden)]
+#[inline]
+pub fn subpel_compound_cells_with<B: SimdBackend, T: ReconSample, O: ReconSample>(
+    backend: B,
+    planes: [Option<CellPlane<'_, '_, T, O>>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    cells: &mut CompoundCells,
+    clip: (i16, crate::format::BitDepth),
+) -> Written {
+    subpel_compound_cells_with_runner(
+        super::TypedSubpel(backend.narrow()),
+        planes,
+        interp,
+        size,
+        cells,
+        clip,
+    )
 }
 
 /// Runs `run` on both planes when they share their reference geometry,
@@ -385,7 +458,8 @@ fn by_geometry<P: CellSample>(
 /// Runs `cells` into `planes` of one geometry: the cells the program kernel
 /// leaves, each from the windows of its placements.
 #[inline(never)]
-fn program<P: CellSample>(
+fn program<R: SubpelRunner, P: CellSample>(
+    runner: R,
     mut planes: [Option<Plane<'_, '_, P>>; 2],
     interp: InterpolationFilter,
     size: usize,
@@ -395,13 +469,14 @@ fn program<P: CellSample>(
     let filter = usize::from(interp.pass_index(size as u32));
     let len = cells.len.min(PROGRAM_CELLS);
     let cells = &cells.cells[..len];
-    let written = P::program(&mut planes, (filter, size), cells, clip);
-    cell_by_cell(&mut planes, (filter, size), cells, clip, written)
+    let written = P::program(runner, &mut planes, (filter, size), cells, clip);
+    cell_by_cell(runner, &mut planes, (filter, size), cells, clip, written)
 }
 
 /// The cells of a program whose bits `written` does not set, each through
 /// [`block::compound`] into every plane, and the bits of all stored cells.
-pub(super) fn cell_by_cell<P: CellSample>(
+pub(super) fn cell_by_cell<R: SubpelRunner, P: CellSample>(
+    runner: R,
     planes: &mut [Option<Plane<'_, '_, P>>; 2],
     (filter, size): (usize, usize),
     cells: &[Cell],
@@ -428,6 +503,7 @@ pub(super) fn cell_by_cell<P: CellSample>(
                 continue;
             };
             if block::compound(
+                runner,
                 [&views[0], &views[1]],
                 windows,
                 bounds,

@@ -5,12 +5,13 @@
 
 use core::ops::{Deref, DerefMut};
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraDirectionalAngle,
     IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId,
-    PlaneRect, ReconError, ReconSample, apply_intra_edge_filter, filter_intra_edge_corner,
-    predict_intra_directional_angle_rect_into,
-    predict_intra_directional_angle_rect_one_sided_idif_mrl_into,
+    PlaneRect, ReconError, ReconSample, apply_intra_edge_filter_with, filter_intra_edge_corner,
+    predict_intra_directional_angle_rect_into_with,
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with,
 };
 
 use super::sink::{
@@ -71,8 +72,12 @@ pub(crate) struct OneSidedAboveMrl {
     pub above_mrl_index: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -100,6 +105,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
     }
     let idif = build_one_sided_above_idif_edge(
+        backend,
         workspace,
         plane_id,
         x,
@@ -116,7 +122,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
     let predict = |output: &mut [T], stride: usize| {
         if matches!(plane_id, PlaneId::Y) {
-            predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+            predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -126,7 +133,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
                 stride,
             )?;
         } else {
-            predict_intra_directional_angle_rect_into(
+            predict_intra_directional_angle_rect_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -138,6 +146,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
         Ok(())
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,
@@ -153,8 +162,9 @@ pub(crate) fn reconstruct_general_intra_one_sided_neighbour_block_into<T: ReconS
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn predict_general_intra_luma_one_sided_above_mrl_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn predict_general_intra_luma_one_sided_above_mrl_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
     x: usize,
@@ -170,6 +180,7 @@ fn predict_general_intra_luma_one_sided_above_mrl_into<T: ReconSample>(
     let width = block_size.width();
     let height = block_size.height();
     let above_idif = build_one_sided_above_idif_edge(
+        backend,
         workspace,
         PlaneId::Y,
         x,
@@ -184,6 +195,7 @@ fn predict_general_intra_luma_one_sided_above_mrl_into<T: ReconSample>(
         edge_filter,
     )?;
     predict_general_intra_luma_one_sided_idif_mrl_into(
+        backend,
         bit_depth,
         p_angle,
         block_size,
@@ -193,7 +205,8 @@ fn predict_general_intra_luma_one_sided_above_mrl_into<T: ReconSample>(
     )
 }
 
-fn predict_general_intra_luma_one_sided_idif_mrl_into<T: ReconSample>(
+fn predict_general_intra_luma_one_sided_idif_mrl_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     bit_depth: BitDepth,
     p_angle: u16,
     block_size: IntraRectBlockSize,
@@ -202,7 +215,8 @@ fn predict_general_intra_luma_one_sided_idif_mrl_into<T: ReconSample>(
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = block_size.width();
-    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
+        backend,
         bit_depth,
         block_size,
         IntraDirectionalAngle::try_from_p_angle(p_angle)?,
@@ -214,8 +228,12 @@ fn predict_general_intra_luma_one_sided_idif_mrl_into<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -235,11 +253,13 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let prediction = build_mrl_luma_prediction(
+        backend,
         workspace,
         block_size,
         true,
         |workspace, secondary, prediction| {
             predict_general_intra_luma_one_sided_above_mrl_into(
+                backend,
                 workspace,
                 p_angle,
                 x,
@@ -259,6 +279,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
         },
     )?;
     write_intra_prediction_block(
+        backend,
         workspace,
         block,
         prediction,
@@ -274,8 +295,12 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     direction: IntraCardinalDirection,
@@ -296,6 +321,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let prediction = build_mrl_luma_prediction(
+        backend,
         workspace,
         block_size,
         secondary_mrl,
@@ -320,6 +346,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
         },
     )?;
     write_intra_prediction_block(
+        backend,
         workspace,
         block,
         prediction,
@@ -335,7 +362,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: IntraCardinalDirection,
@@ -393,8 +420,9 @@ pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn build_one_sided_above_idif_edge<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
@@ -411,6 +439,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
     if !availability.above {
         if !availability.left {
             return build_one_sided_idif_edge(
+                backend,
                 width,
                 height,
                 mrl_index,
@@ -427,6 +456,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
             .ok_or_else(invalid_directional_edge_state)?;
         let fallback = workspace.reconstructed_sample(plane_id, fallback_col, y)?;
         return build_one_sided_idif_edge(
+            backend,
             width,
             height,
             mrl_index,
@@ -459,6 +489,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
         x
     };
     let edge = build_one_sided_idif_edge(
+        backend,
         width,
         height,
         mrl_index,
@@ -469,7 +500,8 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
     Ok(edge)
 }
 
-fn build_one_sided_idif_edge<T: ReconSample>(
+fn build_one_sided_idif_edge<B: SimdBackend, T: ReconSample>(
+    backend: B,
     width: usize,
     height: usize,
     mrl_index: usize,
@@ -486,11 +518,17 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     let mut edge = OneSidedIdifEdge::new(edge_len)?;
     edge.samples[1] = corner()?;
     in_edge(&mut edge.samples[2..max_base + 3])?;
-    finalize_one_sided_idif_edge(&mut edge.samples[..edge.len], max_base, edge_filter)?;
+    finalize_one_sided_idif_edge(
+        backend,
+        &mut edge.samples[..edge.len],
+        max_base,
+        edge_filter,
+    )?;
     Ok(edge)
 }
 
-pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
+pub(super) fn finalize_one_sided_idif_edge<B: SimdBackend, T: ReconSample>(
+    backend: B,
     edge: &mut [T],
     max_base: usize,
     filter: OneSidedEdgeFilter,
@@ -510,7 +548,7 @@ pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
     if filter.num_px > 0
         && let Some(window) = edge.get_mut(1..)
     {
-        apply_intra_edge_filter(window, filter.num_px, filter.strength)?;
+        apply_intra_edge_filter_with(backend, window, filter.num_px, filter.strength)?;
     }
     edge[0] = edge[1];
     let last_in_edge = edge[max_base + 2];
@@ -523,8 +561,12 @@ pub(super) fn finalize_one_sided_idif_edge<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -554,6 +596,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
     }
     let idif = build_one_sided_left_idif_edge(
+        backend,
         workspace,
         plane_id,
         x,
@@ -575,7 +618,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     let angle = IntraDirectionalAngle::try_from_p_angle(p_angle)?;
     let predict = |output: &mut [T], stride: usize| {
         if matches!(plane_id, PlaneId::Y) {
-            predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+            predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -585,7 +629,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
                 stride,
             )?;
         } else {
-            predict_intra_directional_angle_rect_into(
+            predict_intra_directional_angle_rect_into_with(
+                backend,
                 bit_depth,
                 block_size,
                 angle,
@@ -597,6 +642,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
         Ok(())
     };
     predict_intra_block(
+        backend,
         workspace,
         block,
         plane_id,
@@ -612,8 +658,9 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn predict_general_intra_luma_one_sided_left_mrl_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn predict_general_intra_luma_one_sided_left_mrl_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
     x: usize,
@@ -631,6 +678,7 @@ fn predict_general_intra_luma_one_sided_left_mrl_into<T: ReconSample>(
     let width = block_size.width();
     let height = block_size.height();
     let left_idif = build_one_sided_left_idif_edge(
+        backend,
         workspace,
         PlaneId::Y,
         x,
@@ -646,6 +694,7 @@ fn predict_general_intra_luma_one_sided_left_mrl_into<T: ReconSample>(
         edge_filter,
     )?;
     predict_general_intra_luma_one_sided_idif_mrl_into(
+        backend,
         bit_depth,
         p_angle,
         block_size,
@@ -655,8 +704,12 @@ fn predict_general_intra_luma_one_sided_left_mrl_into<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -678,11 +731,13 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let prediction = build_mrl_luma_prediction(
+        backend,
         workspace,
         block_size,
         true,
         |workspace, secondary, prediction| {
             predict_general_intra_luma_one_sided_left_mrl_into(
+                backend,
                 workspace,
                 p_angle,
                 x,
@@ -700,6 +755,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
         },
     )?;
     write_intra_prediction_block(
+        backend,
         workspace,
         block,
         prediction,
@@ -715,8 +771,9 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn build_one_sided_left_idif_edge<B: SimdBackend, T: ReconSample>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
@@ -734,6 +791,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
     if !have_left {
         if !have_above {
             return build_one_sided_idif_edge(
+                backend,
                 width,
                 height,
                 mrl_index,
@@ -751,6 +809,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
             .ok_or_else(invalid_directional_edge_state)?;
         let fallback = workspace.reconstructed_sample(plane_id, x, fallback_row)?;
         return build_one_sided_idif_edge(
+            backend,
             width,
             height,
             mrl_index,
@@ -784,6 +843,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
         y
     };
     build_one_sided_idif_edge(
+        backend,
         width,
         height,
         mrl_index,

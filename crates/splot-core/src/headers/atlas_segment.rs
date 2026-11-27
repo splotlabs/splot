@@ -14,6 +14,8 @@
 
 use crate::bitio::BitReader;
 use crate::error::{AtlasSegmentErrorKind, Error, Result};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
+use crate::types::ExtendedLayerId;
 
 /// `MAX_NUM_ATLAS_SEGMENTS` (AV2 § 3): the conformance bound on atlas segment counts
 /// (AV2 § 6.9.6) and the safety bound on the segment loops.
@@ -53,6 +55,10 @@ impl AtlasSegmentMode {
             4 => Some(Self::MultistreamAlpha),
             _ => None,
         }
+    }
+
+    pub(crate) const fn requires_global_scope(self) -> bool {
+        matches!(self, Self::Multistream | Self::MultistreamAlpha)
     }
 
     /// Returns the `ats_atlas_segment_mode_idc` value for this mode.
@@ -256,307 +262,495 @@ pub struct AtlasLabelSegmentInfo {
 ///
 /// # Errors
 /// Returns descriptor errors (`uvlc`), [`Error::InvalidAtlasSegment`] for an
-/// out-of-range mode or segment / region count, or [`Error::UnexpectedEof`] if the
-/// payload ends mid-field.
+/// invalid mode, segment or region count, or duplicate input stream ID. Returns
+/// [`Error::UnexpectedEof`] if the payload ends mid-field.
 pub fn parse_atlas_segment(reader: &mut BitReader<'_>) -> Result<AtlasSegment> {
-    let atlas_segment_id = reader.read_bits_u8(3)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_atlas_segment_with_reader(&mut sr, None)
+}
 
-    let mode_offset = reader.byte_offset();
-    let mode_bit_offset = reader.bit_offset();
-    let mode_idc = reader.read_uvlc()?;
-    let Some(mode) = AtlasSegmentMode::from_idc(mode_idc) else {
-        return Err(Error::InvalidAtlasSegment {
-            offset: mode_offset,
-            bit_offset: mode_bit_offset,
-            kind: AtlasSegmentErrorKind::ModeOutOfRange,
-        });
-    };
+/// Parses an atlas payload and checks its mode against the OBU extended layer ID.
+///
+/// # Errors
+/// Returns the errors from [`parse_atlas_segment`] or
+/// [`Error::InvalidAtlasSegment`] if a multistream mode uses local scope.
+pub fn parse_scoped_atlas_segment(
+    reader: &mut BitReader<'_>,
+    xlayer: ExtendedLayerId,
+) -> Result<AtlasSegment> {
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_atlas_segment_with_reader(&mut sr, Some(xlayer))
+}
 
-    let (mode_info, num_segments) = match mode {
-        AtlasSegmentMode::Enhanced => {
-            let (info, num) = parse_ats_enhanced_atlas_info(reader)?;
-            (AtlasModeInfo::Enhanced(info), num)
-        }
-        AtlasSegmentMode::Basic => {
-            let (info, num) = parse_ats_basic_info(reader)?;
-            (AtlasModeInfo::Basic(info), num)
-        }
-        AtlasSegmentMode::Single => {
-            let info = AtlasSingleInfo {
-                nominal_width_minus_1: reader.read_uvlc()?,
-                nominal_height_minus_1: reader.read_uvlc()?,
+/// Parses `atlas_segment_info_obu()` (AV2 v1.0.0 § 5.9) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors, [`Error::InvalidAtlasSegment`], or
+/// [`Error::UnexpectedEof`].
+pub fn parse_atlas_segment_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<AtlasSegment> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_atlas_segment_with_reader(&mut sr, None)
+}
+
+pub(crate) fn parse_atlas_segment_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    xlayer: Option<ExtendedLayerId>,
+) -> Result<AtlasSegment> {
+    sr.in_struct("atlas_segment_info_obu", Some("5.9"), |sr| {
+        let atlas_segment_id = sr.read_bits_u8("ats_atlas_segment_id", 3)?;
+
+        let mode_start = sr.rel_bit();
+        let mode_offset = sr.byte_offset();
+        let mode_bit_offset = sr.bit_offset();
+        let mode_idc = sr.read_uvlc("ats_atlas_segment_mode_idc")?;
+        let mode = match AtlasSegmentMode::from_idc(mode_idc) {
+            Some(mode)
+                if mode.requires_global_scope() && xlayer.is_some_and(|id| !id.is_global()) =>
+            {
+                Err(AtlasSegmentErrorKind::MultistreamRequiresGlobalXlayer)
+            }
+            Some(mode) => Ok(mode),
+            None => Err(AtlasSegmentErrorKind::ModeOutOfRange),
+        };
+        let mode = match mode {
+            Ok(mode) => mode,
+            Err(kind) => {
+                return sr.fail(
+                    mode_start,
+                    Some("ats_atlas_segment_mode_idc"),
+                    Error::InvalidAtlasSegment {
+                        offset: mode_offset,
+                        bit_offset: mode_bit_offset,
+                        kind,
+                    },
+                );
+            }
+        };
+
+        let (mode_info, num_segments) = match mode {
+            AtlasSegmentMode::Enhanced => {
+                let (info, num) = parse_ats_enhanced_atlas_info(sr)?;
+                (AtlasModeInfo::Enhanced(info), num)
+            }
+            AtlasSegmentMode::Basic => {
+                let (info, num) = parse_ats_basic_info(sr)?;
+                (AtlasModeInfo::Basic(info), num)
+            }
+            AtlasSegmentMode::Single => {
+                let info = AtlasSingleInfo {
+                    nominal_width_minus_1: sr.read_uvlc("ats_nominal_width_minus_1")?,
+                    nominal_height_minus_1: sr.read_uvlc("ats_nominal_height_minus_1")?,
+                };
+                (AtlasModeInfo::Single(info), 1)
+            }
+            AtlasSegmentMode::Multistream => {
+                let (info, num) = parse_ats_multistream_info(sr, false)?;
+                (AtlasModeInfo::Multistream(info), num)
+            }
+            AtlasSegmentMode::MultistreamAlpha => {
+                let (info, num) = parse_ats_multistream_info(sr, true)?;
+                (AtlasModeInfo::MultistreamAlpha(info), num)
+            }
+        };
+
+        if num_segments > MAX_NUM_ATLAS_SEGMENTS {
+            let err = Error::InvalidAtlasSegment {
+                offset: sr.byte_offset(),
+                bit_offset: sr.bit_offset(),
+                kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
             };
-            (AtlasModeInfo::Single(info), 1)
+            return sr.fail(sr.rel_bit(), None, err);
         }
-        AtlasSegmentMode::Multistream => {
-            let (info, num) = parse_ats_multistream_info(reader, false)?;
-            (AtlasModeInfo::Multistream(info), num)
-        }
-        AtlasSegmentMode::MultistreamAlpha => {
-            let (info, num) = parse_ats_multistream_info(reader, true)?;
-            (AtlasModeInfo::MultistreamAlpha(info), num)
-        }
-    };
 
-    if num_segments > MAX_NUM_ATLAS_SEGMENTS {
-        return Err(Error::InvalidAtlasSegment {
-            offset: reader.byte_offset(),
-            bit_offset: reader.bit_offset(),
-            kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
-        });
-    }
+        let label = parse_ats_label_segment_info(sr, num_segments)?;
 
-    let label = parse_ats_label_segment_info(reader, num_segments)?;
-
-    Ok(AtlasSegment {
-        atlas_segment_id,
-        mode,
-        num_segments,
-        mode_info,
-        label,
+        Ok(AtlasSegment {
+            atlas_segment_id,
+            mode,
+            num_segments,
+            mode_info,
+            label,
+        })
     })
 }
 
-/// Parses `ats_label_segment_info(xlayerId, xAId, numSegments)` (AV2 v1.0.0 § 5.9.1).
-fn parse_ats_label_segment_info(
-    reader: &mut BitReader<'_>,
+fn parse_ats_label_segment_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     num_segments: u32,
 ) -> Result<AtlasLabelSegmentInfo> {
-    let signaled_atlas_segment_ids = reader.read_flag()?;
-    let mut segment_ids = Vec::new();
-    if signaled_atlas_segment_ids {
-        for _ in 0..num_segments {
-            segment_ids.push(reader.read_bits_u8(8)?);
+    sr.in_struct("ats_label_segment_info", Some("5.9.1"), |sr| {
+        let signaled_atlas_segment_ids = sr.read_flag("ats_signaled_atlas_segment_ids")?;
+        let mut segment_ids = Vec::new();
+        if signaled_atlas_segment_ids {
+            for i in 0..num_segments {
+                let id =
+                    sr.in_loop_item("i", i as usize, |sr| sr.read_bits_u8("ats_segment_id", 8))?;
+                segment_ids.push(id);
+            }
+        } else {
+            for i in 0..num_segments {
+                let inferred = u8::try_from(i).unwrap_or(u8::MAX);
+                let _ = sr.in_loop_item("i", i as usize, |sr| {
+                    sr.inferred_u64(
+                        "ats_segment_id",
+                        "!ats_signaled_atlas_segment_ids",
+                        u64::from(inferred),
+                    );
+                    Ok(())
+                });
+                segment_ids.push(inferred);
+            }
         }
-    } else {
-        for i in 0..num_segments {
-            segment_ids.push(u8::try_from(i).unwrap_or(u8::MAX));
-        }
-    }
-    Ok(AtlasLabelSegmentInfo {
-        signaled_atlas_segment_ids,
-        segment_ids,
+        Ok(AtlasLabelSegmentInfo {
+            signaled_atlas_segment_ids,
+            segment_ids,
+        })
     })
 }
 
-/// Parses `ats_enhanced_atlas_info(xAId)` (AV2 v1.0.0 § 5.9.2), returning the info and
-/// `numSegments`.
-fn parse_ats_enhanced_atlas_info(reader: &mut BitReader<'_>) -> Result<(AtlasEnhancedInfo, u32)> {
-    let region = parse_ats_region_info(reader)?;
-    let mapping = parse_ats_region_to_segment_mapping(reader, region.num_regions_in_atlas)?;
-    let num_segments = mapping.num_atlas_segments_minus_1.saturating_add(1);
-    Ok((AtlasEnhancedInfo { region, mapping }, num_segments))
-}
-
-/// Parses `ats_region_info(xAId)` (AV2 v1.0.0 § 5.9.2.1).
-fn parse_ats_region_info(reader: &mut BitReader<'_>) -> Result<AtlasRegionInfo> {
-    let dim_offset = reader.byte_offset();
-    let dim_bit_offset = reader.bit_offset();
-    let num_region_columns_minus_1 = reader.read_uvlc()?;
-    let num_region_rows_minus_1 = reader.read_uvlc()?;
-    if num_region_columns_minus_1 >= MAX_ATLAS_COLS || num_region_rows_minus_1 >= MAX_ATLAS_ROWS {
-        return Err(Error::InvalidAtlasSegment {
-            offset: dim_offset,
-            bit_offset: dim_bit_offset,
-            kind: AtlasSegmentErrorKind::RegionDimensionOutOfRange,
-        });
-    }
-
-    let uniform_spacing = reader.read_flag()?;
-    let mut column_widths_minus_1 = Vec::new();
-    let mut row_heights_minus_1 = Vec::new();
-    let mut region_width_minus_1 = None;
-    let mut region_height_minus_1 = None;
-    if uniform_spacing {
-        region_width_minus_1 = Some(reader.read_uvlc()?);
-        region_height_minus_1 = Some(reader.read_uvlc()?);
-    } else {
-        for _ in 0..=num_region_columns_minus_1 {
-            column_widths_minus_1.push(reader.read_uvlc()?);
-        }
-        for _ in 0..=num_region_rows_minus_1 {
-            row_heights_minus_1.push(reader.read_uvlc()?);
-        }
-    }
-
-    let num_regions_in_atlas =
-        (num_region_columns_minus_1 + 1).saturating_mul(num_region_rows_minus_1 + 1);
-
-    Ok(AtlasRegionInfo {
-        num_region_columns_minus_1,
-        num_region_rows_minus_1,
-        uniform_spacing,
-        column_widths_minus_1,
-        row_heights_minus_1,
-        region_width_minus_1,
-        region_height_minus_1,
-        num_regions_in_atlas,
+fn parse_ats_enhanced_atlas_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<(AtlasEnhancedInfo, u32)> {
+    sr.in_struct("ats_enhanced_atlas_info", Some("5.9.2"), |sr| {
+        let region = parse_ats_region_info(sr)?;
+        let mapping = parse_ats_region_to_segment_mapping(sr, region.num_regions_in_atlas)?;
+        let num_segments = mapping.num_atlas_segments_minus_1.saturating_add(1);
+        Ok((AtlasEnhancedInfo { region, mapping }, num_segments))
     })
 }
 
-/// Parses `ats_region_to_segment_mapping(xAId)` (AV2 v1.0.0 § 5.9.2.2).
-fn parse_ats_region_to_segment_mapping(
-    reader: &mut BitReader<'_>,
+fn parse_ats_region_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<AtlasRegionInfo> {
+    sr.in_struct("ats_region_info", Some("5.9.2.1"), |sr| {
+        let dim_start = sr.rel_bit();
+        let dim_offset = sr.byte_offset();
+        let dim_bit_offset = sr.bit_offset();
+        let num_region_columns_minus_1 = sr.read_uvlc("ats_num_region_columns_minus_1")?;
+        let num_region_rows_minus_1 = sr.read_uvlc("ats_num_region_rows_minus_1")?;
+        if num_region_columns_minus_1 >= MAX_ATLAS_COLS || num_region_rows_minus_1 >= MAX_ATLAS_ROWS
+        {
+            return sr.fail(
+                dim_start,
+                Some("ats_num_region_columns_minus_1"),
+                Error::InvalidAtlasSegment {
+                    offset: dim_offset,
+                    bit_offset: dim_bit_offset,
+                    kind: AtlasSegmentErrorKind::RegionDimensionOutOfRange,
+                },
+            );
+        }
+
+        let uniform_spacing = sr.read_flag("ats_uniform_spacing_flag")?;
+        let mut column_widths_minus_1 = Vec::new();
+        let mut row_heights_minus_1 = Vec::new();
+        let mut region_width_minus_1 = None;
+        let mut region_height_minus_1 = None;
+        if uniform_spacing {
+            region_width_minus_1 = Some(sr.read_uvlc("ats_region_width_minus_1")?);
+            region_height_minus_1 = Some(sr.read_uvlc("ats_region_height_minus_1")?);
+        } else {
+            for i in 0..=num_region_columns_minus_1 {
+                let w = sr.in_loop_item("col", i as usize, |sr| {
+                    sr.read_uvlc("ats_column_width_minus_1")
+                })?;
+                column_widths_minus_1.push(w);
+            }
+            for i in 0..=num_region_rows_minus_1 {
+                let h = sr.in_loop_item("row", i as usize, |sr| {
+                    sr.read_uvlc("ats_row_height_minus_1")
+                })?;
+                row_heights_minus_1.push(h);
+            }
+        }
+
+        let num_regions_in_atlas =
+            (num_region_columns_minus_1 + 1).saturating_mul(num_region_rows_minus_1 + 1);
+
+        Ok(AtlasRegionInfo {
+            num_region_columns_minus_1,
+            num_region_rows_minus_1,
+            uniform_spacing,
+            column_widths_minus_1,
+            row_heights_minus_1,
+            region_width_minus_1,
+            region_height_minus_1,
+            num_regions_in_atlas,
+        })
+    })
+}
+
+fn parse_ats_region_to_segment_mapping<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     num_regions_in_atlas: u32,
 ) -> Result<AtlasRegionToSegmentMapping> {
-    let single_region_per_atlas_segment = reader.read_flag()?;
-    let mut segments = Vec::new();
-    let num_atlas_segments_minus_1 = if single_region_per_atlas_segment {
-        if num_regions_in_atlas > MAX_NUM_ATLAS_SEGMENTS {
-            return Err(Error::InvalidAtlasSegment {
-                offset: reader.byte_offset(),
-                bit_offset: reader.bit_offset(),
-                kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
-            });
-        }
-        num_regions_in_atlas.saturating_sub(1)
-    } else {
-        let minus_1 = reader.read_uvlc()?;
-        if minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
-            return Err(Error::InvalidAtlasSegment {
-                offset: reader.byte_offset(),
-                bit_offset: reader.bit_offset(),
-                kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
-            });
-        }
-        for _ in 0..=minus_1 {
-            segments.push(AtlasSegmentRegion {
-                top_left_region_column: reader.read_uvlc()?,
-                top_left_region_row: reader.read_uvlc()?,
-                bottom_right_region_column_off: reader.read_uvlc()?,
-                bottom_right_region_row_off: reader.read_uvlc()?,
-            });
-        }
-        minus_1
-    };
+    sr.in_struct("ats_region_to_segment_mapping", Some("5.9.2.2"), |sr| {
+        let single_region_per_atlas_segment =
+            sr.read_flag("ats_single_region_per_atlas_segment_flag")?;
+        let mut segments = Vec::new();
+        let num_atlas_segments_minus_1 = if single_region_per_atlas_segment {
+            if num_regions_in_atlas > MAX_NUM_ATLAS_SEGMENTS {
+                let err = Error::InvalidAtlasSegment {
+                    offset: sr.byte_offset(),
+                    bit_offset: sr.bit_offset(),
+                    kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
+                };
+                return sr.fail(sr.rel_bit(), None, err);
+            }
+            let inferred = num_regions_in_atlas.saturating_sub(1);
+            sr.inferred_u64(
+                "ats_num_atlas_segments_minus_1",
+                "ats_single_region_per_atlas_segment_flag",
+                u64::from(inferred),
+            );
+            inferred
+        } else {
+            let count_start = sr.rel_bit();
+            let count_offset = sr.byte_offset();
+            let count_bit_offset = sr.bit_offset();
+            let minus_1 = sr.read_uvlc("ats_num_atlas_segments_minus_1")?;
+            if minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
+                return sr.fail(
+                    count_start,
+                    Some("ats_num_atlas_segments_minus_1"),
+                    Error::InvalidAtlasSegment {
+                        offset: count_offset,
+                        bit_offset: count_bit_offset,
+                        kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
+                    },
+                );
+            }
+            for i in 0..=minus_1 {
+                let seg = sr.in_loop_item("i", i as usize, |sr| {
+                    Ok(AtlasSegmentRegion {
+                        top_left_region_column: sr.read_uvlc("ats_top_left_region_column")?,
+                        top_left_region_row: sr.read_uvlc("ats_top_left_region_row")?,
+                        bottom_right_region_column_off: sr
+                            .read_uvlc("ats_bottom_right_region_column_off")?,
+                        bottom_right_region_row_off: sr
+                            .read_uvlc("ats_bottom_right_region_row_off")?,
+                    })
+                })?;
+                segments.push(seg);
+            }
+            minus_1
+        };
 
-    Ok(AtlasRegionToSegmentMapping {
-        single_region_per_atlas_segment,
-        num_atlas_segments_minus_1,
-        segments,
+        Ok(AtlasRegionToSegmentMapping {
+            single_region_per_atlas_segment,
+            num_atlas_segments_minus_1,
+            segments,
+        })
     })
 }
 
-/// Parses `ats_basic_info(xAId)` (AV2 v1.0.0 § 5.9.5), returning the info and
-/// `numSegments`.
-fn parse_ats_basic_info(reader: &mut BitReader<'_>) -> Result<(AtlasBasicInfo, u32)> {
-    let stream_id_present = reader.read_flag()?;
-    let width = reader.read_uvlc()?;
-    let height = reader.read_uvlc()?;
-    let count_offset = reader.byte_offset();
-    let count_bit_offset = reader.bit_offset();
-    let num_atlas_segments_minus_1 = reader.read_uvlc()?;
-    if num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
-        return Err(Error::InvalidAtlasSegment {
-            offset: count_offset,
-            bit_offset: count_bit_offset,
-            kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
-        });
-    }
+fn parse_ats_basic_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<(AtlasBasicInfo, u32)> {
+    sr.in_struct("ats_basic_info", Some("5.9.5"), |sr| {
+        let stream_id_present = sr.read_flag("ats_basic_stream_id_present_flag")?;
+        let width = sr.read_uvlc("ats_basic_width")?;
+        let height = sr.read_uvlc("ats_basic_height")?;
+        let count_start = sr.rel_bit();
+        let count_offset = sr.byte_offset();
+        let count_bit_offset = sr.bit_offset();
+        let num_atlas_segments_minus_1 = sr.read_uvlc("ats_num_atlas_segments_minus_1")?;
+        if num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
+            return sr.fail(
+                count_start,
+                Some("ats_num_atlas_segments_minus_1"),
+                Error::InvalidAtlasSegment {
+                    offset: count_offset,
+                    bit_offset: count_bit_offset,
+                    kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
+                },
+            );
+        }
 
-    let mut segments = Vec::new();
-    for _ in 0..=num_atlas_segments_minus_1 {
-        let input_stream_id = if stream_id_present {
-            Some(reader.read_bits_u8(5)?)
+        let mut segments = Vec::new();
+        let mut seen_stream_ids = 0;
+        for i in 0..=num_atlas_segments_minus_1 {
+            let seg = sr.in_loop_item("i", i as usize, |sr| {
+                let input_stream_id = if stream_id_present {
+                    Some(read_input_stream_id(
+                        sr,
+                        "ats_input_stream_id",
+                        &mut seen_stream_ids,
+                    )?)
+                } else {
+                    sr.absent("ats_input_stream_id", "!ats_basic_stream_id_present_flag");
+                    None
+                };
+                Ok(AtlasBasicSegment {
+                    input_stream_id,
+                    top_left_pos_x: sr.read_uvlc("ats_top_left_pos_x")?,
+                    top_left_pos_y: sr.read_uvlc("ats_top_left_pos_y")?,
+                    width: sr.read_uvlc("ats_width")?,
+                    height: sr.read_uvlc("ats_height")?,
+                })
+            })?;
+            segments.push(seg);
+        }
+
+        let num_segments = num_atlas_segments_minus_1 + 1;
+        Ok((
+            AtlasBasicInfo {
+                stream_id_present,
+                width,
+                height,
+                num_atlas_segments_minus_1,
+                segments,
+            },
+            num_segments,
+        ))
+    })
+}
+
+fn parse_ats_multistream_info<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    with_alpha: bool,
+) -> Result<(AtlasMultistreamInfo, u32)> {
+    let struct_name = if with_alpha {
+        "ats_multistream_with_alpha_info"
+    } else {
+        "ats_multistream_info"
+    };
+    let section = if with_alpha { "5.9.4" } else { "5.9.3" };
+    sr.in_struct(struct_name, Some(section), |sr| {
+        let width = sr.read_uvlc("ats_msi_width")?;
+        let height = sr.read_uvlc("ats_msi_height")?;
+        let count_start = sr.rel_bit();
+        let count_offset = sr.byte_offset();
+        let count_bit_offset = sr.bit_offset();
+        let num_atlas_segments_minus_1 = sr.read_uvlc("ats_msi_num_atlas_segments_minus_1")?;
+        if num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
+            return sr.fail(
+                count_start,
+                Some("ats_msi_num_atlas_segments_minus_1"),
+                Error::InvalidAtlasSegment {
+                    offset: count_offset,
+                    bit_offset: count_bit_offset,
+                    kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
+                },
+            );
+        }
+
+        let alpha_segments_present = if with_alpha {
+            Some(sr.read_flag("ats_msi_alpha_segments_present_flag")?)
         } else {
             None
         };
-        segments.push(AtlasBasicSegment {
-            input_stream_id,
-            top_left_pos_x: reader.read_uvlc()?,
-            top_left_pos_y: reader.read_uvlc()?,
-            width: reader.read_uvlc()?,
-            height: reader.read_uvlc()?,
-        });
-    }
+        let background_info_present = sr.read_flag("ats_msi_background_info_present_flag")?;
+        let background = if background_info_present {
+            Some((
+                sr.read_bits_u8("ats_msi_background_r", 8)?,
+                sr.read_bits_u8("ats_msi_background_g", 8)?,
+                sr.read_bits_u8("ats_msi_background_b", 8)?,
+            ))
+        } else {
+            sr.absent(
+                "ats_msi_background_r",
+                "!ats_msi_background_info_present_flag",
+            );
+            sr.absent(
+                "ats_msi_background_g",
+                "!ats_msi_background_info_present_flag",
+            );
+            sr.absent(
+                "ats_msi_background_b",
+                "!ats_msi_background_info_present_flag",
+            );
+            None
+        };
 
-    let num_segments = num_atlas_segments_minus_1 + 1;
-    Ok((
-        AtlasBasicInfo {
-            stream_id_present,
-            width,
-            height,
-            num_atlas_segments_minus_1,
-            segments,
-        },
-        num_segments,
-    ))
+        let mut segments = Vec::new();
+        let mut seen_stream_ids = 0;
+        for i in 0..=num_atlas_segments_minus_1 {
+            let seg = sr.in_loop_item("i", i as usize, |sr| {
+                let input_stream_id =
+                    read_input_stream_id(sr, "ats_msi_input_stream_id", &mut seen_stream_ids)?;
+                let top_left_pos_x = sr.read_uvlc("ats_msi_top_left_pos_x")?;
+                let top_left_pos_y = sr.read_uvlc("ats_msi_top_left_pos_y")?;
+                let seg_width = sr.read_uvlc("ats_msi_segment_width")?;
+                let seg_height = sr.read_uvlc("ats_msi_segment_height")?;
+                let alpha_segment_flag =
+                    if alpha_segments_present == Some(true) && i != num_atlas_segments_minus_1 {
+                        sr.read_flag("ats_msi_alpha_segment_flag")?
+                    } else {
+                        if with_alpha {
+                            sr.inferred_bool(
+                                "ats_msi_alpha_segment_flag",
+                                "!ats_msi_alpha_segments_present_flag || last_segment",
+                                false,
+                            );
+                        }
+                        false
+                    };
+                Ok(AtlasMultistreamSegment {
+                    input_stream_id,
+                    top_left_pos_x,
+                    top_left_pos_y,
+                    width: seg_width,
+                    height: seg_height,
+                    alpha_segment_flag,
+                })
+            })?;
+            segments.push(seg);
+        }
+
+        let num_segments = num_atlas_segments_minus_1 + 1;
+        Ok((
+            AtlasMultistreamInfo {
+                width,
+                height,
+                num_atlas_segments_minus_1,
+                alpha_segments_present,
+                background,
+                segments,
+            },
+            num_segments,
+        ))
+    })
 }
 
-/// Parses `ats_multistream_info()` / `ats_multistream_with_alpha_info()`
-/// (AV2 v1.0.0 § 5.9.3 / § 5.9.4), returning the info and `numSegments`.
-fn parse_ats_multistream_info(
-    reader: &mut BitReader<'_>,
-    with_alpha: bool,
-) -> Result<(AtlasMultistreamInfo, u32)> {
-    let width = reader.read_uvlc()?;
-    let height = reader.read_uvlc()?;
-    let count_offset = reader.byte_offset();
-    let count_bit_offset = reader.bit_offset();
-    let num_atlas_segments_minus_1 = reader.read_uvlc()?;
-    if num_atlas_segments_minus_1 >= MAX_NUM_ATLAS_SEGMENTS {
-        return Err(Error::InvalidAtlasSegment {
-            offset: count_offset,
-            bit_offset: count_bit_offset,
-            kind: AtlasSegmentErrorKind::SegmentCountOutOfRange,
-        });
+fn read_input_stream_id<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    field: &'static str,
+    seen: &mut u32,
+) -> Result<u8> {
+    let start = sr.rel_bit();
+    let offset = sr.byte_offset();
+    let bit_offset = sr.bit_offset();
+    let id = sr.read_bits_u8(field, 5)?;
+    if !insert_atlas_input_stream_id(seen, id) {
+        return sr.fail(
+            start,
+            Some(field),
+            Error::InvalidAtlasSegment {
+                offset,
+                bit_offset,
+                kind: AtlasSegmentErrorKind::DuplicateInputStreamId,
+            },
+        );
     }
+    Ok(id)
+}
 
-    let alpha_segments_present = if with_alpha {
-        Some(reader.read_flag()?)
-    } else {
-        None
-    };
-    let background_info_present = reader.read_flag()?;
-    let background = if background_info_present {
-        Some((
-            reader.read_bits_u8(8)?,
-            reader.read_bits_u8(8)?,
-            reader.read_bits_u8(8)?,
-        ))
-    } else {
-        None
-    };
-
-    let mut segments = Vec::new();
-    for i in 0..=num_atlas_segments_minus_1 {
-        let input_stream_id = reader.read_bits_u8(5)?;
-        let top_left_pos_x = reader.read_uvlc()?;
-        let top_left_pos_y = reader.read_uvlc()?;
-        let seg_width = reader.read_uvlc()?;
-        let seg_height = reader.read_uvlc()?;
-        let alpha_segment_flag =
-            if alpha_segments_present == Some(true) && i != num_atlas_segments_minus_1 {
-                reader.read_flag()?
-            } else {
-                false
-            };
-        segments.push(AtlasMultistreamSegment {
-            input_stream_id,
-            top_left_pos_x,
-            top_left_pos_y,
-            width: seg_width,
-            height: seg_height,
-            alpha_segment_flag,
-        });
-    }
-
-    let num_segments = num_atlas_segments_minus_1 + 1;
-    Ok((
-        AtlasMultistreamInfo {
-            width,
-            height,
-            num_atlas_segments_minus_1,
-            alpha_segments_present,
-            background,
-            segments,
-        },
-        num_segments,
-    ))
+pub(crate) fn insert_atlas_input_stream_id(seen: &mut u32, id: u8) -> bool {
+    let bit = 1 << id;
+    let new = *seen & bit == 0;
+    *seen |= bit;
+    new
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;
@@ -566,6 +760,38 @@ mod tests {
     fn parse(bytes: &[u8]) -> Result<AtlasSegment> {
         let mut reader = BitReader::new(bytes, ByteOffset::new(0));
         parse_atlas_segment(&mut reader)
+    }
+
+    #[test]
+    fn dispatches_multistream_modes_only_in_global_scope() {
+        use crate::obu::{dispatch_obu_payload, read_obu_header_from_slice};
+
+        for (bytes, xlayer) in [([0xc4, 0x1f], 31), ([0xc4, 0x03], 3)] {
+            let header = read_obu_header_from_slice(&bytes, ByteOffset::new(0)).unwrap();
+            assert_eq!(header.obu_type, crate::types::ObuType::AtlasSegment);
+            assert_eq!(header.extended_layer_id.get(), xlayer);
+            assert_eq!(header.embedded_layer_id.get(), 0);
+            assert_eq!(header.temporal_layer_id.get(), 0);
+
+            for mode in [3, 4] {
+                let mut bits = Bits::default();
+                bits.f(0, 3);
+                bits.uvlc(mode);
+                let error = dispatch_obu_payload(header, &bits.into_bytes(), ByteOffset::new(2))
+                    .unwrap_err();
+                if xlayer == 31 {
+                    assert!(matches!(error, Error::UnexpectedEof { .. }));
+                } else {
+                    assert!(matches!(
+                        error,
+                        Error::InvalidAtlasSegment {
+                            kind: AtlasSegmentErrorKind::MultistreamRequiresGlobalXlayer,
+                            ..
+                        }
+                    ));
+                }
+            }
+        }
     }
 
     #[test]
@@ -598,8 +824,8 @@ mod tests {
         bits.uvlc(640); // ats_width
         bits.uvlc(480); // ats_height
         bits.uvlc(1); // ats_num_atlas_segments_minus_1 = 1 -> 2 segments
-        for _ in 0..2 {
-            bits.f(5, 5); // ats_input_stream_id
+        for id in [5, 9] {
+            bits.f(id, 5); // ats_input_stream_id
             bits.uvlc(0); // top_left_pos_x
             bits.uvlc(0); // top_left_pos_y
             bits.uvlc(100); // width
@@ -698,7 +924,12 @@ mod tests {
         bits.uvlc(50);
         bits.uvlc(50);
         bits.bit(0); // ats_signaled_atlas_segment_ids_flag
-        let record = parse(&bits.into_bytes()).unwrap();
+        let bytes = bits.into_bytes();
+        assert!(matches!(
+            parse(&bytes[..bytes.len() - 2]),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        let record = parse(&bytes).unwrap();
         assert_eq!(record.mode, AtlasSegmentMode::MultistreamAlpha);
         assert_eq!(record.num_segments, 2);
         let AtlasModeInfo::MultistreamAlpha(msi) = &record.mode_info else {
@@ -757,6 +988,35 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn reports_truncated_atlas_fields_at_the_payload_end() {
+        use crate::obu::{dispatch_obu_payload_observed, read_obu_header_from_slice};
+        use crate::syntax::SyntaxRecorder;
+
+        let header = read_obu_header_from_slice(&[0xc4, 0x1f], ByteOffset::new(97)).unwrap();
+        let payload_start = ByteOffset::new(99);
+        for (bytes, field) in [
+            (&[0x05, 0x00][..], "ats_msi_width"),
+            (&[0x05, 0x40], "ats_msi_height"),
+            // Mode 0. The final offset in the explicit region rectangle is incomplete.
+            (&[0x1f, 0xbc], "ats_bottom_right_region_row_off"),
+            (&[0x05, 0x49, 0x40, 0xd2], "ats_msi_alpha_segment_flag"),
+        ] {
+            let mut recorder = SyntaxRecorder::with_default_limits();
+            let error = dispatch_obu_payload_observed(header, bytes, payload_start, &mut recorder)
+                .unwrap_err();
+            assert!(
+                matches!(error, Error::UnexpectedEof { offset, needed: 1 }
+                if offset == payload_start.saturating_add(bytes.len() as u64)),
+                "{field}: {error}"
+            );
+            assert_eq!(
+                recorder.finish().error.unwrap().field.as_deref(),
+                Some(field)
+            );
+        }
     }
 
     #[test]

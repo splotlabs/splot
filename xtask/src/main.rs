@@ -35,6 +35,7 @@ mod git_util;
 mod perf;
 mod reference_evidence;
 mod seed_fuzz_corpus;
+mod simd_policy;
 mod source_lines;
 mod util;
 mod zero_copy;
@@ -104,9 +105,9 @@ enum Task {
         /// Only fmt, clippy and the in-process repo checks; GitHub CI runs the rest.
         #[arg(long)]
         fast: bool,
-        /// Leave this package out of the `--all-targets` test run; GitHub CI tests it in its own job.
+        /// Exclude a package from tests and doctests when a separate CI job runs them.
         #[arg(long, value_name = "PACKAGE")]
-        exclude_tests: Option<String>,
+        exclude_tests: Vec<String>,
     },
     /// Verify commit subjects follow Conventional Commits.
     CheckConventionalCommits {
@@ -134,6 +135,8 @@ enum Task {
     CheckConcurrencyPolicy,
     /// Verify the workspace honors the zero-copy media-buffer policy.
     CheckZeroCopyPolicy,
+    /// Verify decoder crates perform SIMD runtime detection and dispatch at startup only.
+    CheckSimdPolicy,
     /// Verify the committed AV2 spec mirror matches its CHECKSUMS and provenance.
     CheckSpecMirror,
     /// Verify diagnostic registry docs list exactly the emitted diagnostic rule ids.
@@ -326,11 +329,7 @@ enum DecoderFixturesCmd {
     /// orphan `.ivf` (no decode, no AVM). Wired into `cargo xtask ci`.
     Verify,
     /// Generate optional docs/decoder/DECODER-ORACLE-COVERAGE.md.
-    Coverage {
-        /// Verify the committed coverage doc is up to date instead of writing.
-        #[arg(long)]
-        check: bool,
-    },
+    Coverage,
 }
 
 fn main() -> Result<()> {
@@ -339,7 +338,7 @@ fn main() -> Result<()> {
         Task::Ci {
             fast,
             exclude_tests,
-        } => run_ci(fast, exclude_tests.as_deref()),
+        } => run_ci(fast, &exclude_tests),
         Task::CheckConventionalCommits { rev_range } => {
             check_conventional_commits(&workspace_root()?, rev_range.as_deref())
         }
@@ -353,6 +352,7 @@ fn main() -> Result<()> {
             concurrency_policy::check_concurrency_policy(&workspace_root()?)
         }
         Task::CheckZeroCopyPolicy => zero_copy::check_zero_copy_policy(&workspace_root()?),
+        Task::CheckSimdPolicy => simd_policy::check_simd_policy(&workspace_root()?),
         Task::CheckSpecMirror => check_spec_mirror(&workspace_root()?),
         Task::CheckDiagnosticRegistry => {
             diagnostic_registry::check_diagnostic_registry(&workspace_root()?)
@@ -399,9 +399,7 @@ fn main() -> Result<()> {
             let root = workspace_root()?;
             match cmd {
                 DecoderFixturesCmd::Verify => decoder_fixtures::run_verify(&root),
-                DecoderFixturesCmd::Coverage { check } => {
-                    decoder_fixtures::run_coverage(&root, check)
-                }
+                DecoderFixturesCmd::Coverage => decoder_fixtures::run_coverage(&root),
             }
         }
         Task::CheckReferenceEvidence => {
@@ -481,8 +479,11 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
-    let exclude = exclude_tests.map_or_else(Vec::new, |package| vec!["--exclude", package]);
+fn run_ci(fast: bool, exclude_tests: &[String]) -> Result<()> {
+    let exclude: Vec<_> = exclude_tests
+        .iter()
+        .flat_map(|package| ["--exclude", package.as_str()])
+        .collect();
     run_cargo(&["fmt", "--all", "--", "--check"])?;
     run_cargo(&[
         "clippy",
@@ -502,7 +503,26 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
             ]
             .concat(),
         )?;
-        run_cargo(&["test", "--doc", "--workspace", "--locked"])?;
+        if !exclude_tests
+            .iter()
+            .any(|package| package == "splot-decode")
+        {
+            run_cargo(&[
+                "test",
+                "--locked",
+                "-p",
+                "splot-decode",
+                "--features",
+                "block-evidence",
+                "--test",
+                "block_evidence",
+                "--test",
+                "block_chroma_prediction_evidence",
+                "--test",
+                "block_transform_evidence",
+            ])?;
+        }
+        run_cargo(&[&["test", "--doc", "--workspace", "--locked"][..], &exclude].concat())?;
         run_cargo_with_env(
             &[("RUSTDOCFLAGS", "-D warnings")],
             &["doc", "--workspace", "--no-deps", "--locked"],
@@ -521,6 +541,7 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     check_dependency_direction(&root)?;
     concurrency_policy::check_concurrency_policy(&root)?;
     zero_copy::check_zero_copy_policy(&root)?;
+    simd_policy::check_simd_policy(&root)?;
     check_spec_mirror(&root)?;
     check_fuzz_targets(&root)?;
     gen_tables::run_gen_tables(&root, true)?;
@@ -529,7 +550,6 @@ fn run_ci(fast: bool, exclude_tests: Option<&str>) -> Result<()> {
     decoder_support::run_check_decoder_support(&root)?;
     decoder_conformance_coverage::run_check_decoder_conformance_coverage(&root)?;
     decoder_fixtures::run_verify(&root)?;
-    decoder_fixtures::run_coverage(&root, true)?;
     diagnostic_registry::check_diagnostic_registry(&root)?;
     fixtures::check_fixtures(&root)?;
     dupehound::check_duplication(&root)?;
@@ -1025,27 +1045,9 @@ pub(crate) fn workspace_root() -> Result<PathBuf> {
 
 fn check_license_headers(root: &Path) -> Result<()> {
     let mut offenders = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-        for entry in entries {
-            let entry =
-                entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", path.display()))?;
-            if file_type.is_dir() {
-                if !is_skipped_dir(&path) {
-                    stack.push(path);
-                }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs")
-                && !has_spdx_header(&path)?
-            {
-                offenders.push(path);
-            }
+    for path in feature_status::collect_files(root, &["rs"])? {
+        if !has_spdx_header(&path)? {
+            offenders.push(path);
         }
     }
 
@@ -1061,13 +1063,6 @@ fn check_license_headers(root: &Path) -> Result<()> {
             offenders.len()
         )
     }
-}
-
-fn is_skipped_dir(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("target" | ".git")
-    )
 }
 
 fn has_spdx_header(path: &Path) -> Result<bool> {

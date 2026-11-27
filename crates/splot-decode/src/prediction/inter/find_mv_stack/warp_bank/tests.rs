@@ -2,12 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
+use splot_recon::IDENTITY_WARP_PARAMS;
 
 use super::super::tests::{MI_DIM, N4_32, SB_H4_64, block_at, empty_grid, record_two_wide_column};
 use super::super::{
-    BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MAX_WARP_REF_CANDIDATES, MotionMode, Mv,
-    MvBlockContext, MvStack, NeighbourMvGrid, SWITCHABLE_FILTERS, find_mv_stack,
-    find_mv_stack_with_temporal,
+    BlockPrecisionRecord, MAX_WARP_REF_CANDIDATES, MotionMode, MotionVector, MvBlockContext,
+    MvStack, NeighbourMvGrid, SWITCHABLE_FILTERS, find_mv_stack, find_mv_stack_with_temporal,
 };
 use super::WarpParamBank;
 
@@ -22,7 +22,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
         N4_32,
         0,
         false,
-        Mv { row: -8, col: 24 },
+        MotionVector { row: -8, col: 24 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -39,7 +39,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     let stack = find_mv_stack(
         &grid,
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &bank,
         true,
@@ -56,15 +56,15 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     assert_eq!(stack.warp_candidate(3), older, "then the older bank entry");
     assert_eq!(
         stack.warp_candidate(4),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "out-of-range indices resolve to the identity default"
     );
-    assert_warp_candidates(&grid, &block_at(8, 8), DEFAULT_WARP_PARAMS, &bank, &stack);
+    assert_warp_candidates(&grid, &block_at(8, 8), IDENTITY_WARP_PARAMS, &bank, &stack);
 
     let no_wrl = find_mv_stack(
         &grid,
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &bank,
         false,
@@ -73,7 +73,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     );
     assert_eq!(
         no_wrl.warp_candidate(0),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "DeriveWrl == 0 leaves the stack default-initialized"
     );
 }
@@ -106,7 +106,7 @@ fn warp_stack_appends_global_motion_after_the_parameter_bank() {
     let stack = find_mv_stack_with_temporal(
         &empty_grid(),
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         global,
         None,
         &bank,
@@ -120,14 +120,14 @@ fn warp_stack_appends_global_motion_after_the_parameter_bank() {
     assert_eq!(stack.warp_candidate(0), newer);
     assert_eq!(stack.warp_candidate(1), older);
     assert_eq!(stack.warp_candidate(2), global);
-    assert_eq!(stack.warp_candidate(3), DEFAULT_WARP_PARAMS);
+    assert_eq!(stack.warp_candidate(3), IDENTITY_WARP_PARAMS);
     assert_warp_candidates(&empty_grid(), &block_at(8, 8), global, &bank, &stack);
 }
 
 #[test]
 fn corner_derivation_matches_the_hand_computed_model() {
     let mut grid = empty_grid();
-    let mut record_cell = |r: usize, c: usize, mv: Mv| {
+    let mut record_cell = |r: usize, c: usize, mv: MotionVector| {
         grid.record_block(
             r,
             c,
@@ -144,9 +144,9 @@ fn corner_derivation_matches_the_hand_computed_model() {
             BlockPrecisionRecord::default(),
         );
     };
-    record_cell(3, 3, Mv { row: 0, col: 0 });
-    record_cell(3, 5, Mv { row: 0, col: 8 });
-    record_cell(5, 3, Mv { row: 0, col: 0 });
+    record_cell(3, 3, MotionVector { row: 0, col: 0 });
+    record_cell(3, 5, MotionVector { row: 0, col: 8 });
+    record_cell(5, 3, MotionVector { row: 0, col: 0 });
     let block = MvBlockContext {
         mi_row: 4,
         mi_col: 4,
@@ -161,7 +161,7 @@ fn corner_derivation_matches_the_hand_computed_model() {
     let stack = find_mv_stack(
         &grid,
         &block,
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         true,
@@ -175,13 +175,13 @@ fn corner_derivation_matches_the_hand_computed_model() {
     );
     assert_eq!(
         stack.warp_candidate(1),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "gm/default tail after the corner model"
     );
     assert_warp_candidates(
         &grid,
         &block,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         &WarpParamBank::new(),
         &stack,
     );
@@ -191,7 +191,7 @@ fn corner_derivation_matches_the_hand_computed_model() {
 fn scan_col_feeds_warp_stack() {
     let mut grid = empty_grid();
     let warp_params = [-3_i32 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
-    record_two_wide_column(&mut grid, 6, Mv { row: 0, col: 16 });
+    record_two_wide_column(&mut grid, 6, MotionVector { row: 0, col: 16 });
     grid.record_warp_block(
         8,
         4,
@@ -199,7 +199,7 @@ fn scan_col_feeds_warp_stack() {
         8,
         0,
         false,
-        Mv { row: -8, col: 24 },
+        MotionVector { row: -8, col: 24 },
         false,
         SWITCHABLE_FILTERS,
         false,
@@ -211,7 +211,7 @@ fn scan_col_feeds_warp_stack() {
     let stack = find_mv_stack(
         &grid,
         &block_at(8, 8),
-        Mv::ZERO,
+        MotionVector::ZERO,
         None,
         &WarpParamBank::new(),
         true,
@@ -230,13 +230,13 @@ fn scan_col_feeds_warp_stack() {
     );
     assert_eq!(
         stack.warp_candidate(2),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         "the tail fills identity defaults after the scan-col inserts"
     );
     assert_warp_candidates(
         &grid,
         &block_at(8, 8),
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         &WarpParamBank::new(),
         &stack,
     );

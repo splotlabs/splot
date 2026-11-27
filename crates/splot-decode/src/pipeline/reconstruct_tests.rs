@@ -3,13 +3,12 @@
 
 //! Unit tests for general intra block reconstruction ([`super`]).
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext,
     SupportedChromaMode,
 };
+use splot_recon::CurrentFrameSurface;
 
 #[path = "reconstruct_tests/directional_edge.rs"]
 mod directional_edge;
@@ -31,6 +30,9 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,
@@ -51,6 +53,9 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -77,7 +82,7 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
             )
             .unwrap();
         let result = reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+            &mut CurrentFrameSurface::Frame(&mut workspace),
             block,
             PlaneId::Y,
             0,
@@ -109,6 +114,9 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -125,25 +133,28 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
         let mut workspace =
             new_general_intra_workspace::<u8>(32, 16, BitDepth::Eight, PixelFormat::Yuv420)
                 .unwrap();
-        reconstruct_general_intra_cardinal_mrl_luma_block_into(
-            &mut workspace,
-            block,
-            IntraCardinalDirection::Vertical,
-            0,
-            0,
-            5,
-            4,
-            215,
-            0,
-            0,
-            false,
-            true,
-            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
-            IntraEdgeAvailability {
-                above: false,
-                left: false,
-            },
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_cardinal_mrl_luma_block_into(
+                backend,
+                &mut workspace,
+                block,
+                IntraCardinalDirection::Vertical,
+                0,
+                0,
+                5,
+                4,
+                215,
+                0,
+                0,
+                false,
+                true,
+                LumaTransformTypeContext::new(IntraYMode::Dc, 0),
+                IntraEdgeAvailability {
+                    above: false,
+                    left: false,
+                },
+            )
+        })
         .unwrap();
         (0..16)
             .flat_map(|y| {
@@ -165,6 +176,9 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -188,7 +202,7 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 
     for workspace in [&mut full, &mut cropped] {
         reconstruct_inter_block_residual_rect_into(
-            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(workspace),
+            &mut CurrentFrameSurface::Frame(workspace),
             block.view(&quant),
             PlaneId::Y,
             0,
@@ -227,7 +241,7 @@ fn inter_residual_all_zero_is_noop() {
         .unwrap();
     let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
     reconstruct_inter_block_residual_rect_into(
-        &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         all_zero_luma_block().view(&[]),
         PlaneId::U,
         usize::MAX,
@@ -262,6 +276,9 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -272,20 +289,23 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
         lossless: false,
     };
 
-    let result = write_intra_prediction_block(
-        &mut workspace,
-        block.view(&quant),
-        prediction,
-        PlaneId::Y,
-        0,
-        0,
-        block_size,
-        64,
-        false,
-        None,
-        None,
-        BitDepth::Eight,
-    );
+    let result = crate::test_support::with_auto_backend!(backend => {
+        write_intra_prediction_block(
+            backend,
+            &mut workspace,
+            block.view(&quant),
+            prediction,
+            PlaneId::Y,
+            0,
+            0,
+            block_size,
+            64,
+            false,
+            None,
+            None,
+            BitDepth::Eight,
+        )
+    });
 
     assert!(matches!(
         result,
@@ -387,58 +407,67 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     let mut without_ibp = workspace_with_u_dc_edges();
     let block = all_zero_luma_block();
 
-    reconstruct_general_intra_chroma_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut via_chroma,
-        block.view(&[]),
-        PlaneId::U,
-        8,
-        8,
-        3,
-        3,
-        0,
-        crate::bitstream::tile_payload::SupportedChromaMode::Dc,
-        None,
-        0,
-        0,
-        true,
-        IntraEdgeAvailability::all(),
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut via_chroma,
+            block.view(&[]),
+            PlaneId::U,
+            8,
+            8,
+            3,
+            3,
+            0,
+            crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+            None,
+            0,
+            0,
+            true,
+            IntraEdgeAvailability::all(),
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
-    reconstruct_general_intra_block_rect_into(
-        &mut via_rect,
-        block.view(&[]),
-        PlaneId::U,
-        8,
-        8,
-        3,
-        3,
-        0,
-        false,
-        true,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_block_rect_into(
+            backend,
+            &mut via_rect,
+            block.view(&[]),
+            PlaneId::U,
+            8,
+            8,
+            3,
+            3,
+            0,
+            false,
+            true,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
-    reconstruct_general_intra_chroma_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut without_ibp,
-        block.view(&[]),
-        PlaneId::U,
-        8,
-        8,
-        3,
-        3,
-        0,
-        crate::bitstream::tile_payload::SupportedChromaMode::Dc,
-        None,
-        0,
-        0,
-        false,
-        IntraEdgeAvailability::all(),
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut without_ibp,
+            block.view(&[]),
+            PlaneId::U,
+            8,
+            8,
+            3,
+            3,
+            0,
+            crate::bitstream::tile_payload::SupportedChromaMode::Dc,
+            None,
+            0,
+            0,
+            false,
+            IntraEdgeAvailability::all(),
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     let mut ibp_is_observable = false;
@@ -487,27 +516,30 @@ fn zone1_d45_mrl_index_2_reads_the_offset_above_reference_line() {
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 8, 5).unwrap(), 42);
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 8, 7).unwrap(), 200);
 
-    reconstruct_general_intra_one_sided_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        45,
-        PlaneId::Y,
-        8,
-        8,
-        2,
-        2,
-        0,
-        2, // num4_above_right: cover the maxBase = 11 above-right reads (x up to 19)
-        OneSidedAboveMrl {
-            mrl_index: 2,
-            above_mrl_index: 2,
-        },
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            45,
+            PlaneId::Y,
+            8,
+            8,
+            2,
+            2,
+            0,
+            2, // num4_above_right: cover the maxBase = 11 above-right reads (x up to 19)
+            OneSidedAboveMrl {
+                mrl_index: 2,
+                above_mrl_index: 2,
+            },
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     let got: Vec<u8> = (0..4)
@@ -528,20 +560,23 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
     let pattern: Vec<u8> = (0..16).map(|i| 20 + i).collect();
     lay_above_row(&mut ws, 7, 4, &pattern);
 
-    let edge = build_one_sided_above_idif_edge(
-        &ws,
-        PlaneId::Y,
-        0,
-        8,
-        4,
-        4,
-        1,
-        0,
-        0,
-        IntraEdgeAvailability::all(),
-        BitDepth::Eight,
-        OneSidedEdgeFilter::default(),
-    )
+    let edge = crate::test_support::with_auto_backend!(backend => {
+        build_one_sided_above_idif_edge(
+            backend,
+            &ws,
+            PlaneId::Y,
+            0,
+            8,
+            4,
+            4,
+            1,
+            0,
+            0,
+            IntraEdgeAvailability::all(),
+            BitDepth::Eight,
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     assert_eq!(edge[0], pattern[0]);
@@ -560,23 +595,26 @@ fn zone1_above_edge_does_not_read_corner_across_tile_boundary() {
             .unwrap();
     }
 
-    let edge = build_one_sided_above_idif_edge(
-        &ws,
-        PlaneId::Y,
-        8,
-        8,
-        4,
-        4,
-        1,
-        0,
-        0,
-        IntraEdgeAvailability {
-            above: true,
-            left: false,
-        },
-        BitDepth::Eight,
-        OneSidedEdgeFilter::default(),
-    )
+    let edge = crate::test_support::with_auto_backend!(backend => {
+        build_one_sided_above_idif_edge(
+            backend,
+            &ws,
+            PlaneId::Y,
+            8,
+            8,
+            4,
+            4,
+            1,
+            0,
+            0,
+            IntraEdgeAvailability {
+                above: true,
+                left: false,
+            },
+            BitDepth::Eight,
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     assert_eq!(&edge[..4], &[28, 28, 28, 29]);
@@ -587,20 +625,23 @@ fn one_sided_edge_holds_maximum_u8_mrl3_geometry_inline() {
     let ws =
         new_general_intra_workspace::<u8>(140, 70, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    let edge = build_one_sided_above_idif_edge(
-        &ws,
-        PlaneId::Y,
-        1,
-        4,
-        64,
-        64,
-        32,
-        3,
-        3,
-        IntraEdgeAvailability::all(),
-        BitDepth::Eight,
-        OneSidedEdgeFilter::default(),
-    )
+    let edge = crate::test_support::with_auto_backend!(backend => {
+        build_one_sided_above_idif_edge(
+            backend,
+            &ws,
+            PlaneId::Y,
+            1,
+            4,
+            64,
+            64,
+            32,
+            3,
+            3,
+            IntraEdgeAvailability::all(),
+            BitDepth::Eight,
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     assert_eq!(edge.len(), 138);
@@ -614,21 +655,24 @@ fn one_sided_edge_holds_maximum_u16_mrl3_fallback_inline() {
     let ws =
         new_general_intra_workspace::<u16>(4, 4, BitDepth::Ten, PixelFormat::Monochrome).unwrap();
 
-    let edge = build_one_sided_left_idif_edge(
-        &ws,
-        PlaneId::Y,
-        0,
-        0,
-        64,
-        64,
-        0,
-        false,
-        3,
-        0,
-        false,
-        BitDepth::Ten,
-        OneSidedEdgeFilter::default(),
-    )
+    let edge = crate::test_support::with_auto_backend!(backend => {
+        build_one_sided_left_idif_edge(
+            backend,
+            &ws,
+            PlaneId::Y,
+            0,
+            0,
+            64,
+            64,
+            0,
+            false,
+            3,
+            0,
+            false,
+            BitDepth::Ten,
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     assert_eq!(edge.len(), 138);
@@ -642,23 +686,26 @@ fn one_sided_edge_rejects_oversize_geometry_without_panicking() {
         new_general_intra_workspace::<u8>(4, 4, BitDepth::Eight, PixelFormat::Monochrome).unwrap();
 
     assert!(matches!(
-        build_one_sided_above_idif_edge(
-            &ws,
-            PlaneId::Y,
-            0,
-            0,
-            usize::MAX,
-            1,
-            0,
-            0,
-            0,
-            IntraEdgeAvailability {
-                above: false,
-                left: false,
-            },
-            BitDepth::Eight,
-            OneSidedEdgeFilter::default(),
-        ),
+        crate::test_support::with_auto_backend!(backend => {
+            build_one_sided_above_idif_edge(
+                backend,
+                &ws,
+                PlaneId::Y,
+                0,
+                0,
+                usize::MAX,
+                1,
+                0,
+                0,
+                0,
+                IntraEdgeAvailability {
+                    above: false,
+                    left: false,
+                },
+                BitDepth::Eight,
+                OneSidedEdgeFilter::default(),
+            )
+        }),
         Err(GeneralIntraResidualError::InvalidDirectionalEdgeState)
     ));
 }
@@ -681,24 +728,27 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
     )
     .unwrap();
 
-    reconstruct_general_intra_mrl_secondary_above_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        45,
-        8,
-        12,
-        3,
-        3,
-        0,
-        4,
-        OneSidedAboveMrl {
-            mrl_index: 1,
-            above_mrl_index: 1,
-        },
-        false,
-        LumaTransformTypeContext::new(IntraYMode::Dc, 0),
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_mrl_secondary_above_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            45,
+            8,
+            12,
+            3,
+            3,
+            0,
+            4,
+            OneSidedAboveMrl {
+                mrl_index: 1,
+                above_mrl_index: 1,
+            },
+            false,
+            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..8 {
@@ -721,25 +771,28 @@ fn cardinal_mrl_synthesizes_both_missing_edges() {
         let mut ws =
             new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420)
                 .unwrap();
-        reconstruct_general_intra_cardinal_mrl_luma_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            direction,
-            0,
-            0,
-            2,
-            2,
-            0,
-            3,
-            0,
-            false,
-            false,
-            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
-            IntraEdgeAvailability {
-                above: false,
-                left: false,
-            },
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_cardinal_mrl_luma_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                direction,
+                0,
+                0,
+                2,
+                2,
+                0,
+                3,
+                0,
+                false,
+                false,
+                LumaTransformTypeContext::new(IntraYMode::Dc, 0),
+                IntraEdgeAvailability {
+                    above: false,
+                    left: false,
+                },
+            )
+        })
         .unwrap();
 
         for row in 0..4 {
@@ -760,29 +813,32 @@ fn zone3_mrl_without_left_uses_above_mrl_row() {
     lay_above_row(&mut ws, 7, 4, &[201; 16]);
     ws.set_reconstructed_sample(PlaneId::Y, 0, 5, 73).unwrap();
 
-    reconstruct_general_intra_one_sided_left_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        203,
-        PlaneId::Y,
-        0,
-        8,
-        2,
-        2,
-        0,
-        0,
-        true,
-        1,
-        2,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: true,
-            left: false,
-        },
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_left_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            203,
+            PlaneId::Y,
+            0,
+            8,
+            2,
+            2,
+            0,
+            0,
+            true,
+            1,
+            2,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: true,
+                left: false,
+            },
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     for row in 8..12 {
@@ -797,26 +853,29 @@ fn zone2_mrl_synthesizes_both_missing_edges() {
     let mut ws =
         new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        135,
-        0,
-        0,
-        2,
-        2,
-        0,
-        3,
-        0,
-        true,
-        false,
-        false,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            135,
+            0,
+            0,
+            2,
+            2,
+            0,
+            3,
+            0,
+            true,
+            false,
+            false,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+        )
+    })
     .unwrap();
 
     let actual: Vec<u8> = (0..4)
@@ -866,28 +925,31 @@ fn zone2_two_sided_p132_interior_leaf_matches_avm_z2_idif() {
     )
     .unwrap();
 
-    reconstruct_general_intra_middle_neighbour_rect_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        132,
-        PlaneId::Y,
-        8,
-        8,
-        3,
-        3,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: true,
-            left: true,
-        },
-        TwoSidedMiddleEdgeFilters {
-            above: OneSidedEdgeFilter::default(),
-            left: OneSidedEdgeFilter::default(),
-        },
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_middle_neighbour_rect_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            132,
+            PlaneId::Y,
+            8,
+            8,
+            3,
+            3,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: true,
+                left: true,
+            },
+            TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter::default(),
+            },
+        )
+    })
     .unwrap();
 
     let got: Vec<u8> = (0..8)
@@ -915,32 +977,35 @@ fn zone2_top_row_left_edge_filter_matches_avm_z2_idif() {
     ];
     lay_left_col(&mut ws, 3, 5, &left);
 
-    reconstruct_general_intra_middle_neighbour_rect_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        119,
-        PlaneId::Y,
-        4,
-        0,
-        2,
-        5,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: true,
-        },
-        TwoSidedMiddleEdgeFilters {
-            above: OneSidedEdgeFilter::default(),
-            left: OneSidedEdgeFilter {
-                strength: 3,
-                num_px: 33,
-                corner_opposite: None,
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_middle_neighbour_rect_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            119,
+            PlaneId::Y,
+            4,
+            0,
+            2,
+            5,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: true,
             },
-        },
-    )
+            TwoSidedMiddleEdgeFilters {
+                above: OneSidedEdgeFilter::default(),
+                left: OneSidedEdgeFilter {
+                    strength: 3,
+                    num_px: 33,
+                    corner_opposite: None,
+                },
+            },
+        )
+    })
     .unwrap();
 
     #[rustfmt::skip]
@@ -1014,22 +1079,25 @@ fn d135_neighbour_masks_unavailable_tile_above_edge() {
     }
 
     fn reconstruct(mut ws: CurrentFrameWorkspace<u8>) -> Vec<u8> {
-        reconstruct_general_intra_directional_neighbour_block_into(
-            &mut ws,
-            all_zero_luma_block().view(&[]),
-            SupportedDirectionalLumaMode::D135,
-            PlaneId::Y,
-            8,
-            8,
-            3,
-            0,
-            false,
-            None,
-            IntraEdgeAvailability {
-                above: false,
-                left: true,
-            },
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_directional_neighbour_block_into(
+                backend,
+                &mut ws,
+                all_zero_luma_block().view(&[]),
+                SupportedDirectionalLumaMode::D135,
+                PlaneId::Y,
+                8,
+                8,
+                3,
+                0,
+                false,
+                None,
+                IntraEdgeAvailability {
+                    above: false,
+                    left: true,
+                },
+            )
+        })
         .unwrap();
         (0..8)
             .flat_map(|row| (0..8).map(move |col| (row, col)))
@@ -1081,26 +1149,29 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 7, 7).unwrap(), 200);
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 7, 8).unwrap(), 50);
 
-    reconstruct_general_intra_one_sided_left_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        203,
-        PlaneId::Y,
-        8,
-        8,
-        3,
-        3,
-        0,
-        0,
-        true,
-        0,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_left_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            203,
+            PlaneId::Y,
+            8,
+            8,
+            3,
+            3,
+            0,
+            0,
+            true,
+            0,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     let row0: Vec<u8> = (0..8)
@@ -1212,26 +1283,29 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 14, 15).unwrap(), 200);
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 14, 16).unwrap(), 40);
 
-    reconstruct_general_intra_one_sided_left_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        203,
-        PlaneId::Y,
-        16,
-        16,
-        3,
-        3,
-        0,
-        2, // num4_below_left: cover the maxBase = 17 below-left reads (rows up to 39)
-        true,
-        1, // mrl_index
-        1, // above_mrl_index
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_left_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            203,
+            PlaneId::Y,
+            16,
+            16,
+            3,
+            3,
+            0,
+            2, // num4_below_left: cover the maxBase = 17 below-left reads (rows up to 39)
+            true,
+            1, // mrl_index
+            1, // above_mrl_index
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     let got: Vec<u8> = (0..H)
@@ -1247,26 +1321,29 @@ fn zone2_mrl_middle_left_edge_synthesizes_left_from_above() {
         new_general_intra_workspace::<u8>(32, 32, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
     lay_above_row(&mut ws, 14, 4, &[73; 16]);
 
-    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        91,
-        0,
-        16,
-        2,
-        4,
-        0,
-        1,
-        1,
-        false,
-        false,
-        false,
-        None,
-        IntraEdgeAvailability {
-            above: true,
-            left: false,
-        },
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            91,
+            0,
+            16,
+            2,
+            4,
+            0,
+            1,
+            1,
+            false,
+            false,
+            false,
+            None,
+            IntraEdgeAvailability {
+                above: true,
+                left: false,
+            },
+        )
+    })
     .unwrap();
 
     for row in 0..16 {
@@ -1306,23 +1383,26 @@ fn two_sided_middle_mrl_clamps_bottom_edge_extension() {
     }
 
     for workspace in [&mut full, &mut cropped] {
-        reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
-            workspace,
-            all_zero_luma_block().view(&[]),
-            158,
-            8,
-            16,
-            3,
-            4,
-            121,
-            1,
-            0,
-            true,
-            false,
-            false,
-            None,
-            IntraEdgeAvailability::new(true, true),
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+                backend,
+                workspace,
+                all_zero_luma_block().view(&[]),
+                158,
+                8,
+                16,
+                3,
+                4,
+                121,
+                1,
+                0,
+                true,
+                false,
+                false,
+                None,
+                IntraEdgeAvailability::new(true, true),
+            )
+        })
         .unwrap();
     }
 
@@ -1361,25 +1441,28 @@ fn chroma_middle_prediction_clamps_bottom_edge_extension() {
     }
 
     for workspace in [&mut full, &mut cropped] {
-        reconstruct_general_intra_middle_neighbour_rect_block_into(
-            workspace,
-            all_zero_luma_block().view(&[]),
-            157,
-            PlaneId::U,
-            8,
-            16,
-            3,
-            4,
-            121,
-            false,
-            None,
-            None,
-            IntraEdgeAvailability::new(true, true),
-            TwoSidedMiddleEdgeFilters {
-                above: OneSidedEdgeFilter::default(),
-                left: OneSidedEdgeFilter::default(),
-            },
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            reconstruct_general_intra_middle_neighbour_rect_block_into(
+                backend,
+                workspace,
+                all_zero_luma_block().view(&[]),
+                157,
+                PlaneId::U,
+                8,
+                16,
+                3,
+                4,
+                121,
+                false,
+                None,
+                None,
+                IntraEdgeAvailability::new(true, true),
+                TwoSidedMiddleEdgeFilters {
+                    above: OneSidedEdgeFilter::default(),
+                    left: OneSidedEdgeFilter::default(),
+                },
+            )
+        })
         .unwrap();
     }
 
@@ -1402,21 +1485,24 @@ fn rect_cardinal_vertical_64x32_copies_wide_above_row_per_row() {
     let above_row: Vec<u8> = (0..64).map(|x| 100 + x as u8).collect();
     lay_above_row(&mut ws, 63, 6, &above_row);
 
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        IntraCardinalDirection::Vertical,
-        PlaneId::Y,
-        0,
-        64,
-        6, // log2_width = 6 -> 64
-        5, // log2_height = 5 -> 32
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            IntraCardinalDirection::Vertical,
+            PlaneId::Y,
+            0,
+            64,
+            6, // log2_width = 6 -> 64
+            5, // log2_height = 5 -> 32
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..32 {
@@ -1439,21 +1525,24 @@ fn rect_cardinal_horizontal_32x64_fills_each_row_from_tall_left_column() {
     let left_col: Vec<u8> = (0..64).map(|y| 50 + y as u8).collect();
     lay_left_col(&mut ws, 63, 6, &left_col);
 
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        IntraCardinalDirection::Horizontal,
-        PlaneId::Y,
-        64,
-        0,
-        5, // log2_width = 5 -> 32
-        6, // log2_height = 6 -> 64
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            IntraCardinalDirection::Horizontal,
+            PlaneId::Y,
+            64,
+            0,
+            5, // log2_width = 5 -> 32
+            6, // log2_height = 6 -> 64
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..64 {
@@ -1477,21 +1566,24 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
     let left_col: Vec<u8> = (0..32).map(|y| 70 + y as u8).collect();
     lay_left_col(&mut ws, 63, 5, &left_col);
 
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        IntraCardinalDirection::Vertical,
-        PlaneId::Y,
-        64,
-        0,
-        6, // log2_width = 6 -> 64
-        5, // log2_height = 5 -> 32
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            IntraCardinalDirection::Vertical,
+            PlaneId::Y,
+            64,
+            0,
+            6, // log2_width = 6 -> 64
+            5, // log2_height = 5 -> 32
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..32 {
@@ -1506,7 +1598,7 @@ fn rect_cardinal_vertical_64x32_no_above_fallback_is_flat_left_corner() {
     }
 }
 
-/// §7.13.2.1 NO-ABOVE FALLBACK GUARD for zone-1 directional luma: with no above
+/// §7.13.2.1 no-above fallback guard for zone-1 directional luma: with no above
 /// row and a real left edge, `AboveRow[i]` is synthesized from the block's
 /// top-left left neighbour (`left[0]`) before the D45/D67 one-sided projection.
 #[test]
@@ -1516,27 +1608,30 @@ fn zone1_d45_top_edge_synthesizes_above_from_left_corner() {
     let left_col: Vec<u8> = (0..16).map(|y| 91 + y as u8).collect();
     lay_left_col(&mut ws, 63, 4, &left_col);
 
-    reconstruct_general_intra_one_sided_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        36,
-        PlaneId::Y,
-        64,
-        0,
-        4,
-        4,
-        0,
-        0,
-        OneSidedAboveMrl::default(),
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: true,
-        },
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            36,
+            PlaneId::Y,
+            64,
+            0,
+            4,
+            4,
+            0,
+            0,
+            OneSidedAboveMrl::default(),
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: true,
+            },
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     for row in 0..16 {
@@ -1560,30 +1655,33 @@ fn zone1_d45_top_edge_mrl_uses_offset_left_reference() {
     lay_left_col(&mut ws, 63, 4, &adjacent_left);
     lay_left_col(&mut ws, 60, 4, &offset_left);
 
-    reconstruct_general_intra_one_sided_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        45,
-        PlaneId::Y,
-        64,
-        0,
-        4,
-        4,
-        0,
-        0,
-        OneSidedAboveMrl {
-            mrl_index: 3,
-            above_mrl_index: 0,
-        },
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: true,
-        },
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            45,
+            PlaneId::Y,
+            64,
+            0,
+            4,
+            4,
+            0,
+            0,
+            OneSidedAboveMrl {
+                mrl_index: 3,
+                above_mrl_index: 0,
+            },
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: true,
+            },
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     for row in 0..16 {
@@ -1603,27 +1701,30 @@ fn zone1_d45_top_left_synthesizes_no_neighbour_above_fallback() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_one_sided_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        45,
-        PlaneId::Y,
-        0,
-        0,
-        4,
-        4,
-        0,
-        0,
-        OneSidedAboveMrl::default(),
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            45,
+            PlaneId::Y,
+            0,
+            0,
+            4,
+            4,
+            0,
+            0,
+            OneSidedAboveMrl::default(),
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     for row in 0..16 {
@@ -1642,29 +1743,32 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_one_sided_left_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        203,
-        PlaneId::Y,
-        0,
-        0,
-        4,
-        4,
-        0,
-        0,
-        false,
-        0,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        OneSidedEdgeFilter::default(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_left_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            203,
+            PlaneId::Y,
+            0,
+            0,
+            4,
+            4,
+            0,
+            0,
+            false,
+            0,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            OneSidedEdgeFilter::default(),
+        )
+    })
     .unwrap();
 
     for row in 0..16 {
@@ -1687,21 +1791,24 @@ fn rect_cardinal_horizontal_32x64_no_left_fallback_is_flat_above_corner() {
     let above_row: Vec<u8> = (0..32).map(|x| 80 + x as u8).collect();
     lay_above_row(&mut ws, 63, 5, &above_row);
 
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        IntraCardinalDirection::Horizontal,
-        PlaneId::Y,
-        0,
-        64,
-        5, // log2_width = 5 -> 32
-        6, // log2_height = 6 -> 64
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            IntraCardinalDirection::Horizontal,
+            PlaneId::Y,
+            0,
+            64,
+            5, // log2_width = 5 -> 32
+            6, // log2_height = 6 -> 64
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..64 {
@@ -1731,27 +1838,30 @@ fn cardinal_horizontal_follow_chroma_top_left_uses_no_neighbour_left_fallback() 
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_chroma_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        0,
-        SupportedChromaMode::HorizontalFollow,
-        None,
-        0,
-        0,
-        false,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            0,
+            SupportedChromaMode::HorizontalFollow,
+            None,
+            0,
+            0,
+            false,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     for row in 0..4 {
@@ -1770,27 +1880,30 @@ fn d45_follow_chroma_top_left_uses_no_neighbour_above_fallback() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_chroma_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        0,
-        SupportedChromaMode::D45Follow,
-        None,
-        0,
-        0,
-        false,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            0,
+            SupportedChromaMode::D45Follow,
+            None,
+            0,
+            0,
+            false,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     for row in 0..4 {
@@ -1805,27 +1918,30 @@ fn d113_chroma_top_left_uses_no_neighbour_middle_edges() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_chroma_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        0,
-        SupportedChromaMode::D113,
-        None,
-        0,
-        0,
-        false,
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_chroma_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            0,
+            SupportedChromaMode::D113,
+            None,
+            0,
+            0,
+            false,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     let actual: Vec<u8> = (0..4)
@@ -1844,21 +1960,24 @@ fn assert_cardinal_top_left_fallback(direction: IntraCardinalDirection, expected
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_cardinal_neighbour_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        direction,
-        PlaneId::Y,
-        0,
-        0,
-        2,
-        2,
-        0,
-        false,
-        None,
-        None,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_cardinal_neighbour_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            direction,
+            PlaneId::Y,
+            0,
+            0,
+            2,
+            2,
+            0,
+            false,
+            None,
+            None,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for row in 0..4 {
@@ -1935,19 +2054,22 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
         left[0]
     );
 
-    reconstruct_general_intra_luma_paeth_neighbour_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        PlaneId::Y,
-        16,
-        16,
-        3, // log2_width = 3 -> 8
-        4, // log2_height = 4 -> 16
-        0,
-        false,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            PlaneId::Y,
+            16,
+            16,
+            3, // log2_width = 3 -> 8
+            4, // log2_height = 4 -> 16
+            0,
+            false,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for (i, &left_i) in left.iter().enumerate() {
@@ -1975,19 +2097,22 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
     lay_left_col(&mut ws, 15, 4, &left);
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 0).unwrap(), left[0]);
 
-    reconstruct_general_intra_luma_paeth_neighbour_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        PlaneId::Y,
-        16,
-        0,
-        3, // log2_width = 3 -> 8
-        4, // log2_height = 4 -> 16
-        0,
-        false,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            PlaneId::Y,
+            16,
+            0,
+            3, // log2_width = 3 -> 8
+            4, // log2_height = 4 -> 16
+            0,
+            false,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     for (i, &left_i) in left.iter().enumerate() {
@@ -2055,6 +2180,9 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -2081,19 +2209,22 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     )
     .unwrap();
 
-    reconstruct_general_intra_luma_paeth_neighbour_block_into(
-        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
-        &mut ws,
-        block.view(&quant),
-        PlaneId::Y,
-        16,
-        16,
-        3,
-        4,
-        149,
-        true,
-        IntraEdgeAvailability::all(),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            backend,
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut ws,
+            block.view(&quant),
+            PlaneId::Y,
+            16,
+            16,
+            3,
+            4,
+            149,
+            true,
+            IntraEdgeAvailability::all(),
+        )
+    })
     .unwrap();
 
     let mut differs_from_prediction = false;
@@ -2116,9 +2247,9 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     );
 }
 
-/// END-TO-END §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
-/// (8, 8) with a REAL, NON-FLAT above row, left column, and a DISTINCT corner,
-/// the §7.13.2.7 edge filter a NO-OP (`OneSidedEdgeFilter::default()` on BOTH
+/// End-to-end §7.13.2.9 useIBP — an 8x8 zone-1 `pAngle=45` `all_zero` leaf at
+/// (8, 8) with a real, non-flat above row, left column, and a distinct corner,
+/// the §7.13.2.7 edge filter a no-op (`OneSidedEdgeFilter::default()` on both
 /// edges), `num4_far == 0`. The output is the §7.13.2.8 primary (zone-1 above)
 /// blended with the secondary (`secondAngle = 225`, zone-3 left) per §7.13.2.9.
 /// The expected 8x8 samples are computed offline from the VERBATIM AVM IDIF
@@ -2163,26 +2294,29 @@ fn one_sided_ibp_8x8_p45_blends_primary_and_secondary_bit_exact() {
     )
     .unwrap();
 
-    reconstruct_general_intra_one_sided_ibp_luma_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        45, // pAngle (zone-1)
-        8,
-        8,
-        3, // log2_width = 3 -> 8
-        3, // log2_height = 3 -> 8
-        0, // qindex (unused for all_zero)
-        0, // primary_num4_far (above-right clamps to above_in[7])
-        OneSidedEdgeFilter::default(),
-        IbpSecondary {
-            second_angle: 225,
-            edge_filter: OneSidedEdgeFilter::default(),
-            num4_far: 0, // below-left clamps to left_in[7]
-        },
-        IntraEdgeAvailability::all(),
-        false,
-        None,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_ibp_luma_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            45, // pAngle (zone-1)
+            8,
+            8,
+            3, // log2_width = 3 -> 8
+            3, // log2_height = 3 -> 8
+            0, // qindex (unused for all_zero)
+            0, // primary_num4_far (above-right clamps to above_in[7])
+            OneSidedEdgeFilter::default(),
+            IbpSecondary {
+                second_angle: 225,
+                edge_filter: OneSidedEdgeFilter::default(),
+                num4_far: 0, // below-left clamps to left_in[7]
+            },
+            IntraEdgeAvailability::all(),
+            false,
+            None,
+        )
+    })
     .unwrap();
 
     #[rustfmt::skip]
@@ -2215,29 +2349,32 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
     let above: Vec<u8> = (0..16).map(|i| 80 + 4 * i as u8).collect();
     lay_above_row(&mut ws, 7, 4, &above);
 
-    reconstruct_general_intra_one_sided_ibp_luma_block_into(
-        &mut ws,
-        all_zero_luma_block().view(&[]),
-        203,
-        0,
-        8,
-        3,
-        3,
-        0,
-        0,
-        OneSidedEdgeFilter::default(),
-        IbpSecondary {
-            second_angle: 23,
-            edge_filter: OneSidedEdgeFilter::default(),
-            num4_far: 2,
-        },
-        IntraEdgeAvailability {
-            above: true,
-            left: false,
-        },
-        false,
-        None,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_ibp_luma_block_into(
+            backend,
+            &mut ws,
+            all_zero_luma_block().view(&[]),
+            203,
+            0,
+            8,
+            3,
+            3,
+            0,
+            0,
+            OneSidedEdgeFilter::default(),
+            IbpSecondary {
+                second_angle: 23,
+                edge_filter: OneSidedEdgeFilter::default(),
+                num4_far: 2,
+            },
+            IntraEdgeAvailability {
+                above: true,
+                left: false,
+            },
+            false,
+            None,
+        )
+    })
     .unwrap();
 
     let mut actual = Vec::with_capacity(64);
@@ -2265,29 +2402,32 @@ fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
     let mut workspace =
         new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
-    reconstruct_general_intra_one_sided_ibp_luma_block_into(
-        &mut workspace,
-        all_zero_luma_block().view(&[]),
-        45,
-        0,
-        0,
-        3,
-        2,
-        0,
-        0,
-        OneSidedEdgeFilter::default(),
-        IbpSecondary {
-            second_angle: 225,
-            edge_filter: OneSidedEdgeFilter::default(),
-            num4_far: 0,
-        },
-        IntraEdgeAvailability {
-            above: false,
-            left: false,
-        },
-        false,
-        None,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        reconstruct_general_intra_one_sided_ibp_luma_block_into(
+            backend,
+            &mut workspace,
+            all_zero_luma_block().view(&[]),
+            45,
+            0,
+            0,
+            3,
+            2,
+            0,
+            0,
+            OneSidedEdgeFilter::default(),
+            IbpSecondary {
+                second_angle: 225,
+                edge_filter: OneSidedEdgeFilter::default(),
+                num4_far: 0,
+            },
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            false,
+            None,
+        )
+    })
     .unwrap();
 
     let actual: Vec<_> = (0..4)

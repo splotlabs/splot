@@ -11,7 +11,7 @@
 //!
 //! # Required usage
 //!
-//! Parallel iterators MUST be driven inside [`crate::WorkerPool::install`] so the
+//! Parallel iterators must be driven inside [`crate::WorkerPool::install`] so the
 //! work runs on the context's configured pool (sized by `--threads`) instead of
 //! Rayon's implicit **global** pool. A parallel iterator written at the top level
 //! — outside `install` — silently runs on the global pool and will not scale with

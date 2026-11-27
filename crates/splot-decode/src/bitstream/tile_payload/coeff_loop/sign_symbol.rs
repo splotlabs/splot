@@ -12,8 +12,8 @@ use splot_core::symbol::SymbolDecoder;
 use super::super::cdf::block_read::{read_row, row_at};
 use super::super::cdf::coeff_context::dc_sign_ctx;
 use super::super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::max_level::CoeffTransformClass;
 use super::scan_walk::CoeffScanEntry;
+use splot_recon::TransformClass;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffDcSignSelector {
@@ -48,7 +48,7 @@ pub(crate) struct CoeffSignReadInput {
 pub(crate) struct CoeffSignSourceDeriveConfig<'a> {
     pub(crate) plane: usize,
     pub(crate) plane_type: usize,
-    pub(crate) tx_class: CoeffTransformClass,
+    pub(crate) tx_class: TransformClass,
     pub(crate) is_hidden: bool,
     pub(crate) sum_abs1: u32,
     pub(crate) above_dc: &'a [u8],
@@ -103,7 +103,7 @@ pub(crate) enum CoeffSignReadError {
     },
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "per-coefficient decode helper; the encoder facade is a second caller"
 )]
@@ -118,7 +118,7 @@ pub(crate) fn derive_nonzero_coeff_sign_input(
     }
 }
 
-#[allow(clippy::inline_always, reason = "see derive_nonzero_coeff_sign_input")]
+#[expect(clippy::inline_always, reason = "see derive_nonzero_coeff_sign_input")]
 #[inline(always)]
 fn derive_coeff_sign_source(
     entry: CoeffScanEntry,
@@ -143,9 +143,9 @@ fn derive_coeff_sign_source(
 
     let uses_axis_cdf = config.plane == 0
         && match config.tx_class {
-            CoeffTransformClass::Horizontal => entry.col() == 0,
-            CoeffTransformClass::Vertical => entry.row() == 0,
-            CoeffTransformClass::TwoD => false,
+            TransformClass::Horizontal => entry.col() == 0,
+            TransformClass::Vertical => entry.row() == 0,
+            TransformClass::TwoD => false,
         };
     if uses_axis_cdf {
         return CoeffSignReadSource::Cdf(config.dc_selector(0));
@@ -154,7 +154,7 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: per-coefficient sign and quant step"
 )]
@@ -167,11 +167,31 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
         CoeffSignReadSource::Cdf(selector) => {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "dc_sign",
+                    "plane_type,group,ctx",
+                    [
+                        selector.plane_type as u16,
+                        selector.group as u16,
+                        selector.ctx as u16,
+                    ],
+                ));
+            }
             let rows = row_at(cdfs.block_rows_mut().dc_sign(), selector.plane_type);
             let row = row_at(row_at(rows, selector.group), selector.ctx);
             (CoeffSignReadSymbol::Cdf, read_row(symbols, row) != 0)
         }
         CoeffSignReadSource::SignBit => {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?

@@ -8,8 +8,6 @@
 //! `SPLOT_PRINT_NEIGHBOUR_DIGESTS=1 cargo test -p splot-decode neighbour_state -- --nocapture`
 //! prints the current digests instead of checking them.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use core::cell::RefCell;
 use core::fmt::{Debug, Write};
 use core::ops::Range;
@@ -312,11 +310,14 @@ fn digest_line(name: &str) -> String {
     let (recorder, decoded) = splot_parallel::run_on_thread("neighbour-state", || {
         RECORDER.set(Some(Recorder::default()));
         let options = crate::DecodeOptions::default();
-        let session = crate::pipeline::DecodeSession::new(core::num::NonZeroUsize::MIN, None);
+        let backend =
+            splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto).unwrap();
+        let session =
+            crate::pipeline::DecodeSession::new(core::num::NonZeroUsize::MIN, None, backend);
         let mut source =
             crate::bitstream::byte_stream::ReaderUnits::new(bytes.as_slice(), options.limits());
         let decoded =
-            crate::pipeline::emit_frames(&mut source, &options, &session, |_| Ok(()), |_| Ok(()))
+            crate::test_support::with_auto_backend!(backend => crate::pipeline::emit_frames(backend, &mut source, &options, &session, |_| Ok(()), |_| Ok(())))
                 .is_ok();
         (RECORDER.take().unwrap(), decoded)
     })
@@ -332,13 +333,13 @@ fn digest_line(name: &str) -> String {
 }
 
 const EXPECTED: &[&str] = &[
-    "syn-orderhint-wrap-64x64: decoded=true mv_edges=4fc1a1347ed3fee5 partition=01fb07d4f0702f7b chroma_misize=debb2717ada5e222 intra_nbrs=d8e89f1d164920ba uv_edges=22724ddc19bb535c palette=e4dc592b5c8cde52 collocated=b08199c0b017842a mv_plane=b6ed25befad27aaa leaves=3754 chroma_part=154 inter_frame_chroma_part=101 palette_leaves=70 intra=439 inter=2225 compound=854 tip=54 warp=14 intrabc=14",
-    "syn-sdp-intra-128x128: decoded=true mv_edges=c4477937d810fe5d partition=cc55b4f61f448e00 chroma_misize=13efa6b3cfc623af intra_nbrs=0bf1a278833a0dab uv_edges=7888ddb297eb9e1c palette=55fd8e5ef9650153 collocated=feb1dd1100eea3af mv_plane=71908972e831c237 leaves=402 chroma_part=128 inter_frame_chroma_part=0 palette_leaves=0 intra=274 inter=0 compound=0 tip=0 warp=0 intrabc=0",
-    "syn-bru-multitile-256x128-q220: decoded=true mv_edges=786bfb42472f5855 partition=2f65cb6331b5bc30 chroma_misize=7154688fb528c57c intra_nbrs=423f311042aefeaa uv_edges=06e7670cf990f64c palette=9ff9c6bfb206a76c collocated=f080247b55fb7b3a mv_plane=863c0a52060d70c1 leaves=860 chroma_part=105 inter_frame_chroma_part=1 palette_leaves=0 intra=219 inter=106 compound=0 tip=15 warp=0 intrabc=415",
-    "syn-4frame-refmvbank-compound-256x128: decoded=true mv_edges=054c3c0ed603b519 partition=5d0d4d8efc123e21 chroma_misize=9592e5fbc78ad2a1 intra_nbrs=35d1c0b5a67a4d3c uv_edges=da315279b64bbba7 palette=66b7d79eb8041043 collocated=4f27cf23ca07a984 mv_plane=2cb7f9743c78a82e leaves=1757 chroma_part=347 inter_frame_chroma_part=0 palette_leaves=0 intra=18 inter=584 compound=138 tip=0 warp=81 intrabc=589",
-    "syn-2frame-multirow-inter-64x256-10bit-q100: decoded=true mv_edges=7382f0f173097a55 partition=d2e799f00ceb9a97 chroma_misize=b9d18888a0ef38e1 intra_nbrs=2fa4b1d5896d7971 uv_edges=34823c62259b60c6 palette=ccdb6302d6ee51e9 collocated=73f3e09a5128bbeb mv_plane=9cd73e5cd05f071e leaves=373 chroma_part=193 inter_frame_chroma_part=15 palette_leaves=73 intra=99 inter=74 compound=0 tip=0 warp=1 intrabc=6",
-    "syn-fsc-intra-128x128: decoded=true mv_edges=09372fcb4dfd87c5 partition=452a71287b2af442 chroma_misize=12d22324e426f607 intra_nbrs=d19978dbb210a9d0 uv_edges=a3edd55c123043d4 palette=b991db2eef4802d4 collocated=cbf29ce484222325 mv_plane=b673f97e300786cd leaves=164 chroma_part=0 inter_frame_chroma_part=0 palette_leaves=58 intra=116 inter=0 compound=0 tip=0 warp=0 intrabc=48",
-    "syn-4frame-sb256-offframe-chunk-inter-264x136-q100: decoded=true mv_edges=cfe940c113bab52a partition=61dec0e1bf9c93e7 chroma_misize=b45f044536b275a5 intra_nbrs=17960c48dd68f83f uv_edges=14d4fd32d6b3748d palette=46a5bedbee8679d4 collocated=fd0e2795b7dbfd4d mv_plane=ef55ef5fcf4a0975 leaves=68 chroma_part=25 inter_frame_chroma_part=0 palette_leaves=8 intra=28 inter=8 compound=0 tip=2 warp=3 intrabc=2",
+    "syn-orderhint-wrap-64x64: decoded=true mv_edges=4fc1a1347ed3fee5 partition=01fb07d4f0702f7b chroma_misize=debb2717ada5e222 intra_nbrs=d8e89f1d164920ba uv_edges=22724ddc19bb535c palette=e4dc592b5c8cde52 collocated=b08199c0b017842a mv_plane=9388460a9a640afa leaves=3754 chroma_part=154 inter_frame_chroma_part=101 palette_leaves=70 intra=439 inter=2225 compound=854 tip=54 warp=14 intrabc=14",
+    "syn-sdp-intra-128x128: decoded=true mv_edges=c4477937d810fe5d partition=cc55b4f61f448e00 chroma_misize=13efa6b3cfc623af intra_nbrs=0bf1a278833a0dab uv_edges=7888ddb297eb9e1c palette=55fd8e5ef9650153 collocated=feb1dd1100eea3af mv_plane=c23adecd9ca9f487 leaves=402 chroma_part=128 inter_frame_chroma_part=0 palette_leaves=0 intra=274 inter=0 compound=0 tip=0 warp=0 intrabc=0",
+    "syn-bru-multitile-256x128-q220: decoded=true mv_edges=786bfb42472f5855 partition=2f65cb6331b5bc30 chroma_misize=7154688fb528c57c intra_nbrs=423f311042aefeaa uv_edges=06e7670cf990f64c palette=9ff9c6bfb206a76c collocated=f080247b55fb7b3a mv_plane=601bc4205278c735 leaves=860 chroma_part=105 inter_frame_chroma_part=1 palette_leaves=0 intra=219 inter=106 compound=0 tip=15 warp=0 intrabc=415",
+    "syn-4frame-refmvbank-compound-256x128: decoded=true mv_edges=054c3c0ed603b519 partition=5d0d4d8efc123e21 chroma_misize=9592e5fbc78ad2a1 intra_nbrs=35d1c0b5a67a4d3c uv_edges=da315279b64bbba7 palette=66b7d79eb8041043 collocated=4f27cf23ca07a984 mv_plane=612e6be10ffc044e leaves=1757 chroma_part=347 inter_frame_chroma_part=0 palette_leaves=0 intra=18 inter=584 compound=138 tip=0 warp=81 intrabc=589",
+    "syn-2frame-multirow-inter-64x256-10bit-q100: decoded=true mv_edges=7382f0f173097a55 partition=d2e799f00ceb9a97 chroma_misize=b9d18888a0ef38e1 intra_nbrs=2fa4b1d5896d7971 uv_edges=34823c62259b60c6 palette=ccdb6302d6ee51e9 collocated=73f3e09a5128bbeb mv_plane=96851feb9e6d8616 leaves=373 chroma_part=193 inter_frame_chroma_part=15 palette_leaves=73 intra=99 inter=74 compound=0 tip=0 warp=1 intrabc=6",
+    "syn-fsc-intra-128x128: decoded=true mv_edges=09372fcb4dfd87c5 partition=452a71287b2af442 chroma_misize=12d22324e426f607 intra_nbrs=d19978dbb210a9d0 uv_edges=a3edd55c123043d4 palette=b991db2eef4802d4 collocated=cbf29ce484222325 mv_plane=69acd85ac8eb13e1 leaves=164 chroma_part=0 inter_frame_chroma_part=0 palette_leaves=58 intra=116 inter=0 compound=0 tip=0 warp=0 intrabc=48",
+    "syn-4frame-sb256-offframe-chunk-inter-264x136-q100: decoded=true mv_edges=cfe940c113bab52a partition=61dec0e1bf9c93e7 chroma_misize=b45f044536b275a5 intra_nbrs=17960c48dd68f83f uv_edges=14d4fd32d6b3748d palette=46a5bedbee8679d4 collocated=fd0e2795b7dbfd4d mv_plane=bd79bd32ba188855 leaves=68 chroma_part=25 inter_frame_chroma_part=0 palette_leaves=8 intra=28 inter=8 compound=0 tip=2 warp=3 intrabc=2",
 ];
 
 #[test]

@@ -60,7 +60,6 @@ pub fn read_leb128(input: &[u8], start: ByteOffset) -> Result<Leb128> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

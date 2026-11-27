@@ -15,11 +15,12 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::simd::{ResolvedBackend, SimdPolicy, resolve_backend};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, QmFrameLevels, QuantizerDeltas,
-    coefficient_scan_slice, tx_class,
+    TransformClass, coefficient_scan_slice, tx_class,
 };
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
@@ -29,8 +30,7 @@ use super::cdf::coeff_context::{
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{
-    CoeffMaxLevelConfig, CoeffTransformClass, coeff_is_low_frequency, derive_coeff_max_level,
-    visible_max_level,
+    CoeffMaxLevelConfig, coeff_is_low_frequency, derive_coeff_max_level, visible_max_level,
 };
 use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::sign_symbol::{
@@ -353,7 +353,7 @@ pub struct TransformBlock {
 #[derive(Debug)]
 pub struct CoeffLevels {
     state: TransformCoeffBlockState,
-    class: CoeffTransformClass,
+    class: TransformClass,
     scan: &'static [u16],
     hidden: bool,
     /// `tcqState` before the next level of a TCQ block.
@@ -371,7 +371,7 @@ impl CoeffLevels {
         TransformCoeffBlockState::new(width, height)
             .map(|state| Self {
                 state,
-                class: CoeffTransformClass::from_plane_tx_type(tx_type as usize),
+                class: tx_class(tx_type as usize),
                 scan,
                 hidden: false,
                 tcq: None,
@@ -558,7 +558,7 @@ fn scan_reach(width: usize, height: usize, tx_type: TxType) -> usize {
     let Ok(scan) = type_scan(width, height, tx_type) else {
         return 0;
     };
-    let class = tx_class_index(CoeffTransformClass::from_plane_tx_type(tx_type as usize));
+    let class = tx_class_index(tx_class(tx_type as usize));
     let mut index = vec![0usize; width * height];
     for (c, &pos) in scan.iter().enumerate() {
         if let Some(slot) = index.get_mut(usize::from(pos)) {
@@ -694,6 +694,7 @@ pub struct TileEnd {
 
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
+    backend: ResolvedBackend,
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
     chroma: ChromaFormatIdc,
@@ -787,11 +788,14 @@ impl IntraTileSyntax {
         )?;
         let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
         let segments = segment::Segments::new(seq, core, (rows.clone(), cols.clone()), base_q_idx)?;
+        let backend = resolve_backend(SimdPolicy::Auto)
+            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
             .map_err(rule("coefficient contexts"))?;
         Ok(Self {
+            backend,
             frame,
             bounds: TilePartitionBounds::new(rows.clone(), cols.clone()),
             chroma,
@@ -852,7 +856,7 @@ impl IntraTileSyntax {
     pub fn begin_superblock(&mut self, root: PartitionNode) {
         self.journal.clear();
         if root.0.c() == self.tile.1.start {
-            self.mi_sizes.enter_sb_row(root.0.r());
+            self.mi_sizes.enter_sb_row();
         }
         self.recon
             .block_decoded

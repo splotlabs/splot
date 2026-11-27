@@ -6,8 +6,12 @@
 //!
 //! Parses `screen_content_params()` (§ 5.18.3.3) and `intrabc_params()` (§ 5.18.3.4).
 
+#[cfg(test)]
 use crate::bitio::BitReader;
 use crate::error::Result;
+#[cfg(test)]
+use crate::syntax::NoopObserver;
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 
 /// `SELECT_SCREEN_CONTENT_TOOLS`: `seq_force_screen_content_tools` value meaning the
 /// frame signals `allow_screen_content_tools` (AV2 v1.0.0 § 3 / § 6.4.7).
@@ -37,31 +41,61 @@ pub(crate) struct ScreenContentParams {
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if a signaled
 /// flag cannot be read.
+#[cfg(test)]
 pub(crate) fn parse_screen_content_params_full(
     reader: &mut BitReader<'_>,
     seq_force_screen_content_tools: u8,
     seq_force_integer_mv: u8,
 ) -> Result<ScreenContentParams> {
-    let allow_screen_content_tools =
-        if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
-            reader.read_flag()?
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_screen_content_params_with_reader(
+        &mut sr,
+        seq_force_screen_content_tools,
+        seq_force_integer_mv,
+    )
+}
+
+pub(crate) fn parse_screen_content_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    seq_force_screen_content_tools: u8,
+    seq_force_integer_mv: u8,
+) -> Result<ScreenContentParams> {
+    sr.in_struct("screen_content_params", Some("5.18.3.3"), |sr| {
+        let allow_screen_content_tools =
+            if seq_force_screen_content_tools == SELECT_SCREEN_CONTENT_TOOLS {
+                sr.read_flag("allow_screen_content_tools")?
+            } else {
+                let val = seq_force_screen_content_tools != 0;
+                sr.inferred_bool(
+                    "allow_screen_content_tools",
+                    "seq_force_screen_content_tools != SELECT_SCREEN_CONTENT_TOOLS",
+                    val,
+                );
+                val
+            };
+
+        let force_integer_mv = if allow_screen_content_tools {
+            if seq_force_integer_mv == SELECT_INTEGER_MV {
+                sr.read_flag("force_integer_mv")?
+            } else {
+                let val = seq_force_integer_mv != 0;
+                sr.inferred_bool(
+                    "force_integer_mv",
+                    "seq_force_integer_mv != SELECT_INTEGER_MV",
+                    val,
+                );
+                val
+            }
         } else {
-            seq_force_screen_content_tools != 0
+            sr.inferred_bool("force_integer_mv", "!allow_screen_content_tools", false);
+            false
         };
 
-    let force_integer_mv = if allow_screen_content_tools {
-        if seq_force_integer_mv == SELECT_INTEGER_MV {
-            reader.read_flag()?
-        } else {
-            seq_force_integer_mv != 0
-        }
-    } else {
-        false
-    };
-
-    Ok(ScreenContentParams {
-        allow_screen_content_tools,
-        force_integer_mv,
+        Ok(ScreenContentParams {
+            allow_screen_content_tools,
+            force_integer_mv,
+        })
     })
 }
 
@@ -96,42 +130,57 @@ pub struct IntrabcParams {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or
 /// [`Error::InvalidNs`](crate::error::Error::InvalidNs) if a signaled field is
 /// truncated.
+#[cfg(test)]
 pub(crate) fn parse_intrabc_params_full(
     reader: &mut BitReader<'_>,
     frame_is_intra: bool,
     allow_frame_max_bvp_drl_bits: bool,
 ) -> Result<IntrabcParams> {
-    let allow_intrabc = reader.read_flag()?;
-    let mut params = IntrabcParams {
-        allow_intrabc,
-        allow_global_intrabc: None,
-        allow_local_intrabc: None,
-        change_bvp_drl: None,
-        max_bvp_drl_bits_minus_1: None,
-    };
-    if allow_intrabc {
-        if frame_is_intra {
-            let allow_global_intrabc = reader.read_flag()?;
-            params.allow_global_intrabc = Some(allow_global_intrabc);
-            if allow_global_intrabc {
-                params.allow_local_intrabc = Some(reader.read_flag()?);
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_intrabc_params_with_reader(&mut sr, frame_is_intra, allow_frame_max_bvp_drl_bits)
+}
+
+pub(crate) fn parse_intrabc_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    frame_is_intra: bool,
+    allow_frame_max_bvp_drl_bits: bool,
+) -> Result<IntrabcParams> {
+    sr.in_struct("intrabc_params", Some("5.18.3.4"), |sr| {
+        let allow_intrabc = sr.read_flag("allow_intrabc")?;
+        let mut params = IntrabcParams {
+            allow_intrabc,
+            allow_global_intrabc: None,
+            allow_local_intrabc: None,
+            change_bvp_drl: None,
+            max_bvp_drl_bits_minus_1: None,
+        };
+        if allow_intrabc {
+            if frame_is_intra {
+                let allow_global_intrabc = sr.read_flag("allow_global_intrabc")?;
+                params.allow_global_intrabc = Some(allow_global_intrabc);
+                if allow_global_intrabc {
+                    params.allow_local_intrabc = Some(sr.read_flag("allow_local_intrabc")?);
+                } else {
+                    sr.inferred_bool("allow_local_intrabc", "!allow_global_intrabc", true);
+                }
+            }
+
+            if allow_frame_max_bvp_drl_bits {
+                let change_bvp_drl = sr.read_flag("change_bvp_drl")?;
+                params.change_bvp_drl = Some(change_bvp_drl);
+                if change_bvp_drl {
+                    params.max_bvp_drl_bits_minus_1 =
+                        Some(sr.read_ns("max_bvp_drl_bits_minus_1", 2)?);
+                }
             }
         }
 
-        if allow_frame_max_bvp_drl_bits {
-            let change_bvp_drl = reader.read_flag()?;
-            params.change_bvp_drl = Some(change_bvp_drl);
-            if change_bvp_drl {
-                params.max_bvp_drl_bits_minus_1 = Some(reader.read_ns(2)?);
-            }
-        }
-    }
-
-    Ok(params)
+        Ok(params)
+    })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

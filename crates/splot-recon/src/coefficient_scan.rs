@@ -19,7 +19,7 @@
 //!
 //! It also provides [`tx_class`], the AV2 `get_tx_class` mapping from a
 //! `PlaneTxType` to its [`TransformClass`] (the class then selects the scan via
-//! [`coefficient_scan_order`]).
+//! [`coefficient_scan_slice`]).
 //!
 //! Feature tracking: `RECON-COEFFICIENT-SCAN-ORDER`, `RECON-GET-TX-CLASS`.
 
@@ -36,18 +36,11 @@ pub enum TransformClass {
     Vertical,
 }
 
-/// The four legal operating dimensions `Min(Tx_Width[txSz], 32)` /
-/// `Min(Tx_Height[txSz], 32)`.
-const SCAN_DIMS: [usize; 4] = [4, 8, 16, 32];
-
 /// Total scan positions over every `(w, h)` shape: `(4 + 8 + 16 + 32)^2`.
 const SCAN_TABLE_LEN: usize = 3600;
 
 /// The largest single scan, `32 * 32`.
 const MAX_SCAN_LEN: usize = 1024;
-
-/// Start of each `(w, h)` shape's run inside a packed per-class scan table.
-const SCAN_OFFSETS: [[usize; 4]; 4] = build_scan_offsets();
 
 /// `TX_CLASS_VERT` is the identity permutation, so every shape's scan is the
 /// `w * h` prefix of one shared table rather than its own packed run.
@@ -59,20 +52,10 @@ const HORIZONTAL_SCAN: [u16; SCAN_TABLE_LEN] = build_horizontal_scan();
 /// Packed `TX_CLASS_2D` scans for every `(w, h)` shape.
 const TWO_D_SCAN: [u16; SCAN_TABLE_LEN] = build_two_d_scan();
 
-const fn build_scan_offsets() -> [[usize; 4]; 4] {
-    let mut offsets = [[0usize; 4]; 4];
-    let mut offset = 0;
-    let mut wi = 0;
-    while wi < 4 {
-        let mut hi = 0;
-        while hi < 4 {
-            offsets[wi][hi] = offset;
-            offset += SCAN_DIMS[wi] * SCAN_DIMS[hi];
-            hi += 1;
-        }
-        wi += 1;
-    }
-    offsets
+/// Start of a shape's scan. Earlier widths each cover 60 rows' worth
+/// of positions, and preceding heights at this width sum to `h - 4`.
+const fn scan_offset(w: usize, h: usize) -> usize {
+    60 * (w - 4) + w * (h - 4)
 }
 
 const fn build_vertical_scan() -> [u16; MAX_SCAN_LEN] {
@@ -85,14 +68,15 @@ const fn build_vertical_scan() -> [u16; MAX_SCAN_LEN] {
     out
 }
 
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 const fn build_horizontal_scan() -> [u16; SCAN_TABLE_LEN] {
     let mut out = [0u16; SCAN_TABLE_LEN];
     let mut wi = 0;
     while wi < 4 {
         let mut hi = 0;
         while hi < 4 {
-            let (w, h, base) = (SCAN_DIMS[wi], SCAN_DIMS[hi], SCAN_OFFSETS[wi][hi]);
+            let (w, h) = (4 << wi, 4 << hi);
+            let base = scan_offset(w, h);
             let mut c = 0;
             let mut x = 0;
             while x < w {
@@ -111,15 +95,16 @@ const fn build_horizontal_scan() -> [u16; SCAN_TABLE_LEN] {
     out
 }
 
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 const fn build_two_d_scan() -> [u16; SCAN_TABLE_LEN] {
     let mut out = [0u16; SCAN_TABLE_LEN];
     let mut wi = 0;
     while wi < 4 {
         let mut hi = 0;
         while hi < 4 {
-            let base = SCAN_OFFSETS[wi][hi];
-            let (w, h) = (SCAN_DIMS[wi] as i32, SCAN_DIMS[hi] as i32);
+            let (w, h) = (4 << wi, 4 << hi);
+            let base = scan_offset(w, h);
+            let (w, h) = (w as i32, h as i32);
             let len = (w * h) as usize;
             let (mut x, mut y) = (0i32, 0i32);
             let mut c = 0;
@@ -153,22 +138,13 @@ pub const fn coefficient_scan_position(
     c: usize,
 ) -> u16 {
     let (wi, hi) = (if wi < 3 { wi } else { 3 }, if hi < 3 { hi } else { 3 });
-    let last = SCAN_DIMS[wi] * SCAN_DIMS[hi] - 1;
+    let (w, h) = (4 << wi, 4 << hi);
+    let last = w * h - 1;
     let c = if c < last { c } else { last };
     match class {
-        TransformClass::Vertical => VERTICAL_SCAN[c],
-        TransformClass::Horizontal => HORIZONTAL_SCAN[SCAN_OFFSETS[wi][hi] + c],
-        TransformClass::TwoD => TWO_D_SCAN[SCAN_OFFSETS[wi][hi] + c],
-    }
-}
-
-const fn scan_dim_index(d: usize) -> Option<usize> {
-    match d {
-        4 => Some(0),
-        8 => Some(1),
-        16 => Some(2),
-        32 => Some(3),
-        _ => None,
+        TransformClass::Vertical => c as u16,
+        TransformClass::Horizontal => HORIZONTAL_SCAN[scan_offset(w, h) + c],
+        TransformClass::TwoD => TWO_D_SCAN[scan_offset(w, h) + c],
     }
 }
 
@@ -179,9 +155,7 @@ const fn scan_dim_index(d: usize) -> Option<usize> {
 /// scanned coefficient.
 ///
 /// The scan is a pure function of `(w, h, class)`, so the 48 permutations are
-/// built once at compile time and every caller borrows one. Callers that only
-/// read the order should prefer this over [`coefficient_scan_order`], which
-/// copies into caller storage.
+/// built once at compile time and every caller borrows one.
 ///
 /// `w` and `h` are the operating dimensions `Min(Tx_Width[txSz], 32)` /
 /// `Min(Tx_Height[txSz], 32)`, each 4, 8, 16, or 32.
@@ -190,13 +164,14 @@ const fn scan_dim_index(d: usize) -> Option<usize> {
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32.
 pub fn coefficient_scan_slice(w: usize, h: usize, class: TransformClass) -> Result<&'static [u16]> {
     let invalid = || ReconError::InvalidScanShape { w, h };
-    let wi = scan_dim_index(w).ok_or_else(invalid)?;
-    let hi = scan_dim_index(h).ok_or_else(invalid)?;
+    if !matches!(w, 4 | 8 | 16 | 32) || !matches!(h, 4 | 8 | 16 | 32) {
+        return Err(invalid());
+    }
     let len = w * h;
     let (table, base) = match class {
         TransformClass::Vertical => (VERTICAL_SCAN.as_slice(), 0),
-        TransformClass::Horizontal => (HORIZONTAL_SCAN.as_slice(), SCAN_OFFSETS[wi][hi]),
-        TransformClass::TwoD => (TWO_D_SCAN.as_slice(), SCAN_OFFSETS[wi][hi]),
+        TransformClass::Horizontal => (HORIZONTAL_SCAN.as_slice(), scan_offset(w, h)),
+        TransformClass::TwoD => (TWO_D_SCAN.as_slice(), scan_offset(w, h)),
     };
     table.get(base..base + len).ok_or_else(invalid)
 }
@@ -216,7 +191,8 @@ pub fn coefficient_scan_slice(w: usize, h: usize, class: TransformClass) -> Resu
 /// # Errors
 /// Returns [`ReconError::InvalidScanShape`] if `w` / `h` are not each 4/8/16/32,
 /// and [`ReconError::ScanLengthMismatch`] if `out` is not exactly `w * h` long.
-pub fn coefficient_scan_order(
+#[cfg(test)]
+pub(crate) fn coefficient_scan_order(
     w: usize,
     h: usize,
     class: TransformClass,
@@ -244,7 +220,7 @@ pub fn coefficient_scan_order(
 /// The vertical types are `V_DCT` (10), `V_ADST` (12), and `V_FLIPADST` (14); the
 /// horizontal types are `H_DCT` (11), `H_ADST` (13), and `H_FLIPADST` (15)
 /// (`03-symbols.md` `TX_TYPE` values). The result selects the scan in
-/// [`coefficient_scan_order`]. Total over all inputs: the spec's `else` branch
+/// [`coefficient_scan_slice`]. Total over all inputs: the spec's `else` branch
 /// maps any non-directional value to `TX_CLASS_2D`.
 #[must_use]
 pub const fn tx_class(plane_tx_type: usize) -> TransformClass {
@@ -256,7 +232,6 @@ pub const fn tx_class(plane_tx_type: usize) -> TransformClass {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -333,7 +308,7 @@ mod tests {
 
     /// The § 5.20.7.30 walk written straight from the spec text, independent of
     /// the compile-time tables it checks.
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     fn reference_scan(w: usize, h: usize, class: TransformClass) -> Vec<u16> {
         let mut out = vec![0u16; w * h];
         match class {

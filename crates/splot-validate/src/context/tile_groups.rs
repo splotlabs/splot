@@ -5,7 +5,7 @@
 
 use super::*;
 
-/// Emits the locally decidable § 6.18 tile-group-range diagnostics for the FIRST tile
+/// Emits the locally decidable § 6.18 tile-group-range diagnostics for the first tile
 /// group of an intra-complete coded frame (AV2 v1.0.0 § 5.19 / § 6.18).
 ///
 /// The § 5.19 structure after `frame_header()` is decidable only when the first tile
@@ -17,7 +17,7 @@ use super::*;
 /// [`parse_tile_group_structure`] consumes the structure exactly. `NumTiles` /
 /// `TileColsLog2` / `TileRowsLog2` come from the parsed `tile_info()`.
 ///
-/// The locally-decidable § 6.18 clauses for the FIRST tile group are:
+/// The locally-decidable § 6.18 clauses for the first tile group are:
 ///
 /// - **tg_start of the first tile group is 0** (mirror :6215-6216: `tg_start` equals
 ///   `TileNum` at `tile_group_payload`, and `TileNum = 0` for the first tile group of a
@@ -52,11 +52,12 @@ pub(super) fn tile_group_range_checks(
     }
     let input = FrameHeaderParseInput {
         obu_type: obu.header.obu_type,
+        obu_mlayer_id: obu.header.embedded_layer_id,
+        obu_tlayer_id: obu.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let Ok(core) = parse_frame_header_core(&mut reader, &input) else {
         return;
@@ -97,11 +98,11 @@ pub(super) fn tile_group_range_checks(
 /// (first tile group) or `frame_header_copy()` / `frame_header_present_flag == 0` flag
 /// (non-first tile group), and constructed at the OBU payload start so
 /// [`parse_tile_group_structure`] derives `headerBytes` from `reader.consumed_bits()`.
-/// `layout` is the coded frame's tile layout (always the FIRST tile group's `tile_info()`,
+/// `layout` is the coded frame's tile layout (always the first tile group's `tile_info()`,
 /// §5.18.1), `tile_size_bytes_field` is that header's `TileSizeBytes`, and `sz` is the OBU
 /// payload size in bytes.
 ///
-/// `is_first` gates the FIRST-tile-group `tg_start == 0` clause (§6.18 mirror :6215-6216):
+/// `is_first` gates the first-tile-group `tg_start == 0` clause (§6.18 mirror :6215-6216):
 /// it is `true` for the first tile group (`TileNum == 0`) and `false` for a continuation,
 /// whose `tg_start == previous tg_end + 1` needs prior-tile-group state the segmenter does
 /// not thread (residual: tile-group-continuity-across-groups). The `tg_end >= tg_start`,
@@ -214,7 +215,7 @@ pub(super) fn tile_group_structure_checks(
 ///   decreases (08:327), and § 8.2.4 requires `>= -14` at `exit_symbol()` (08:342) —
 ///   unsatisfiable regardless of content, so it is framing-decidable.
 ///
-/// Named residuals (NOT framing checks; owned by `AV2-5.20-TILE-GROUP-PAYLOAD` / its child
+/// Named residuals (not framing checks; owned by `AV2-5.20-TILE-GROUP-PAYLOAD` / its child
 /// rows): the `exit_symbol()` conformance for NONZERO tiles (the exact exit value, the
 /// trailing one-bit at `trailingBitPosition`, § 8.2.4) depends on the symbol decoder's
 /// consumption during `decode_tile()`. The `IsBridge` / `BruTileActive` arms (mirror

@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod proptests {
     use super::*;
     use crate::bitio::BitReader;
@@ -126,7 +125,6 @@ mod proptests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod payload_proptests {
     use super::*;
     use crate::headers::tile_group::{TileFraming, parse_tile_group_framing};

@@ -4,6 +4,7 @@
 //! General intra block mode-info decode.
 
 use splot_core::Error as CoreError;
+use splot_core::headers::frame::ceil_log2;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, MAX_TX_SIZE_RECT, SIZE_GROUP};
 use splot_recon::{DpcmDirection, dpcm_direction};
@@ -447,7 +448,7 @@ pub(crate) enum GeneralIntraBlockModeError {
     InvalidCflMhDirection { direction: u8 },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -532,7 +533,7 @@ fn decode_general_intra_luma_block_mode_with_fsc_context(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -605,7 +606,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_general_intra_palette_y_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -654,7 +655,7 @@ fn read_general_intra_palette_y_mode(
     Ok(None)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_general_intra_dip_mode_info(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -766,7 +767,7 @@ fn read_palette_colors_y(
                     .min(max_sample);
                 colors[idx] = value as u16;
                 range = range.saturating_sub(value.saturating_sub(u32::from(colors[idx - 1])));
-                bits = bits.min(ceil_log2_u32(range));
+                bits = bits.min(ceil_log2(range));
                 idx += 1;
             }
         }
@@ -775,7 +776,7 @@ fn read_palette_colors_y(
     Ok(colors)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn decode_general_intra_chroma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -1139,7 +1140,7 @@ pub(crate) const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_v - 1) * 3 + sign_u) as usize
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "constant selectors fold into a direct row read"
 )]
@@ -1178,14 +1179,6 @@ fn read_literal_u32(
     symbols
         .read_literal(bits)
         .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
-}
-
-pub(crate) const fn ceil_log2_u32(value: u32) -> u32 {
-    if value < 2 {
-        0
-    } else {
-        u32::BITS - (value - 1).leading_zeros()
-    }
 }
 
 #[cfg(test)]

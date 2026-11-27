@@ -9,12 +9,12 @@
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
 use splot_core::headers::frame::{
-    GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams, SlotFrameFilterTaps,
-    WienerNsFrameFilterBank,
+    FrameSize, GlobalMotionRef, RESTRICTED_ORDER_HINT, SavedGlobalMotionOrderHints,
+    SavedGlobalMotionParams, SlotFrameFilterTaps, WienerNsFrameFilterBank,
 };
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
-use splot_core::types::{EmbeddedLayerId, ObuType};
+use splot_core::types::{EmbeddedLayerId, ObuType, TemporalLayerId};
 use splot_recon::{DecodedFrameInfo, ReconSample, ReferenceFrameStore, ReferenceSlot};
 use std::sync::Arc;
 
@@ -24,6 +24,7 @@ use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::frame_tasks::SplitSample;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{InterReferenceState, ReferenceMetadata};
+use crate::{ReferencePicture, ReferenceSlotState, ReferenceSnapshot};
 
 const NO_LR_FRAME_FILTER_TAPS: SlotFrameFilterTaps = [InlineVec::empty(InlineVec::empty(0)); 3];
 
@@ -49,6 +50,7 @@ struct Slot {
     frame_index: Option<usize>,
     long_term_id: Option<u32>,
     embedded_layer_id: EmbeddedLayerId,
+    temporal_layer_id: TemporalLayerId,
     output_done: bool,
 }
 
@@ -74,8 +76,13 @@ impl Slot {
         frame_index: None,
         long_term_id: None,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: TemporalLayerId::BASE,
         output_done: false,
     };
+
+    pub(crate) const fn temporal_layer_id(&self) -> TemporalLayerId {
+        self.temporal_layer_id
+    }
 
     fn refresh(
         &mut self,
@@ -105,6 +112,7 @@ impl Slot {
             frame_index: Some(frame_index),
             long_term_id: update.long_term_id,
             embedded_layer_id: update.embedded_layer_id,
+            temporal_layer_id: update.temporal_layer_id,
             output_done: false,
         };
     }
@@ -132,6 +140,7 @@ pub(crate) struct FrameRefUpdate<'a> {
     pub(crate) lr_banks: [Option<&'a WienerNsFrameFilterBank>; 3],
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
+    pub(crate) temporal_layer_id: TemporalLayerId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -168,6 +177,33 @@ impl RuntimeReferenceBuffer {
             open_loop: None,
             allowed_frames: None,
         })
+    }
+
+    pub(crate) fn snapshot(&self, frames: &FrameStore) -> ReferenceSnapshot {
+        let slots = self
+            .slots
+            .iter()
+            .map(|slot| match (slot.valid, slot.frame_index) {
+                (false, None) => ReferenceSlotState::Empty,
+                (false, Some(_)) => ReferenceSlotState::Invalid,
+                (true, index) => match index.and_then(|index| frames.get(index)) {
+                    Some(frame) => ReferenceSlotState::Retained(ReferencePicture {
+                        provenance: frame.provenance,
+                        embedded_layer_id: slot.embedded_layer_id,
+                        temporal_layer_id: slot.temporal_layer_id,
+                        frame_size: FrameSize::new(slot.width, slot.height),
+                        long_term_id: slot.long_term_id,
+                        restricted_order_hint: slot.order_hint == RESTRICTED_ORDER_HINT,
+                    }),
+                    None => ReferenceSlotState::Unavailable,
+                },
+            })
+            .collect();
+        ReferenceSnapshot { slots }
+    }
+
+    pub(crate) fn allowed_input_slots(&self) -> Option<u32> {
+        self.allowed_frames
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -265,6 +301,15 @@ impl RuntimeReferenceBuffer {
         self.advance_frame_counter();
     }
 
+    pub(crate) fn invalidate_all(&mut self) {
+        for slot in &mut self.slots {
+            slot.valid = false;
+            slot.long_term_id = None;
+        }
+        self.open_loop = None;
+        self.allowed_frames = None;
+    }
+
     fn advance_frame_counter(&mut self) {
         if self.started {
             self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -280,7 +325,7 @@ impl RuntimeReferenceBuffer {
         let mut restricted = Vec::new();
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if presence.is_present(current_layer, slot.embedded_layer_id) {
-                slot.order_hint = u32::MAX;
+                slot.order_hint = RESTRICTED_ORDER_HINT;
                 restricted.push(index);
             }
         }
@@ -497,6 +542,8 @@ impl ReferenceMetadata {
         self.ref_is_inter.push(slot.is_inter);
         self.ref_is_intra_frame.push(slot.is_intra_frame);
         self.ref_long_term_id.push(slot.long_term_id);
+        self.ref_tlayer_id.push(slot.temporal_layer_id().get());
+        self.ref_mlayer_id.push(slot.embedded_layer_id.get());
         self.ref_num_total_refs.push(slot.num_total_refs);
         self.saved_global_motion_order_hints
             .push(slot.saved_order_hints);

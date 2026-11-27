@@ -129,7 +129,7 @@ impl PlaneScaling {
         self.with_mv_precision(plane_x, plane_y, mv_row, mv_col, sub_x, sub_y, false)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[expect(clippy::inline_always)]
     #[inline(always)]
     fn with_mv_precision(
@@ -168,7 +168,7 @@ pub(crate) fn reference_is_scaled(
         || scale_dimension(reference_height, frame_height) != 1 << REF_SCALE_SHIFT
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn derive_plane_scaling(
     plane_x: i32,
@@ -202,7 +202,7 @@ pub(crate) fn derive_plane_scaling(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[expect(clippy::inline_always)]
 #[inline(always)]
 fn derive_plane_scaling_from_scale(

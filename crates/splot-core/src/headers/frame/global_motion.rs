@@ -10,8 +10,9 @@
 
 use crate::bitio::BitReader;
 use crate::error::{GlobalMotionErrorKind, Result};
+use crate::syntax::{NoopObserver, SyntaxDescriptor, SyntaxObserver, SyntaxReader, SyntaxValue};
 
-use super::get_ref_frames::{RESTRICTED_OH, get_relative_dist};
+use super::get_ref_frames::{RESTRICTED_OH, RESTRICTED_ORDER_HINT, get_relative_dist};
 use super::info::FrameType;
 
 /// `WARPEDMODEL_PREC_BITS` (AV2 v1.0.0 § 3): internal precision of warped motion models.
@@ -62,8 +63,9 @@ pub const REFS_PER_FRAME: usize = 7;
 /// One frame's § 7.23 `SavedGmParams[slot]` table.
 pub type SavedGlobalMotionParams = [[i32; 6]; REFS_PER_FRAME];
 
-/// One frame's § 7.23 `SavedOrderHints[slot]` table. `u32::MAX` represents
-/// `RESTRICTED_OH`, matching the rest of the frame-header reference-state API.
+/// One frame's § 7.23 `SavedOrderHints[slot]` table, with
+/// [`RESTRICTED_ORDER_HINT`] for `RESTRICTED_OH` as in the rest of the
+/// frame-header reference-state API.
 pub type SavedGlobalMotionOrderHints = [u32; REFS_PER_FRAME];
 
 /// Cross-frame § 7.23 state consumed by the inter `global_motion_params()` arm.
@@ -71,7 +73,7 @@ pub type SavedGlobalMotionOrderHints = [u32; REFS_PER_FRAME];
 pub struct GlobalMotionReferenceState<'a> {
     /// Current decoded `OrderHint`.
     pub order_hint: u32,
-    /// `RefOrderHint[slot]`; `u32::MAX` represents `RESTRICTED_OH`.
+    /// `RefOrderHint[slot]`; [`RESTRICTED_ORDER_HINT`] represents `RESTRICTED_OH`.
     pub ref_order_hint: &'a [u32],
     /// `RefNumTotalRefs[slot]`.
     pub ref_num_total_refs: &'a [u32],
@@ -180,7 +182,7 @@ pub struct GlobalMotionParams {
     pub stop: Option<GlobalMotionStop>,
     /// The per-reference warp models, indexed `0..REFS_PER_FRAME`. Populated only when the
     /// per-reference loop is reached (which requires the cross-frame `OrderHints` state);
-    /// at the honest stop every entry is the identity initialiser (mirror :7780-7788).
+    /// at the stop every entry is the identity initialiser (mirror :7780-7788).
     pub references: [GlobalMotionRef; REFS_PER_FRAME],
 }
 
@@ -227,7 +229,7 @@ pub struct GlobalMotionInput<'a> {
     /// `ref_frame_idx[ 0..NumTotalRefs ]` (the inter control region's reference map): the
     /// base-warp arm reads `ref_frame_idx[ our_ref ]` (mirror :7828).
     pub ref_frame_idx: &'a [u32],
-    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves an honest
+    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves a
     /// coverage stop for inspectors that do not model the § 7.23 reference buffer.
     pub reference_state: Option<GlobalMotionReferenceState<'a>>,
 }
@@ -248,152 +250,241 @@ pub fn parse_global_motion_params(
     reader: &mut BitReader<'_>,
     input: &GlobalMotionInput<'_>,
 ) -> Result<GlobalMotionParams> {
-    let mut references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_global_motion_params_with_reader(&mut sr, input)
+}
 
-    if input.frame_is_intra || !input.enable_global_motion || !reader.read_flag()? {
-        return Ok(GlobalMotionParams {
-            use_global_motion: false,
-            our_ref: None,
-            stop: None,
-            references,
-        });
-    }
+pub(crate) fn parse_global_motion_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    input: &GlobalMotionInput<'_>,
+) -> Result<GlobalMotionParams> {
+    sr.in_struct("global_motion_params", Some("5.18.9.1"), |sr| {
+        let mut references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
 
-    let our_ref = if input.frame_type == FrameType::Switch {
-        input.num_total_refs
-    } else {
-        let n = input.num_total_refs.saturating_add(1);
-        reader.read_ns(n)?
-    };
-
-    let count = usize::try_from(input.num_total_refs).unwrap_or(usize::MAX);
-    if count > REFS_PER_FRAME || input.ref_frame_idx.len() < count {
-        return Err(invalid_global_motion(
-            reader,
-            GlobalMotionErrorKind::ReferenceCountOutOfRange,
-        ));
-    }
-
-    if count == 0 {
-        return Ok(GlobalMotionParams {
-            use_global_motion: true,
-            our_ref: Some(our_ref),
-            stop: None,
-            references,
-        });
-    }
-
-    let Some(state) = input.reference_state else {
-        return Ok(GlobalMotionParams {
-            use_global_motion: true,
-            our_ref: Some(our_ref),
-            stop: Some(if our_ref == input.num_total_refs {
-                GlobalMotionStop::OrderHintsUnmodeled
-            } else {
-                GlobalMotionStop::RefNumTotalRefsUnmodeled
-            }),
-            references,
-        });
-    };
-
-    let mut base_params = DEFAULT_WARP_PARAMS;
-    let mut base_distance = 1;
-
-    if our_ref != input.num_total_refs {
-        let our_ref = usize::try_from(our_ref).map_err(|_| {
-            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
-        })?;
-        let ref_idx = mapped_reference_slot(reader, input.ref_frame_idx, our_ref, state)?;
-        let our_hint = reference_order_hint(reader, ref_idx, state)?;
-        if our_hint == RESTRICTED_OH {
-            return Err(invalid_global_motion(
-                reader,
-                GlobalMotionErrorKind::OurReferenceRestricted,
-            ));
-        }
-        let saved_count = *state.ref_num_total_refs.get(ref_idx).ok_or_else(|| {
-            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
-        })?;
-        if usize::try_from(saved_count).unwrap_or(usize::MAX) > REFS_PER_FRAME {
-            return Err(invalid_global_motion(
-                reader,
-                GlobalMotionErrorKind::ReferenceCountOutOfRange,
-            ));
-        }
-        if saved_count > 0 {
-            let their_ref = reader.read_ns(saved_count)? as usize;
-            let saved_params = state.saved_gm_params.get(ref_idx).ok_or_else(|| {
-                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
-            })?;
-            let saved_hints = state.saved_order_hints.get(ref_idx).ok_or_else(|| {
-                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
-            })?;
-            base_params = *saved_params.get(their_ref).ok_or_else(|| {
-                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
-            })?;
-            let saved_hint = order_hint_to_spec(
-                reader,
-                *saved_hints.get(their_ref).ok_or_else(|| {
-                    invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
-                })?,
-            )?;
-            if saved_hint == RESTRICTED_OH {
-                return Err(invalid_global_motion(
-                    reader,
-                    GlobalMotionErrorKind::SavedReferenceRestricted,
-                ));
-            }
-            base_distance = get_relative_dist(our_hint, saved_hint);
-        }
-    }
-
-    let current_order_hint = order_hint_to_spec(reader, state.order_hint)?;
-    for (reference, &slot) in references
-        .iter_mut()
-        .zip(input.ref_frame_idx.iter())
-        .take(count)
-    {
-        let slot = usize::try_from(slot).map_err(|_| {
-            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
-        })?;
-        let order_hint = reference_order_hint(reader, slot, state)?;
-        let dist = get_relative_dist(current_order_hint, order_hint);
-        if dist == 0 || order_hint == RESTRICTED_OH {
-            continue;
-        }
-
-        let previous = scale_warp_model(base_params, base_distance, dist);
-        let gm_type = if !reader.read_flag()? {
-            GmType::Identity
-        } else if reader.read_flag()? {
-            GmType::RotZoom
+        let use_gm = if input.frame_is_intra || !input.enable_global_motion {
+            sr.inferred_bool(
+                "use_global_motion",
+                "FrameIsIntra || !enable_global_motion",
+                false,
+            );
+            false
         } else {
-            GmType::Affine
+            sr.read_flag("use_global_motion")?
         };
-        reference.gm_type = gm_type;
-        if gm_type == GmType::Identity {
-            continue;
+        if !use_gm {
+            return Ok(GlobalMotionParams {
+                use_global_motion: false,
+                our_ref: None,
+                stop: None,
+                references,
+            });
         }
 
-        reference.gm_params[2] = read_global_param(reader, 2, previous[2])?;
-        reference.gm_params[3] = read_global_param(reader, 3, previous[3])?;
-        if gm_type == GmType::Affine {
-            reference.gm_params[4] = read_global_param(reader, 4, previous[4])?;
-            reference.gm_params[5] = read_global_param(reader, 5, previous[5])?;
+        let our_ref = if input.frame_type == FrameType::Switch {
+            sr.inferred_u64(
+                "our_ref",
+                "FrameType == SWITCH_FRAME",
+                u64::from(input.num_total_refs),
+            );
+            input.num_total_refs
         } else {
-            reference.gm_params[4] = -reference.gm_params[3];
-            reference.gm_params[5] = reference.gm_params[2];
-        }
-        reference.gm_params[0] = read_global_param(reader, 0, previous[0])?;
-        reference.gm_params[1] = read_global_param(reader, 1, previous[1])?;
-    }
+            let n = input.num_total_refs.saturating_add(1);
+            sr.read_ns("our_ref", n)?
+        };
 
-    Ok(GlobalMotionParams {
-        use_global_motion: true,
-        our_ref: Some(our_ref),
-        stop: None,
-        references,
+        let count = usize::try_from(input.num_total_refs).unwrap_or(usize::MAX);
+        if count > REFS_PER_FRAME || input.ref_frame_idx.len() < count {
+            let err =
+                invalid_global_motion(sr.reader(), GlobalMotionErrorKind::ReferenceCountOutOfRange);
+            return sr.fail(sr.rel_bit(), None, err);
+        }
+
+        if count == 0 {
+            return Ok(GlobalMotionParams {
+                use_global_motion: true,
+                our_ref: Some(our_ref),
+                stop: None,
+                references,
+            });
+        }
+
+        let Some(state) = input.reference_state else {
+            return Ok(GlobalMotionParams {
+                use_global_motion: true,
+                our_ref: Some(our_ref),
+                stop: Some(if our_ref == input.num_total_refs {
+                    GlobalMotionStop::OrderHintsUnmodeled
+                } else {
+                    GlobalMotionStop::RefNumTotalRefsUnmodeled
+                }),
+                references,
+            });
+        };
+
+        let mut base_params = DEFAULT_WARP_PARAMS;
+        let mut base_distance = 1;
+
+        if our_ref != input.num_total_refs {
+            let Ok(our_ref) = usize::try_from(our_ref) else {
+                let err = invalid_global_motion(
+                    sr.reader(),
+                    GlobalMotionErrorKind::ReferenceCountOutOfRange,
+                );
+                return sr.fail(sr.rel_bit(), None, err);
+            };
+            let ref_idx = mapped_reference_slot(sr.reader(), input.ref_frame_idx, our_ref, state)
+                .map_err(|err| {
+                let _ = sr.fail::<()>(sr.rel_bit(), None, err);
+                invalid_global_motion(sr.reader(), GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+            })?;
+            let our_hint = reference_order_hint(sr.reader(), ref_idx, state)?;
+            if our_hint == RESTRICTED_OH {
+                let err = invalid_global_motion(
+                    sr.reader(),
+                    GlobalMotionErrorKind::OurReferenceRestricted,
+                );
+                return sr.fail(sr.rel_bit(), None, err);
+            }
+            let Some(&saved_count) = state.ref_num_total_refs.get(ref_idx) else {
+                let err = invalid_global_motion(
+                    sr.reader(),
+                    GlobalMotionErrorKind::ReferenceSlotOutOfRange,
+                );
+                return sr.fail(sr.rel_bit(), None, err);
+            };
+            if usize::try_from(saved_count).unwrap_or(usize::MAX) > REFS_PER_FRAME {
+                let err = invalid_global_motion(
+                    sr.reader(),
+                    GlobalMotionErrorKind::ReferenceCountOutOfRange,
+                );
+                return sr.fail(sr.rel_bit(), None, err);
+            }
+            if saved_count > 0 {
+                let their_ref = sr.read_ns("their_ref", saved_count)? as usize;
+                let Some(saved_params) = state.saved_gm_params.get(ref_idx) else {
+                    let err = invalid_global_motion(
+                        sr.reader(),
+                        GlobalMotionErrorKind::ReferenceSlotOutOfRange,
+                    );
+                    return sr.fail(sr.rel_bit(), None, err);
+                };
+                let Some(saved_hints) = state.saved_order_hints.get(ref_idx) else {
+                    let err = invalid_global_motion(
+                        sr.reader(),
+                        GlobalMotionErrorKind::ReferenceSlotOutOfRange,
+                    );
+                    return sr.fail(sr.rel_bit(), None, err);
+                };
+                let Some(&bp) = saved_params.get(their_ref) else {
+                    let err = invalid_global_motion(
+                        sr.reader(),
+                        GlobalMotionErrorKind::ReferenceCountOutOfRange,
+                    );
+                    return sr.fail(sr.rel_bit(), None, err);
+                };
+                base_params = bp;
+                let Some(&raw_saved_hint) = saved_hints.get(their_ref) else {
+                    let err = invalid_global_motion(
+                        sr.reader(),
+                        GlobalMotionErrorKind::ReferenceCountOutOfRange,
+                    );
+                    return sr.fail(sr.rel_bit(), None, err);
+                };
+                let saved_hint = order_hint_to_spec(sr.reader(), raw_saved_hint)?;
+                if saved_hint == RESTRICTED_OH {
+                    let err = invalid_global_motion(
+                        sr.reader(),
+                        GlobalMotionErrorKind::SavedReferenceRestricted,
+                    );
+                    return sr.fail(sr.rel_bit(), None, err);
+                }
+                base_distance = get_relative_dist(our_hint, saved_hint);
+            }
+        }
+
+        let current_order_hint = order_hint_to_spec(sr.reader(), state.order_hint)?;
+        for (ref_idx, (reference, &slot)) in references
+            .iter_mut()
+            .zip(input.ref_frame_idx.iter())
+            .take(count)
+            .enumerate()
+        {
+            let Ok(slot) = usize::try_from(slot) else {
+                let err = invalid_global_motion(
+                    sr.reader(),
+                    GlobalMotionErrorKind::ReferenceSlotOutOfRange,
+                );
+                return sr.fail(sr.rel_bit(), None, err);
+            };
+            let order_hint = reference_order_hint(sr.reader(), slot, state)?;
+            let dist = get_relative_dist(current_order_hint, order_hint);
+            if dist == 0 || order_hint == RESTRICTED_OH {
+                continue;
+            }
+
+            let previous = scale_warp_model(base_params, base_distance, dist);
+            sr.in_loop_item("ref", ref_idx, |sr| {
+                let gm_type = if !sr.read_flag("is_global")? {
+                    GmType::Identity
+                } else if sr.read_flag("is_rot_zoom")? {
+                    GmType::RotZoom
+                } else {
+                    GmType::Affine
+                };
+                reference.gm_type = gm_type;
+                if gm_type == GmType::Identity {
+                    return Ok(());
+                }
+
+                reference.gm_params[2] =
+                    read_global_param_with_reader(sr, 2, previous[2], "gm_params[2]")?;
+                reference.gm_params[3] =
+                    read_global_param_with_reader(sr, 3, previous[3], "gm_params[3]")?;
+                if gm_type == GmType::Affine {
+                    reference.gm_params[4] =
+                        read_global_param_with_reader(sr, 4, previous[4], "gm_params[4]")?;
+                    reference.gm_params[5] =
+                        read_global_param_with_reader(sr, 5, previous[5], "gm_params[5]")?;
+                } else {
+                    reference.gm_params[4] = -reference.gm_params[3];
+                    reference.gm_params[5] = reference.gm_params[2];
+                }
+                reference.gm_params[0] =
+                    read_global_param_with_reader(sr, 0, previous[0], "gm_params[0]")?;
+                reference.gm_params[1] =
+                    read_global_param_with_reader(sr, 1, previous[1], "gm_params[1]")?;
+                Ok(())
+            })?;
+        }
+
+        Ok(GlobalMotionParams {
+            use_global_motion: true,
+            our_ref: Some(our_ref),
+            stop: None,
+            references,
+        })
     })
+}
+
+fn read_global_param_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    idx: usize,
+    prev_gm_param: i32,
+    name: &'static str,
+) -> Result<i32> {
+    let start = sr.rel_bit();
+    let val = match read_global_param(sr.reader_mut(), idx, prev_gm_param) {
+        Ok(v) => v,
+        Err(err) => return sr.fail(start, Some(name), err),
+    };
+    sr.emit_read(
+        name,
+        SyntaxDescriptor::Subexp,
+        SyntaxValue::Signed(i64::from(val)),
+        start,
+    );
+    Ok(val)
 }
 
 fn mapped_reference_slot(
@@ -429,7 +520,7 @@ fn reference_order_hint(
 }
 
 fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
-    if raw == u32::MAX {
+    if raw == RESTRICTED_ORDER_HINT {
         Ok(RESTRICTED_OH)
     } else {
         i32::try_from(raw)
@@ -437,8 +528,8 @@ fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
     }
 }
 
-/// `PrevGmParams` of a reference with order hint `ref_hint` (`u32::MAX` is
-/// `RESTRICTED_OH`) in a frame with order hint `order_hint` whose
+/// `PrevGmParams` of a reference with order hint `ref_hint`
+/// ([`RESTRICTED_ORDER_HINT`] is `RESTRICTED_OH`) in a frame with order hint `order_hint` whose
 /// `baseParams` and `baseDistance` are `base` (§ 5.18.9.1); `None` where the
 /// reference reads no model.
 pub(crate) fn base_prediction(
@@ -686,7 +777,6 @@ fn invalid_subexp_value(reader: &BitReader<'_>) -> crate::error::Error {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

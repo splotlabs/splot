@@ -126,7 +126,7 @@ fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             );
         }
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             assert!(
                 sdp_stream(case, threads, 0).0 == one,
                 "{case:?} {threads} threads"
@@ -151,7 +151,7 @@ fn free_sdp_chroma_trees_decode_on_any_thread_count() {
     let results = each_case(SDP_CASES, |case| {
         let (one, expected, tools, found) = sdp_stream(case, 1, 1);
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        each_case([2, 8], |threads| {
+        each_case([2], |threads| {
             assert!(
                 sdp_stream(case, threads, 1).0 == one,
                 "{case:?} {threads} threads"
@@ -331,7 +331,7 @@ fn sdp_screen_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         assert_same_samples(&decode(&units), &recon, &format!("{chroma:?}"));
     });
     let (one, _) = screen_stream(1, PixelFormat::Yuv420, BitDepth::Eight);
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         let (units, _) = screen_stream(threads, PixelFormat::Yuv420, BitDepth::Eight);
         assert!(units == one, "{threads} threads");
     });

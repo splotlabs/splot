@@ -15,21 +15,24 @@
 //! `DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x8};
+use splot_core::simd::SimdBackend;
 
 use splot_recon::math::{approx_divide, resolve_division};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
 };
-use splot_recon::{MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params};
+use splot_recon::{MhccpEdge, MhccpPredictor, PredictedSample, derive_mhccp_params_with};
 
+#[cfg(all(test, any(target_arch = "x86_64", target_arch = "aarch64")))]
+use super::cfl_luma::luma_token;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use super::cfl_luma::{
     Luma420Block, cfl_alpha_fits_i16, cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8,
-    cfl_predict_u16, luma_420, luma_token,
+    cfl_predict_u16, luma_420, luma_token_for,
 };
 use crate::bitstream::tile_payload::{
     CflMultiDirection, CflParams, CoeffBlock, GeneralIntraResidualError,
-    add_general_intra_coeff_block_residual_in_place,
+    add_general_intra_coeff_block_residual_in_place_with,
 };
 use crate::pipeline::reconstruct::{commit_intra_prediction, predict_intra_in_frame};
 use crate::tile::block_context::NeighbourAvailability;
@@ -81,8 +84,9 @@ struct CflBlock {
     bit_depth: BitDepth,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -100,6 +104,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let geometry = CflBlock::new(x, y, log2_width, log2_height, qindex, sb_mib, bit_depth)?;
     reconstruct_cfl_planes(
+        backend,
         scratch,
         workspace,
         &[(plane_id, block, neighbours)],
@@ -109,8 +114,9 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<B: SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     u_block: CoeffBlock<'_>,
@@ -133,6 +139,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     if matches!(cfl_params, CflParams::Multi { .. }) && u_neighbours != v_neighbours {
         for plane in [u, v] {
             reconstruct_cfl_planes(
+                backend,
                 scratch,
                 workspace,
                 &[plane],
@@ -144,6 +151,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         return Ok(());
     }
     reconstruct_cfl_planes(
+        backend,
         scratch,
         workspace,
         &[u, v],
@@ -182,7 +190,8 @@ impl CflBlock {
 
 /// Reconstructs `planes` (one, or U then V with the same geometry): the
 /// luma side is analysed once for all planes before any plane is written.
-fn reconstruct_cfl_planes<T: ReconSample>(
+fn reconstruct_cfl_planes<B: SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     planes: &[CflPlane<'_>],
@@ -227,6 +236,7 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         macro_rules! analyse {
             ($samples:expr, $filter:literal) => {
                 analyse_cfl_block(
+                    backend,
                     workspace,
                     &CflLuma::<_, $filter>::new(workspace, $samples, filter)?,
                     planes,
@@ -273,12 +283,12 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         if let &[u, v] = planes
             && u.2 == v.2
             && block.bit_depth == workspace.info().bit_depth()
-            && linear.reconstruct_pair(workspace, [u, v], cfl_prediction)?
+            && linear.reconstruct_pair(backend, workspace, [u, v], cfl_prediction)?
         {
             return Ok(());
         }
         for &plane in planes {
-            linear.reconstruct(workspace, plane, cfl_prediction)?;
+            linear.reconstruct(backend, workspace, plane, cfl_prediction)?;
         }
         return Ok(());
     }
@@ -295,14 +305,22 @@ fn reconstruct_cfl_planes<T: ReconSample>(
             workspace.with_intra_chroma_frames(block.x, block.y, block.size, |frames| {
                 let [u_frame, v_frame] = frames;
                 let outs = [u_frame.target(), v_frame.target()];
-                MhccpPredictor::predict_planes([&u_model, &v_model], linear, centre, width, outs)
-                    .then_some(())
-                    .ok_or(MHCCP_GEOMETRY)
+                MhccpPredictor::predict_planes_with(
+                    backend,
+                    [&u_model, &v_model],
+                    linear,
+                    centre,
+                    width,
+                    outs,
+                )
+                .then_some(())
+                .ok_or(MHCCP_GEOMETRY)
             })?;
         if predicted.is_some() {
             for (plane_id, coeffs, _) in [u, v] {
                 if coeffs.eob != 0 {
-                    add_general_intra_coeff_block_residual_in_place(
+                    add_general_intra_coeff_block_residual_in_place_with(
+                        backend,
                         workspace,
                         coeffs,
                         plane_id,
@@ -328,11 +346,12 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         };
         let predict = |out: &mut [T], stride: usize| {
             predictor
-                .predict_block(linear, centre, width, out, stride)
+                .predict_block_with(backend, linear, centre, width, out, stride)
                 .then_some(())
                 .ok_or(MHCCP_GEOMETRY)
         };
         if predict_intra_in_frame(
+            backend,
             workspace,
             coeffs,
             plane_id,
@@ -352,6 +371,7 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         cfl_prediction.resize(width * height, T::default());
         predict(cfl_prediction.as_mut_slice(), width)?;
         commit_intra_prediction(
+            backend,
             workspace,
             coeffs,
             cfl_prediction,
@@ -405,8 +425,9 @@ impl LinearCfl<'_> {
     /// Predicts both chroma planes of a block lying in the stored frame,
     /// with the same neighbours, in place and adds their residuals; `false`,
     /// writing nothing, for a block outside the stored frame.
-    fn reconstruct_pair<T: ReconSample>(
+    fn reconstruct_pair<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         workspace: &mut CurrentFrameWorkspace<T>,
         [u, v]: [CflPlane<'_>; 2],
         columns: &mut Vec<T>,
@@ -450,12 +471,13 @@ impl LinearCfl<'_> {
             let derive = self.cfl_params == CflParams::DerivedAlpha;
             let [u_model, v_model] = self
                 .edges
-                .chroma_models(above, left, self.block, neighbours, derive)?;
+                .chroma_models(backend, above, left, self.block, neighbours, derive)?;
             let models = [
                 self.model(PlaneId::U, u_model),
                 self.model(PlaneId::V, v_model),
             ];
             cfl_predict_pair(
+                backend,
                 models,
                 self.luma,
                 width,
@@ -467,8 +489,9 @@ impl LinearCfl<'_> {
         }
         for (plane_id, coeffs, _) in [u, v] {
             if coeffs.eob != 0 {
-                add_general_intra_coeff_block_residual_in_place(
-                    workspace, coeffs, plane_id, x, y, size, qindex, false, None, None, bit_depth,
+                add_general_intra_coeff_block_residual_in_place_with(
+                    backend, workspace, coeffs, plane_id, x, y, size, qindex, false, None, None,
+                    bit_depth,
                 )?;
             }
         }
@@ -477,8 +500,9 @@ impl LinearCfl<'_> {
 
     /// Predicts one chroma plane from its edges and adds its residual: in
     /// place when the block lies in the stored frame, else staged.
-    fn reconstruct<T: ReconSample>(
+    fn reconstruct<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         workspace: &mut CurrentFrameWorkspace<T>,
         (plane_id, coeffs, neighbours): CflPlane<'_>,
         staged: &mut Vec<T>,
@@ -512,15 +536,22 @@ impl LinearCfl<'_> {
                 };
                 let [edges] = self
                     .edges
-                    .chroma_models(above, left, self.block, neighbours, derive)?;
+                    .chroma_models(backend, above, left, self.block, neighbours, derive)?;
                 let (out, stride) = frame.target();
-                cfl_predict_block(self.model(plane_id, edges), self.luma, width, out, stride)
+                cfl_predict_block(
+                    backend,
+                    self.model(plane_id, edges),
+                    self.luma,
+                    width,
+                    out,
+                    stride,
+                )
             })?;
             if predicted.is_some() {
                 if coeffs.eob != 0 {
-                    add_general_intra_coeff_block_residual_in_place(
-                        workspace, coeffs, plane_id, x, y, size, qindex, false, None, None,
-                        bit_depth,
+                    add_general_intra_coeff_block_residual_in_place_with(
+                        backend, workspace, coeffs, plane_id, x, y, size, qindex, false, None,
+                        None, bit_depth,
                     )?;
                 }
                 return Ok(());
@@ -529,13 +560,14 @@ impl LinearCfl<'_> {
         let chroma = PlaneSamples::of(workspace, plane_id)?;
         let edges = self
             .edges
-            .plane_chroma_model(&chroma, self.block, neighbours, derive);
+            .plane_chroma_model(backend, &chroma, self.block, neighbours, derive);
         let model = self.model(plane_id, edges?);
         staged.clear();
         staged.resize(width * height, T::default());
-        cfl_predict_block(model, self.luma, width, staged, width)?;
+        cfl_predict_block(backend, model, self.luma, width, staged, width)?;
         commit_intra_prediction(
-            workspace, coeffs, staged, plane_id, x, y, size, qindex, false, None, None, bit_depth,
+            backend, workspace, coeffs, staged, plane_id, x, y, size, qindex, false, None, None,
+            bit_depth,
         )
     }
 }
@@ -543,8 +575,9 @@ impl LinearCfl<'_> {
 /// Builds the shared luma side of a block: the luma edges, `L` and
 /// `lumaAvg` (CfL, returned with where `L` starts in `luma_ac`) or the luma
 /// references in `luma_ac` and every plane's predictor (MHCCP).
-#[allow(clippy::too_many_arguments)]
-fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
+#[expect(clippy::too_many_arguments)]
+fn analyse_cfl_block<B: SimdBackend, T: ReconSample, P: CflLaneSample, const F: usize>(
+    backend: B,
     workspace: &CurrentFrameWorkspace<T>,
     luma: &CflLuma<'_, P, F>,
     planes: &[CflPlane<'_>],
@@ -559,15 +592,18 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     let Some(&(_, _, neighbours)) = planes.first() else {
         return Ok(None);
     };
+    let narrow = backend.narrow();
     let Some(direction) = multi else {
-        return baseline_simd!(simd => {
-            let start = edges.gather(simd, luma, planes, block, luma_ac)?;
-            Ok(Some((edges.average_q3(block, neighbours)?, start)))
+        return narrow.vectorize(|| {
+            let start = edges.gather(backend, narrow.token(), luma, planes, block, luma_ac)?;
+            Ok(Some((edges.average_q3(backend, block, neighbours)?, start)))
         });
     };
     let geometry = MhccpGeometry::new(workspace, planes[0].0, block, neighbours)?;
     let layout = geometry.layout(block, direction.value());
-    baseline_simd!(simd => geometry.gather_luma(simd, luma, block, &layout, luma_ac))?;
+    narrow.vectorize(|| {
+        geometry.gather_luma(backend, narrow.token(), luma, block, &layout, luma_ac)
+    })?;
     for (&(plane_id, _, _), refs) in planes.iter().zip(mhccp_chroma.iter_mut()) {
         geometry.gather_chroma(workspace, plane_id, block, &layout, refs)?;
     }
@@ -578,10 +614,10 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     let multi = |params| Some(MhccpPredictor::new(params, block.bit_depth));
     if let [u_model, v_model] = models {
         let [u_params, v_params] =
-            derive_mhccp_params(edges, [[u.0, u.1], [v.0, v.1]], block.bit_depth);
+            derive_mhccp_params_with(backend, edges, [[u.0, u.1], [v.0, v.1]], block.bit_depth);
         (*u_model, *v_model) = (multi(u_params), multi(v_params));
     } else {
-        let [params] = derive_mhccp_params(edges, [[u.0, u.1]], block.bit_depth);
+        let [params] = derive_mhccp_params_with(backend, edges, [[u.0, u.1]], block.bit_depth);
         models.fill(multi(params));
     }
     *mhccp_layout = Some(layout);
@@ -590,7 +626,8 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
 
 /// [`cfl_predict_block`] of the U and V `models` of one `L`, in one pass
 /// over it when both alphas fit the 16-bit lanes.
-fn cfl_predict_pair<T: ReconSample>(
+fn cfl_predict_pair<B: SimdBackend, T: ReconSample>(
+    backend: B,
     models: [[i32; 4]; 2],
     luma: &[i16],
     width: usize,
@@ -604,7 +641,7 @@ fn cfl_predict_pair<T: ReconSample>(
         && [(&*u, u_stride), (&*v, v_stride)]
             .iter()
             .all(|(out, stride)| (height.max(1) - 1) * stride + width <= out.len())
-        && let Some(token) = luma_token()
+        && let Some(token) = luma_token_for(backend)
     {
         if let (Some(u), Some(v)) = (T::u16_slice_mut(&mut *u), T::u16_slice_mut(&mut *v)) {
             cfl_predict_pair_u16(token, models, luma, width, [u, v], [u_stride, v_stride]);
@@ -617,13 +654,14 @@ fn cfl_predict_pair<T: ReconSample>(
             return Ok(());
         }
     }
-    cfl_predict_block(models[0], luma, width, u, u_stride)?;
-    cfl_predict_block(models[1], luma, width, v, v_stride)
+    cfl_predict_block(backend, models[0], luma, width, u, u_stride)?;
+    cfl_predict_block(backend, models[1], luma, width, v, v_stride)
 }
 
 /// Writes the § 7.13.5 CfL prediction `[dc, alpha, lumaAvg, max]` of a
 /// `width`-wide block of luma `L` into `out`, row `r` at `out[r * stride..]`.
-fn cfl_predict_block<T: ReconSample>(
+fn cfl_predict_block<B: SimdBackend, T: ReconSample>(
+    backend: B,
     model: [i32; 4],
     luma: &[i16],
     width: usize,
@@ -641,7 +679,7 @@ fn cfl_predict_block<T: ReconSample>(
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
     if cfl_alpha_fits_i16(model[1])
         && luma.len().is_multiple_of(16)
-        && let Some(token) = luma_token()
+        && let Some(token) = luma_token_for(backend)
     {
         if let Some(out) = T::u16_slice_mut(out) {
             cfl_predict_u16(token, model, luma, width, out, stride);
@@ -654,12 +692,13 @@ fn cfl_predict_block<T: ReconSample>(
             return Ok(());
         }
     }
+    let narrow = backend.narrow();
     if let Some(out) = T::u16_slice_mut(out) {
-        baseline_simd!(simd => cfl_predict_rows(simd, model, luma, width, out, stride));
+        splot_core::with_simd!(narrow, simd => cfl_predict_rows(simd, model, luma, width, out, stride));
     } else if model[3] <= i32::from(u8::MAX)
         && let Some(out) = T::u8_slice_mut(out)
     {
-        baseline_simd!(simd => cfl_predict_rows(simd, model, luma, width, out, stride));
+        splot_core::with_simd!(narrow, simd => cfl_predict_rows(simd, model, luma, width, out, stride));
     } else {
         return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL sample storage",
@@ -737,8 +776,9 @@ impl CflLumaEdges {
     /// `L` starts: in one [`CflLuma::block_luma_420`] pass after the above
     /// row when the block crosses no 64-sample luma column clamp, else
     /// through [`Self::gather_above`] and [`CflLuma::fill_luma`].
-    fn gather<S: Simd, P: CflLaneSample, const F: usize>(
+    fn gather<B: SimdBackend, S: Simd, P: CflLaneSample, const F: usize>(
         &mut self,
+        backend: B,
         simd: S,
         luma: &CflLuma<'_, P, F>,
         planes: &[CflPlane<'_>],
@@ -766,21 +806,22 @@ impl CflLumaEdges {
             }
             let out = &mut luma_ac[..len];
             let mut left = has_left.then_some(&mut self.left[..height]);
-            if luma.block_luma_420(x, y, width, [true; 3], Some(rows), &mut left, out) {
+            if luma.block_luma_420(backend, x, y, width, [true; 3], Some(rows), &mut left, out) {
                 self.above[..width].copy_from_slice(&out[..width]); // splot-copy-ok: lumaAbove from the block's luma pass
                 return Ok(width);
             }
         }
-        self.gather_above(simd, luma, planes, block)?;
+        self.gather_above(backend, simd, luma, planes, block)?;
         let left = has_left.then_some(&mut self.left[..height]);
-        luma.fill_luma(simd, block, left, luma_ac)?;
+        luma.fill_luma(backend, simd, block, left, luma_ac)?;
         Ok(0)
     }
 
     /// Gathers the above edge when any plane in `planes` reads it; the left
     /// edge comes with the block's luma from [`CflLuma::fill_luma`].
-    fn gather_above<S: Simd, P: CflLaneSample, const F: usize>(
+    fn gather_above<B: SimdBackend, S: Simd, P: CflLaneSample, const F: usize>(
         &mut self,
+        backend: B,
         simd: S,
         luma: &CflLuma<'_, P, F>,
         planes: &[CflPlane<'_>],
@@ -798,6 +839,7 @@ impl CflLumaEdges {
             let below_sb_top = min_luma_ref_y.is_none_or(|min_y| min_y <= 2 * y as isize - 3);
             if !(below_sb_top
                 && luma.block_luma_420(
+                    backend,
                     x,
                     y - 1,
                     width,
@@ -815,19 +857,20 @@ impl CflLumaEdges {
     }
 
     /// § 7.13.5 `lumaAvg`.
-    fn average_q3(
+    fn average_q3<B: SimdBackend>(
         &self,
+        backend: B,
         block: CflBlock,
         neighbours: NeighbourAvailability,
     ) -> core::result::Result<i32, GeneralIntraResidualError> {
         let mut sum = 0u32;
         let mut count = 0u32;
         if neighbours.has_above() && block.y > 0 {
-            sum += edge_sum(&self.above[..block.width]);
+            sum += edge_sum(backend, &self.above[..block.width]);
             count += (block.width / dc_step(block.width)) as u32;
         }
         if neighbours.has_left() && block.x > 0 {
-            sum += edge_sum(&self.left[..block.height]);
+            sum += edge_sum(backend, &self.left[..block.height]);
             count += (block.height / dc_step(block.height)) as u32;
         }
         let bits = block.bit_depth.bits();
@@ -840,8 +883,9 @@ impl CflLumaEdges {
 
     /// The chroma model from the edges of `chroma`, each sample past
     /// its right or bottom edge repeating the last.
-    fn plane_chroma_model<T: ReconSample>(
+    fn plane_chroma_model<B: SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         chroma: &PlaneSamples<'_, T>,
         block: CflBlock,
         neighbours: NeighbourAvailability,
@@ -879,6 +923,7 @@ impl CflLumaEdges {
             None
         };
         let [model] = self.chroma_models(
+            backend,
             above.map(|above| [above]),
             left.map(|left| [left]),
             block,
@@ -894,8 +939,9 @@ impl CflLumaEdges {
     /// `implicitAlpha` are shared. Its edge lengths and sample counts are
     /// powers of two and its sums are non-negative, so its divisions are
     /// shifts: the sample step, and the sums over a count of 4 or 8.
-    fn chroma_models<T: ReconSample, const N: usize>(
+    fn chroma_models<B: SimdBackend, T: ReconSample, const N: usize>(
         &self,
+        backend: B,
         above: Option<[&[T]; N]>,
         left: Option<[&[T]; N]>,
         block: CflBlock,
@@ -924,8 +970,8 @@ impl CflLumaEdges {
             let dc: T = splot_recon::predict_intra_dc_value_from_edge_sums(
                 block.bit_depth,
                 block.size,
-                left.map(|left| sample_edge_sum(&left[plane][..height])),
-                above.map(|above| sample_edge_sum(&above[plane][..width])),
+                left.map(|left| sample_edge_sum(backend, &left[plane][..height])),
+                above.map(|above| sample_edge_sum(backend, &above[plane][..width])),
             )?;
             model.0 = i32::from(dc.to_u16());
         }
@@ -951,7 +997,8 @@ impl CflLumaEdges {
                 lane += 1;
             }
         }
-        let alpha = baseline_simd!(simd => {
+        let narrow = backend.narrow();
+        let alpha = splot_core::with_simd!(narrow, simd => {
             let x = i32x8::from_slice(simd, &picked);
             let sums = |lanes: i32x8<_>| {
                 let (low, high) = simd.split_i32x8(lanes);
@@ -981,16 +1028,16 @@ const fn dc_step(len: usize) -> usize {
 /// The sum of an edge's samples at its [`dc_step`]; every sample is at most
 /// `8 << 10`, so a 64-sample edge cannot overflow.
 #[inline]
-fn edge_sum<V: splot_recon::SummedSample>(edge: &[V]) -> u32 {
-    splot_recon::sum_samples(edge, dc_step(edge.len()) == 2)
+fn edge_sum<B: SimdBackend, V: splot_recon::SummedSample>(backend: B, edge: &[V]) -> u32 {
+    splot_recon::sum_samples_with(backend, edge, dc_step(edge.len()) == 2)
 }
 
 /// [`edge_sum`] of `u8` or `u16` sample storage.
 #[inline]
-fn sample_edge_sum<T: ReconSample>(edge: &[T]) -> u32 {
+fn sample_edge_sum<B: SimdBackend, T: ReconSample>(backend: B, edge: &[T]) -> u32 {
     T::u8_slice(edge)
-        .map(edge_sum)
-        .or_else(|| T::u16_slice(edge).map(edge_sum))
+        .map(|edge| edge_sum(backend, edge))
+        .or_else(|| T::u16_slice(edge).map(|edge| edge_sum(backend, edge)))
         .unwrap_or(0)
 }
 
@@ -1150,8 +1197,9 @@ impl MhccpGeometry {
     /// or 2 (column 0), or as block samples when the edge is absent. The
     /// block's own rows and the left columns of the rows beside and below
     /// it each take one pass when their taps are stored.
-    fn gather_luma<S: Simd, P: CflLaneSample, const F: usize>(
+    fn gather_luma<B: SimdBackend, S: Simd, P: CflLaneSample, const F: usize>(
         &self,
+        backend: B,
         simd: S,
         luma_plane: &CflLuma<'_, P, F>,
         block: CflBlock,
@@ -1189,7 +1237,9 @@ impl MhccpGeometry {
                     .min_luma_ref_y
                     .is_none_or(|min_y| min_y < 2 * y as isize);
                 let clamps = [false, r == 0, first_col == 0];
-                if !(free && luma_plane.block_luma_420(x, y, ts, clamps, None, &mut None, out)) {
+                if !(free
+                    && luma_plane.block_luma_420(backend, x, y, ts, clamps, None, &mut None, out))
+                {
                     let taps = luma_plane.row(y, r == 0, self.min_luma_ref_y)?;
                     luma_plane.q3_run(simd, &taps, x, first_col == 0, false, out);
                 }
@@ -1201,6 +1251,7 @@ impl MhccpGeometry {
         if !(rows_in == h
             && cols_in == w
             && luma_plane.block_luma_420(
+                backend,
                 block.x,
                 block.y,
                 w,
@@ -1238,6 +1289,7 @@ impl MhccpGeometry {
             let x0 = block.x - sw;
             let stored = &mut columns[..strip_in * sw];
             if !luma_plane.block_luma_420(
+                backend,
                 x0,
                 block.y,
                 sw,
@@ -1659,7 +1711,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
     /// Eight Q3 downsampled luma samples of chroma columns `x..x + 8`, the first one
     /// clamped when `clamp_first` and every 64th luma column when `periodic`;
     /// taps past the end of a row read its last sample.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: out of line it returns through memory"
     )]
@@ -1732,14 +1784,15 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
     /// plane: `[periodic, clamp_row0, clamp_col0]` as in [`Luma420Block`].
     /// With `above`, the luma tap rows of a row above the rectangle, `out`
     /// starts with that row. `false` leaves `out` and `left` unwritten.
-    #[allow(
+    #[expect(
         clippy::too_many_arguments,
         clippy::inline_always,
         reason = "measured: out of line it costs more than the call it saves"
     )]
     #[inline(always)]
-    fn block_luma_420(
+    fn block_luma_420<B: SimdBackend>(
         &self,
+        backend: B,
         x: usize,
         y: usize,
         width: usize,
@@ -1753,7 +1806,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         if F < RUNTIME_WEIGHTS
             && width > 0
             && height > 0
-            && let Some(token) = luma_token()
+            && let Some(token) = luma_token_for(backend)
             && let Some(samples) = P::as_u8(self.plane.samples)
             && 2 * (x + width) <= self.plane.width
             && 2 * (y + height) <= self.plane.height
@@ -1789,14 +1842,15 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
             }
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let _ = (self, x, y, height, clamps, above, left, out);
+        let _ = (backend, self, x, y, height, clamps, above, left, out);
         false
     }
 
     /// The § 7.13.5 `L` of a block into `luma`, and the downsampled luma left
     /// of each block row into `left` when given.
-    fn fill_luma<S: Simd>(
+    fn fill_luma<B: SimdBackend, S: Simd>(
         &self,
+        backend: B,
         simd: S,
         block: CflBlock,
         mut left: Option<&mut [i16]>,
@@ -1813,7 +1867,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
             luma.resize(width * height, 0);
         }
         let luma = &mut luma[..width * height];
-        if self.block_luma_420(x, y, width, [true; 3], None, &mut left, luma) {
+        if self.block_luma_420(backend, x, y, width, [true; 3], None, &mut left, luma) {
             return Ok(());
         }
         let max_x = self.plane.width - 1;
@@ -1844,7 +1898,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
             }
             if row % 8 == 7 || row + 1 == height {
                 let group = &mut left[row - row % 8..=row];
-                group.copy_from_slice(&gathered_q3(&taps, weights)[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
+                group.copy_from_slice(&gathered_q3(simd, &taps, weights)[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
             }
         }
         Ok(())
@@ -1853,18 +1907,20 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
 
 /// The § 7.13.5 Q3 sums of eight samples whose taps were gathered into
 /// `taps[dy + 1][dx + 1]`, weighted by `weights[dy + 1][dx + 1]`, in lanes.
-pub(super) fn gathered_q3(taps: &[[[u16; 8]; 3]; 3], weights: [[i32; 3]; 3]) -> [i16; 8] {
-    baseline_simd!(simd => {
-        let mut acc = u16x8::splat(simd, 0);
-        for (taps, weights) in taps.iter().zip(weights) {
-            for (taps, weight) in taps.iter().zip(weights) {
-                if weight != 0 {
-                    acc += u16x8::from_slice(simd, taps) * weight as u16;
-                }
+pub(super) fn gathered_q3<S: Simd>(
+    simd: S,
+    taps: &[[[u16; 8]; 3]; 3],
+    weights: [[i32; 3]; 3],
+) -> [i16; 8] {
+    let mut acc = u16x8::splat(simd, 0);
+    for (taps, weights) in taps.iter().zip(weights) {
+        for (taps, weight) in taps.iter().zip(weights) {
+            if weight != 0 {
+                acc += u16x8::from_slice(simd, taps) * weight as u16;
             }
         }
-        acc.bitcast::<i16x8<_>>().into()
-    })
+    }
+    acc.bitcast::<i16x8<_>>().into()
 }
 
 /// A luma sample type the CfL lane forms load as `u16` lanes.

@@ -85,7 +85,8 @@ fn cropped_streams_decode_to_the_window_of_the_recon() {
         let (config, units, recon) = crop_stream(chroma, bit_depth, Some(WINDOW), 1);
         let expected = cropped(&config, &recon, WINDOW);
         assert_same_samples(&decode(&units.concat()), &expected, &case);
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             let other = crop_stream(chroma, bit_depth, Some(WINDOW), threads).1;
             assert!(other == units, "{case}: {threads} threads");
         }

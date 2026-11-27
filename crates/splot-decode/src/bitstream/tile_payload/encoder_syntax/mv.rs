@@ -12,11 +12,11 @@ use splot_core::symbol_encoder::SymbolSink;
 use super::super::cdf::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::inter::{MV_PRECISION_EIGHTH_PEL, MotionVector};
 use super::{CdfJournal, CdfRow, EncoderSyntaxError, IntraTileSyntax, Result, rule};
+use crate::prediction::inter::MvdCoding;
 use crate::prediction::inter::read_mv::{
     AMVD_INDEX_TO_MVD, MvReadConfig, MvSymbols, apply_inter_mvd_sign_pair, apply_inter_mvd_signs,
     read_newmv_amvd_block_mvd, read_newmv_block_mvd_magnitude_with_config, shell_set0_classes,
 };
-use crate::prediction::inter::{Mv, MvdCoding};
 
 /// One answered `read_mv` symbol.
 #[derive(Clone, Copy, Debug)]
@@ -33,7 +33,7 @@ std::thread_local! {
 
 /// Answers each `read_mv` symbol for the differences `targets` and records it.
 struct MvWriter {
-    targets: [Mv; 2],
+    targets: [MotionVector; 2],
     /// The difference whose magnitude is read.
     vector: usize,
     precision: u8,
@@ -48,7 +48,7 @@ const LAST_RAW_SHELL_CLASS: u32 = 7;
 
 /// The joint shell coding of one magnitude: `(class, offset, column, low)`,
 /// where `low` is the smaller part of the shell split.
-fn shell(target: Mv, precision: u8) -> (u32, u32, u32, u32) {
+fn shell(target: MotionVector, precision: u8) -> (u32, u32, u32, u32) {
     let shift = u32::from(MV_PRECISION_EIGHTH_PEL.saturating_sub(precision));
     let (row, col) = (
         target.row.unsigned_abs() >> shift,
@@ -183,9 +183,9 @@ pub(super) fn write_mvds_with(
             "more than two motion vector differences",
         ));
     }
-    let mut targets = [Mv::default(); 2];
+    let mut targets = [MotionVector::default(); 2];
     for (target, &mvd) in targets.iter_mut().zip(mvds) {
-        *target = mvd.into();
+        *target = mvd;
     }
     let amvd = |d: i32| d == 0 || AMVD_INDEX_TO_MVD.contains(&d.abs());
     if coding.use_amvd && !targets.iter().all(|t| amvd(t.row) && amvd(t.col)) {
@@ -203,7 +203,7 @@ pub(super) fn write_mvds_with(
     };
     writer.steps.clear();
     let offset = ByteOffset::new(0);
-    let mut magnitudes = [Mv::default(); 2];
+    let mut magnitudes = [MotionVector::default(); 2];
     for (vector, magnitude) in magnitudes.iter_mut().take(mvds.len()).enumerate() {
         writer.vector = vector;
         writer.greater = 0;
@@ -225,7 +225,7 @@ pub(super) fn write_mvds_with(
                 derive.0,
                 derive.1,
             ),
-            Ok(Mv::default()),
+            Ok(MotionVector::default()),
         ]
     } else {
         let pair = apply_inter_mvd_sign_pair(

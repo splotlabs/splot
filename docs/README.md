@@ -15,11 +15,40 @@ rustup show active-toolchain
 cargo build --release
 ```
 
-x86-64 builds target `x86-64-v3` (AVX2/FMA/BMI2) for decode throughput; an
-older CPU traps with `SIGILL`. Use `RUSTFLAGS="-C target-cpu=x86-64"` for a
-portable baseline. `aarch64` uses 128-bit NEON as its baseline.
-Linux GNU builds link packed relative relocations (`DT_RELR`) and need glibc
-2.36 or newer.
+Checkout builds target `x86-64-v3` on x86-64. At startup, Auto asks
+`fearless_simd` for its Ice Lake AVX-512 capability, including OS register
+state and the required instruction extensions. On a qualifying host, display
+grain uses AVX-512 to round, add and clip groups of 32 samples on eligible
+8-bit and 10-bit rows. Other work uses AVX2. AArch64 uses NEON.
+
+Rust callers can request a backend through `SimdPolicy`. An unavailable
+request returns an error at startup. The C API uses Auto. A streaming decoder
+retains its selected backend across frames and flushes. For repeated
+synchronous decodes, `DecodeContext::with_typed_backend` selects once around
+the caller's loop. The ordinary synchronous methods enter that scope for each
+call. A deferred `Picture::apply_film_grain` uses the backend stored with the
+picture.
+
+Run the **AVX-512 correctness qualification** Actions workflow on native
+hardware to compare Auto and both forced policies against AVM. Its timing
+option compares the forced backends on the same runner. Set the repository
+variable `SPLOT_AVX512_RUNNER` to a registered wide-capable runner label for
+repeatable access. The default Ubuntu hosted pool contains several CPU models;
+the hardware check fails if the assigned runner lacks the required features.
+
+Cargo uses the consuming workspace's configuration when building splot as a
+dependency. With generic x86-64 flags the decoder can fall back to SSE2.
+On Linux GNU, this command builds a baseline CLI and C library while retaining
+the release's packed relative relocations and glibc 2.36 requirement.
+
+```bash
+RUSTFLAGS="-C target-cpu=x86-64 -C link-arg=-Wl,-z,pack-relative-relocs" \
+  cargo build --release --locked --target-dir target/baseline -p splot-cli -p splot-capi
+```
+
+The compiler target also affects parsing, motion prediction and the code
+around SIMD kernels. A generic build can therefore decode more slowly on the
+same AVX2 machine. [Performance measurements and follow-up](https://github.com/splotlabs/splot/issues/1934).
 
 ## Crates
 

@@ -992,6 +992,5 @@ pub enum ReconError {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 #[path = "error_tests.rs"]
 mod tests;

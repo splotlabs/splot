@@ -11,8 +11,7 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
-    FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    parse_frame_header_core,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
     ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
@@ -20,7 +19,9 @@ use splot_core::headers::sequence::{
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
+#[cfg(test)]
 use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 use splot_recon::{PlaneRect, ReconError, SharedFrame};
@@ -79,16 +80,22 @@ pub(crate) struct PipelineFrame {
     pub(crate) ccso_header: Option<std::sync::Arc<FrameHeaderCore>>,
     pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) segment_ids: inter::SegmentIdMapHandle,
-    pub(crate) frame_rate_numerator: u32,
-    pub(crate) frame_rate_denominator: u32,
+    pub(crate) frame_rate: PipelineFrameRate,
+    /// Extended layer id of the coded or show-existing frame OBU.
+    pub(crate) extended_layer_id: ExtendedLayerId,
+    /// Embedded layer ID of the output picture.
+    pub(crate) embedded_layer_id: EmbeddedLayerId,
+    /// Temporal layer ID of the output picture.
+    pub(crate) temporal_layer_id: TemporalLayerId,
     /// The caller data of the temporal unit that coded or showed this frame.
     pub(crate) props: crate::DataProps,
+    pub(crate) provenance: crate::PictureProvenance,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PipelineFrameRate {
-    pub(super) numerator: u32,
-    pub(super) denominator: u32,
+    pub(crate) numerator: u32,
+    pub(crate) denominator: u32,
 }
 
 impl PipelineFrameRate {
@@ -149,7 +156,6 @@ impl PipelineFrame {
 
 #[cfg(test)]
 impl PipelineDecodedFrame {
-    #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match self {
             Self::Eight(frame) => frame,
@@ -174,8 +180,15 @@ fn mismatched_slot_storage(frame: &PipelineFrameSlot) -> DecodeError {
     }
 }
 
+#[derive(Clone)]
+struct FilmGrainSlot {
+    model: FilmGrainModel,
+    embedded_layer_id: EmbeddedLayerId,
+    temporal_layer_id: TemporalLayerId,
+}
+
 pub(super) struct FilmGrainSlots {
-    models: [Option<FilmGrainModel>; MAX_FILM_GRAIN],
+    models: [Option<FilmGrainSlot>; MAX_FILM_GRAIN],
 }
 
 impl FilmGrainSlots {
@@ -185,16 +198,53 @@ impl FilmGrainSlots {
         }
     }
 
-    pub(super) fn update_from_obus(&mut self, obus: &[ObuEnvelope<'_>]) -> Result<()> {
+    #[cfg(test)]
+    pub(super) fn update_from_obus(
+        &mut self,
+        obus: &[ObuEnvelope<'_>],
+        sequence: &SequenceHeader,
+    ) -> Result<()> {
         for envelope in obus {
             if envelope.header.obu_type == ObuType::FilmGrain {
-                self.update_from_obu(*envelope)?;
+                self.update_from_obu(*envelope, sequence)?;
             }
         }
         Ok(())
     }
 
-    fn update_from_obu(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
+    pub(super) fn update_from_obu(
+        &mut self,
+        envelope: ObuEnvelope<'_>,
+        sequence: &SequenceHeader,
+    ) -> Result<()> {
+        if envelope.header.embedded_layer_id > sequence.general.max_mlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "film grain OBU mlayer_id {} exceeds max_mlayer_id {}",
+                        envelope.header.embedded_layer_id.get(),
+                        sequence.general.max_mlayer_id.get()
+                    ),
+                ),
+            });
+        }
+        if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    None,
+                    "6.2.2",
+                    format!(
+                        "film grain OBU temporal_layer_id {} exceeds max_tlayer_id {}",
+                        envelope.header.temporal_layer_id.get(),
+                        sequence.general.max_tlayer_id.get()
+                    ),
+                ),
+            });
+        }
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
         let film_grain = parse_film_grain(&mut reader).map_err(|_| {
             unsupported_feature_at(
@@ -214,14 +264,20 @@ impl FilmGrainSlots {
                     "5.14",
                 ));
             };
-            *target = Some(update.model);
+            *target = Some(FilmGrainSlot {
+                model: update.model,
+                embedded_layer_id: envelope.header.embedded_layer_id,
+                temporal_layer_id: envelope.header.temporal_layer_id,
+            });
         }
         Ok(())
     }
 
     pub(super) fn active_for_core(
         &self,
+        envelope: ObuEnvelope<'_>,
         core: &FrameHeaderCore,
+        sequence: &SequenceHeader,
         frame_offset: ByteOffset,
     ) -> Result<Option<ActiveFilmGrain>> {
         let Some(config) = film_grain_config_for_core(core) else {
@@ -246,11 +302,10 @@ impl FilmGrainSlots {
                 "5.18.10.1",
             )
         })?;
-        let model = self
+        let slot = self
             .models
             .get(usize::from(fgm_id))
             .and_then(Option::as_ref)
-            .cloned()
             .ok_or_else(|| {
                 unsupported_feature_at(
                     "film_grain_model_unavailable",
@@ -259,7 +314,31 @@ impl FilmGrainSlots {
                     "6.17.10.1",
                 )
             })?;
-        Ok(Some(ActiveFilmGrain { model, grain_seed }))
+        if !sequence
+            .general
+            .mlayer_dependency_map
+            .depends_on(envelope.header.embedded_layer_id, slot.embedded_layer_id)
+            || !sequence.general.tlayer_dependency_map.depends_on(
+                envelope.header.embedded_layer_id,
+                envelope.header.temporal_layer_id,
+                slot.temporal_layer_id,
+            )
+        {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    frame_offset,
+                    None,
+                    "6.17.10.1",
+                    format!(
+                        "film grain model fgm_id {fgm_id} violates active layer dependency maps"
+                    ),
+                ),
+            });
+        }
+        Ok(Some(ActiveFilmGrain {
+            model: slot.model.clone(),
+            grain_seed,
+        }))
     }
 }
 
@@ -303,6 +382,12 @@ pub(super) fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -
         ));
     }
     if let Err(error) = validate_profile_chroma(general.seq_profile_idc, general.chroma_format_idc)
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::sequence_header_conformance(offset, "A.2", error.to_string()),
+        });
+    }
+    if let Err(error) = validate_profile_max_mlayer(general.seq_profile_idc, general.max_mlayer_id)
     {
         return Err(DecodeError::MalformedSource {
             issue: DecodeSourceIssue::sequence_header_conformance(offset, "A.2", error.to_string()),
@@ -380,6 +465,32 @@ enum SequenceProfileError {
         profile_idc: u8,
         chroma_format_idc: u8,
     },
+    #[error(
+        "max_mlayer_id {max_mlayer_id} exceeds embedded layer limit for seq_profile_idc {profile_idc} in Annex A.2 Table A.3"
+    )]
+    EmbeddedLayerLimitExceeded { profile_idc: u8, max_mlayer_id: u8 },
+}
+
+fn validate_profile_max_mlayer(
+    profile: ProfileIdc,
+    max_mlayer_id: EmbeddedLayerId,
+) -> core::result::Result<(), SequenceProfileError> {
+    let profile_idc = profile.get();
+    let max_allowed = match profile_idc {
+        0 => Some(0),
+        1 | 3 | 4 => Some(1),
+        2 => Some(2),
+        _ => None,
+    };
+    if let Some(limit) = max_allowed
+        && max_mlayer_id.get() > limit
+    {
+        return Err(SequenceProfileError::EmbeddedLayerLimitExceeded {
+            profile_idc,
+            max_mlayer_id: max_mlayer_id.get(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_profile_chroma(
@@ -390,23 +501,7 @@ fn validate_profile_chroma(
     if profile.is_reserved() {
         return Err(SequenceProfileError::Reserved { profile_idc });
     }
-    let allowed = match profile_idc {
-        0..=2 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-        ),
-        3 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv422
-        ),
-        4 => matches!(
-            chroma,
-            ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
-        ),
-        31 => true,
-        _ => false,
-    };
-    if allowed {
+    if profile.allows_chroma(chroma) {
         Ok(())
     } else {
         Err(SequenceProfileError::ChromaFormatMismatch {
@@ -444,6 +539,34 @@ pub(crate) fn parse_frame_core_with_reference(
     first_picture_in_tu: bool,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<FrameHeaderCore> {
+    if envelope.header.embedded_layer_id > sequence.general.max_mlayer_id {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                envelope.offset,
+                None,
+                "6.2.2",
+                format!(
+                    "frame OBU mlayer_id {} exceeds max_mlayer_id {}",
+                    envelope.header.embedded_layer_id.get(),
+                    sequence.general.max_mlayer_id.get()
+                ),
+            ),
+        });
+    }
+    if envelope.header.temporal_layer_id > sequence.general.max_tlayer_id {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                envelope.offset,
+                None,
+                "6.2.2",
+                format!(
+                    "frame OBU temporal_layer_id {} exceeds max_tlayer_id {}",
+                    envelope.header.temporal_layer_id.get(),
+                    sequence.general.max_tlayer_id.get()
+                ),
+            ),
+        });
+    }
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let is_first_tile_group = reader.read_bit().map_err(|_| {
         unsupported_at(
@@ -461,11 +584,12 @@ pub(crate) fn parse_frame_core_with_reference(
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
+        obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: *reference_state,
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|_| {
         unsupported_at(
@@ -485,7 +609,8 @@ pub(crate) fn is_key_or_switch(core: &FrameHeaderCore) -> bool {
 pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
-    embedded_layer_id: splot_core::types::EmbeddedLayerId,
+    embedded_layer_id: EmbeddedLayerId,
+    temporal_layer_id: TemporalLayerId,
 ) -> Result<reference_buffer::FrameRefUpdate<'_>> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
@@ -556,6 +681,7 @@ pub(crate) fn frame_ref_update_from_core(
         saved_gm_params,
         long_term_id: core.long_term_id.and_then(|id| u32::try_from(id).ok()),
         embedded_layer_id,
+        temporal_layer_id,
         lr_frame_filter_class_counts,
         lr_banks,
     })
@@ -577,7 +703,6 @@ pub(super) fn ensure_intra_header_complete(
 
 #[cfg(test)]
 mod sequence_profile_tests {
-    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
     use super::*;
     use crate::DecodeSourceIssueKind;
@@ -816,5 +941,148 @@ mod completeness_tests {
             assert_eq!(unsupported.spec_section(), "7.1");
             assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
         }
+    }
+}
+
+#[cfg(test)]
+mod film_grain_layer_tests {
+    use super::*;
+    use crate::DecodeSourceIssueKind;
+    use crate::prediction::inter::test_support::fixture_sequence_and_key_core;
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::sequence::parse_sequence_header;
+    use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+
+    #[test]
+    fn active_film_grain_slot_rejects_disallowed_temporal_layer_dependency() {
+        const FGM_FIXTURE: &[u8] = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"
+        );
+        const SPARSE_OBU: &[u8] = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-tlayer4-sparse-dependencies.obu"
+        );
+
+        let (mut sequence, core) = fixture_sequence_and_key_core(FGM_FIXTURE);
+        let sparse_obus = parse_annex_b_obus(SPARSE_OBU).unwrap();
+        let sparse_seq_obu = sparse_obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+            .unwrap();
+        let sparse_seq = parse_sequence_header(&mut BitReader::new(
+            sparse_seq_obu.payload,
+            sparse_seq_obu.payload_offset(),
+        ))
+        .unwrap();
+        sequence.general.max_tlayer_id = sparse_seq.general.max_tlayer_id;
+        sequence.general.tlayer_dependency_map = sparse_seq.general.tlayer_dependency_map;
+
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(FGM_FIXTURE) else {
+            panic!("fixture is IVF");
+        };
+        let mut fgm_envelope = parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter())
+            .find(|obu| obu.header.obu_type == ObuType::FilmGrain)
+            .copied()
+            .expect("fixture carries film grain OBU");
+        let mut frame_envelope = parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter())
+            .find(|obu| obu.header.obu_type == ObuType::ClosedLoopKey)
+            .copied()
+            .expect("fixture carries key frame OBU");
+
+        fgm_envelope.header.temporal_layer_id = TemporalLayerId::from_bits(1);
+        let mut slots = FilmGrainSlots::new();
+        slots.update_from_obus(&[fgm_envelope], &sequence).unwrap();
+
+        frame_envelope.header.temporal_layer_id = TemporalLayerId::from_bits(1);
+        assert!(
+            slots
+                .active_for_core(frame_envelope, &core, &sequence, frame_envelope.offset)
+                .unwrap()
+                .is_some()
+        );
+
+        frame_envelope.header.temporal_layer_id = TemporalLayerId::from_bits(2);
+        let result = slots.active_for_core(frame_envelope, &core, &sequence, frame_envelope.offset);
+        assert!(matches!(
+            result,
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == DecodeSourceIssueKind::FrameHeaderConformanceError
+                    && issue.spec_section() == Some("6.17.10.1")
+                    && issue.message().contains("violates active layer dependency maps")
+        ));
+    }
+
+    #[test]
+    fn film_grain_slots_enforce_max_mlayer_id_and_mlayer_dependency_map() {
+        const FGM_FIXTURE: &[u8] = include_bytes!(
+            "../../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"
+        );
+        let (mut sequence, core) = fixture_sequence_and_key_core(FGM_FIXTURE);
+        sequence.general.max_mlayer_id = EmbeddedLayerId::from_bits(1);
+        sequence.general.mlayer_dependency_map =
+            splot_core::headers::sequence::MLayerDependencyMap::default_for(
+                EmbeddedLayerId::from_bits(1),
+            );
+        sequence.general.tlayer_dependency_map =
+            splot_core::headers::sequence::TLayerDependencyMap::default_for(
+                sequence.general.max_tlayer_id,
+                EmbeddedLayerId::from_bits(1),
+            );
+
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(FGM_FIXTURE) else {
+            panic!("fixture is IVF");
+        };
+        let mut fgm_envelope = parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter())
+            .find(|obu| obu.header.obu_type == ObuType::FilmGrain)
+            .copied()
+            .expect("fixture carries film grain OBU");
+        let mut frame_envelope = parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter())
+            .find(|obu| obu.header.obu_type == ObuType::ClosedLoopKey)
+            .copied()
+            .expect("fixture carries key frame OBU");
+
+        fgm_envelope.header.embedded_layer_id = EmbeddedLayerId::from_bits(2);
+        let mut bad_slots = FilmGrainSlots::new();
+        assert!(matches!(
+            bad_slots.update_from_obus(&[fgm_envelope], &sequence),
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == DecodeSourceIssueKind::FrameHeaderConformanceError
+                    && issue.spec_section() == Some("6.2.2")
+                    && issue.message().contains("exceeds max_mlayer_id")
+        ));
+
+        fgm_envelope.header.embedded_layer_id = EmbeddedLayerId::from_bits(1);
+        let mut slots = FilmGrainSlots::new();
+        slots.update_from_obus(&[fgm_envelope], &sequence).unwrap();
+
+        frame_envelope.header.embedded_layer_id = EmbeddedLayerId::from_bits(1);
+        assert!(
+            slots
+                .active_for_core(frame_envelope, &core, &sequence, frame_envelope.offset)
+                .unwrap()
+                .is_some()
+        );
+
+        frame_envelope.header.embedded_layer_id = EmbeddedLayerId::BASE;
+        let result = slots.active_for_core(frame_envelope, &core, &sequence, frame_envelope.offset);
+        assert!(matches!(
+            result,
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == DecodeSourceIssueKind::FrameHeaderConformanceError
+                    && issue.spec_section() == Some("6.17.10.1")
+                    && issue.message().contains("violates active layer dependency maps")
+        ));
     }
 }

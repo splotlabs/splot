@@ -6,7 +6,6 @@
 //!
 //! Feature tracking: `DECODE-INTER-RESIDUAL-DCT`.
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::bitstream::tile_payload::LumaTxPartition;
 use crate::filters::wienerns_lr::tx_records::{
@@ -112,7 +111,7 @@ impl InterLumaTxTypeMap {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn read_inter_residual(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -134,7 +133,7 @@ pub(crate) fn read_inter_residual(
     let block_start = blocks.len();
     let arena_start = arena.len();
     let result = (|| -> Result<()> {
-        let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+        let (subsampling_x, subsampling_y) = sequence.general.chroma_format_idc.subsampling();
         let width_chunks = (n4w >> 4).max(1);
         let height_chunks = (n4h >> 4).max(1);
         let multi_chunk = width_chunks > 1 || height_chunks > 1;
@@ -293,7 +292,7 @@ fn inter_luma_tx_records_are_selectable(selectable_tx_partitions: bool, lossless
     selectable_tx_partitions && !lossless
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_luma_chunk(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -368,7 +367,7 @@ fn read_inter_residual_luma_chunk(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_chroma_group(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -583,7 +582,7 @@ pub(crate) fn inter_residual_units(
         .b_size
         .num_4x4_high()
         .map_err(|_| residual_geometry_error())?;
-    let subsampling = chroma_subsampling(chroma);
+    let subsampling = chroma.subsampling();
     let (width_chunks, height_chunks) = ((n4w >> 4).max(1), (n4h >> 4).max(1));
     let mi_size_chunk = if width_chunks > 1 || height_chunks > 1 {
         BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error())?
@@ -697,7 +696,7 @@ fn residual_allocation_error() -> crate::error::DecodeError {
     inter_allocation!("inter residual transform-block list")
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_inter_residual_plane(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,

@@ -5,6 +5,8 @@ use super::*;
 use crate::bitstream::byte_stream::{SourceBytes, UnitSource, plan_byte_stream, runtime_obus};
 use crate::test_support::empty_avmenc_ivf;
 use crate::{DecodeContext, DecodeRuntimeConfig};
+use splot_core::bitio::BitReader;
+use splot_core::headers::tile_group::RecordedFrameHeaderBits;
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_parallel::ThreadCount;
@@ -412,5 +414,24 @@ fn leading_annexb_regular_after_key_stops_at_next_temporal_delimiter()
     assert_eq!(leading_record_inter_frame_unit_start(0, 4, &obus), Some(3));
     assert_eq!(leading_record_inter_frame_unit_start(0, 6, &obus), None);
     assert!(require_inter_obu_order(&obus[5..]).is_ok());
+    Ok(())
+}
+
+#[test]
+fn leading_frame_rejects_misplaced_prefix_metadata()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(DEFAULT_QM_FIXTURE) else {
+        return Err("expected IVF fixture".into());
+    };
+    let mut bytes = ivf.frames[0].frame.payload.to_vec();
+    let metadata_start = bytes.len();
+    bytes.extend([5, 0x20, 0x22, 9, 0, 0x80]);
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
+    assert_eq!(
+        unsupported_reason(context.decode_hash_report_bytes(&bytes, DecodeOptions::default())),
+        Some("unexpected_leading_obu_after_key")
+    );
+    bytes[metadata_start + 2] |= 0x80;
+    context.decode_hash_report_bytes(&bytes, DecodeOptions::default())?;
     Ok(())
 }

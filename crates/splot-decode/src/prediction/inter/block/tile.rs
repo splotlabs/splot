@@ -7,11 +7,13 @@
 
 use std::ops::Range;
 
-use splot_recon::{PlaneId, ReconError};
+use splot_recon::{CurrentFrameSurface, PlaneId, ReconError};
 
 use super::*;
 
 mod admission;
+#[cfg(feature = "block-evidence")]
+mod evidence;
 pub(super) use admission::project_temporal_band;
 
 use admission::TileCommit;
@@ -107,6 +109,8 @@ pub(super) struct TileFilterRecords {
 /// that runs after the driver moved on can rebuild its tile context.
 #[derive(Clone)]
 pub(crate) struct TileWalkParams {
+    #[cfg(feature = "block-evidence")]
+    pub(super) block_evidence: Option<crate::block_evidence::BlockEvidenceRecorder>,
     pub(super) filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds,
     pub(super) limits: crate::DecodeLimits,
     pub(super) mi_rows: usize,
@@ -125,6 +129,7 @@ pub(crate) struct TileWalkParams {
     pub(super) allow_bawp: bool,
     pub(super) allow_warpmv_mode: bool,
     pub(super) allow_intrabc: bool,
+    pub(super) allow_local_intrabc: bool,
     pub(super) frame_is_switch: bool,
     pub(super) current_order_hint: u32,
     pub(super) temporal_first_frame: bool,
@@ -249,12 +254,77 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             self.sink.core.frame_is_intra == Some(true),
         );
         debug_assert_eq!(frontier.bru_active(), ACTIVE);
-        if ACTIVE {
+        #[cfg(feature = "block-evidence")]
+        let entropy = self
+            .evidence(work_unit.tile_num() as usize)
+            .and_then(|evidence| evidence.start_entropy(frontier));
+        #[cfg(feature = "block-evidence")]
+        let mut parse_leaf = |work_unit: &mut DecodeTileWorkUnit,
+                              symbols: &mut SymbolDecoder<'_>| {
+            if ACTIVE {
+                decode_block(work_unit, symbols, frontier, self, neighbours)
+            } else {
+                super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+            }
+        };
+        #[cfg(feature = "block-evidence")]
+        let leaf = if let Some((scope, observer)) = entropy {
+            if let crate::block_evidence::BlockEntropyScope::Transform(transform) = scope {
+                work_unit.entropy_transform = Some(transform);
+            }
+            let leaf = symbols.with_entropy_observer(&observer, |symbols| {
+                symbols.set_entropy_observation_active(work_unit.entropy_transform.is_none());
+                parse_leaf(work_unit, symbols)
+            });
+            work_unit.entropy_transform = None;
+            if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
+                evidence.finish_entropy(scope, work_unit.tile_size(), observer);
+            }
+            leaf
+        } else {
+            parse_leaf(work_unit, symbols)
+        };
+        #[cfg(not(feature = "block-evidence"))]
+        let leaf = if ACTIVE {
             decode_block(work_unit, symbols, frontier, self, neighbours)
         } else {
             super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+        };
+        let leaf = leaf?;
+        #[cfg(feature = "block-evidence")]
+        if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
+            evidence::observe_leaf(evidence, self, frontier);
         }
-        .map(|leaf| (leaf, ()))
+        Ok((leaf, ()))
+    }
+
+    #[cfg(feature = "block-evidence")]
+    fn evidence(&self, tile: usize) -> Option<crate::block_evidence::BlockEvidenceTile<'_>> {
+        self.sink
+            .params
+            .block_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.tile(tile))
+    }
+
+    #[cfg(feature = "block-evidence")]
+    fn set_evidence_parent(
+        &mut self,
+        parent: Option<crate::bitstream::tile_payload::TilePartitionCall>,
+    ) {
+        self.evidence_parent = parent;
+    }
+
+    #[inline]
+    fn wants_out_of_frame_partitions(&self) -> bool {
+        self.sink.params.allow_local_intrabc
+    }
+
+    fn on_out_of_frame_partition(&mut self, publication: DecodedLeafPublication) {
+        if self.sink.params.allow_local_intrabc {
+            self.entries
+                .push(ReconRowEntry::new(publication, EntryState::OutOfFrame));
+        }
     }
 }
 
@@ -401,7 +471,7 @@ fn inter_tile_grid_error(
 }
 
 impl<'payload> TileParser<'payload> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -536,6 +606,8 @@ impl<'payload> TileParser<'payload> {
             temporal,
             residual_planes,
             filter_records,
+            full_sb_row: row_units,
+            last_intrabc_sb: None,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -589,6 +661,7 @@ impl<'payload> TileParser<'payload> {
                 mv_grid: &mut self.mv_grid,
                 filter_records: &mut row.filter_records,
                 slots: &mut row.slots,
+                sb_has_intrabc: false,
             },
             previous_segment_ids: context.previous_segment_ids,
             gdf_state: &mut self.output.gdf_state,
@@ -597,6 +670,8 @@ impl<'payload> TileParser<'payload> {
             delta_q_state: &mut self.delta_q_state,
             segment_id_state: &mut self.output.segment_id_state,
             entries: &mut row.entries,
+            #[cfg(feature = "block-evidence")]
+            evidence_parent: None,
             sb_mask,
             arena: &mut row.residual_planes,
         };
@@ -604,11 +679,19 @@ impl<'payload> TileParser<'payload> {
         loop {
             let first = block_context.entries.len();
             let origin = walk.next_origin();
+            block_context.sink.sb_has_intrabc = false;
             let next = walk.decode_next_superblock(tile, &mut block_context, &mut on_published);
             if let Some(superblock) =
-                ReconSuperblock::new(origin, first..block_context.entries.len())
-                    .map(|sb| sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range()))
+                ReconSuperblock::new(origin, first..block_context.entries.len()).map(|sb| {
+                    sb.with_allow_extra_ibc_range(walk.allow_extra_ibc_range())
+                        .with_bru_inactive(
+                            walk.bru_mode() == crate::bitstream::tile_payload::BRU_INACTIVE,
+                        )
+                })
             {
+                if block_context.sink.sb_has_intrabc {
+                    row.last_intrabc_sb = Some(row.superblocks.len());
+                }
                 row.superblocks.push(superblock);
             }
             if let (Ok(Some([sb_row, sb_col])), Some(modes)) = (&next, &context.params.bru_modes) {
@@ -635,7 +718,7 @@ impl<'payload> TileParser<'payload> {
         if more {
             return Ok(());
         }
-        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput { symbols, storage } =
+        let crate::bitstream::tile_payload::GeneralIntraPartitionTreeOutput { symbols, storage } =
             self.walk.finish()?.into_output();
         self.output.traversal = storage;
         finish_tile_symbols(symbols, tile_offset)
@@ -663,15 +746,79 @@ fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> R
         .map_err(|error| crate::pipeline::malformed_tile_payload(tile_offset, "8.2.4", error))
 }
 
+enum TileLocalIbcSlot {
+    Disabled,
+    Unallocated {
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sb_h4: usize,
+        sdp_intra: bool,
+    },
+    Active(Box<crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>),
+}
+
+impl TileLocalIbcSlot {
+    fn ensure_active(
+        &mut self,
+    ) -> Result<Option<&mut crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>> {
+        match self {
+            Self::Disabled => Ok(None),
+            Self::Unallocated {
+                tile_rows,
+                tile_cols,
+                sb_h4,
+                sdp_intra,
+            } => {
+                let state = Box::new(
+                    crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState::new(
+                        tile_rows.clone(),
+                        tile_cols.clone(),
+                        *sb_h4,
+                        *sdp_intra,
+                    )?,
+                );
+                *self = Self::Active(state);
+                match self {
+                    Self::Active(state) => Ok(Some(state.as_mut())),
+                    Self::Disabled | Self::Unallocated { .. } => {
+                        Err(invalid_inter_tile_scheduling_state())
+                    }
+                }
+            }
+            Self::Active(state) => Ok(Some(state.as_mut())),
+        }
+    }
+}
+
 /// The § 7.12 banks one tile's resolve pass owns, alongside whichever
 /// neighbour grid the pass publishes its motion plane into.
 struct TileResolveState {
     ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
     warp_param_bank: super::super::find_mv_stack::WarpParamBank,
+    ibc_local: TileLocalIbcSlot,
 }
 
 impl TileResolveState {
-    fn new(sequence: &SequenceHeader) -> Self {
+    fn new(
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sb_h4: usize,
+    ) -> Self {
+        let ibc_local =
+            if crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core) {
+                let sdp_intra = sequence.partition.is_some_and(|p| p.enable_sdp)
+                    && core.frame_is_intra == Some(true);
+                TileLocalIbcSlot::Unallocated {
+                    tile_rows,
+                    tile_cols,
+                    sb_h4,
+                    sdp_intra,
+                }
+            } else {
+                TileLocalIbcSlot::Disabled
+            };
         Self {
             ref_mv_bank: sequence
                 .inter
@@ -679,6 +826,7 @@ impl TileResolveState {
                 .is_some_and(|inter| inter.enable_refmvbank)
                 .then(super::super::find_mv_stack::RefMvBank::new),
             warp_param_bank: super::super::find_mv_stack::WarpParamBank::new(),
+            ibc_local,
         }
     }
 
@@ -693,13 +841,27 @@ impl TileResolveState {
         temporal_context: &TemporalMvContext,
         row: &mut ReconRow,
         tile_offset: ByteOffset,
+        #[cfg(feature = "block-evidence")] tile: usize,
     ) -> Result<()> {
+        let ibc_local = if row.local_ibc_sb_end() > 0 {
+            self.ibc_local.ensure_active()?
+        } else {
+            None
+        };
         resolve_parsed_leaves(
             row,
             &mut MvResolutionState {
+                #[cfg(feature = "block-evidence")]
+                evidence: context
+                    .params
+                    .block_evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.tile(tile))
+                    .filter(|evidence| evidence.wants_blocks()),
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
                 warp_param_bank: &mut self.warp_param_bank,
+                ibc_local,
                 core: context.core,
                 temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
                 order_hints: temporal_context.order_hint_mv_context(),
@@ -756,14 +918,11 @@ pub(super) struct ReconRowEntry {
 pub(super) enum EntryState {
     Intra(crate::pipeline::general_intra::GeneralIntraReconCommand),
     Slot(u32),
+    OutOfFrame,
     Spent,
 }
 
 /// A non-intra leaf's parse output or its resolved reconstruction command.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "nearly every slot is an inter command; boxing it costs an allocation per leaf"
-)]
 pub(super) enum LeafSlot {
     PendingInter(deferred_recon::PendingInterCommand),
     PendingIntrabc(PendingIntrabcBlock),
@@ -780,14 +939,14 @@ impl ReconRowEntry {
     fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get(index as usize),
-            EntryState::Intra(_) | EntryState::Spent => None,
+            EntryState::Intra(_) | EntryState::OutOfFrame | EntryState::Spent => None,
         }
     }
 
     pub(super) fn slot_mut<'a>(&self, slots: &'a mut [LeafSlot]) -> Option<&'a mut LeafSlot> {
         match self.state {
             EntryState::Slot(index) => slots.get_mut(index as usize),
-            EntryState::Intra(_) | EntryState::Spent => None,
+            EntryState::Intra(_) | EntryState::OutOfFrame | EntryState::Spent => None,
         }
     }
 
@@ -856,7 +1015,7 @@ impl ReconRowEntry {
             mi_cols,
             current_order_hint,
             [None, None],
-            [Mv::ZERO; 2],
+            [MotionVector::ZERO; 2],
             [None, None],
         ))
     }
@@ -867,6 +1026,8 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
     /// § 5.20.3.1 `AllowExtraIBCRange` of the superblock.
     pub(super) allow_extra_ibc_range: bool,
+    /// Whether the superblock's § 5.20.2.1 `bru_mode` is `BRU_INACTIVE`.
+    pub(super) bru_inactive: bool,
 }
 
 impl ReconSuperblock {
@@ -875,11 +1036,17 @@ impl ReconSuperblock {
             origin,
             entries,
             allow_extra_ibc_range: false,
+            bru_inactive: false,
         })
     }
 
     const fn with_allow_extra_ibc_range(mut self, allow: bool) -> Self {
         self.allow_extra_ibc_range = allow;
+        self
+    }
+
+    const fn with_bru_inactive(mut self, bru_inactive: bool) -> Self {
+        self.bru_inactive = bru_inactive;
         self
     }
 }
@@ -899,6 +1066,10 @@ pub(super) struct ReconRow {
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// The unit's deblock and tx-skip records, published by its resolve.
     pub(super) filter_records: TileFilterRecords,
+    /// Whether this unit covers an entire superblock row of its tile.
+    pub(super) full_sb_row: bool,
+    /// Last superblock index in `superblocks` that contains an IntraBC leaf.
+    pub(super) last_intrabc_sb: Option<usize>,
     /// Whether the prepass derived the entire unit's motion list into
     /// `temporal` for the in-order commit to fold.
     pub(super) motion_folded: bool,
@@ -906,6 +1077,16 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
+    /// Exclusive superblock index bound requiring local IntraBC tracking.
+    #[inline]
+    pub(super) fn local_ibc_sb_end(&self) -> usize {
+        if self.full_sb_row {
+            self.last_intrabc_sb.map_or(0, |last| last + 1)
+        } else {
+            self.superblocks.len()
+        }
+    }
+
     /// Publishes the flags of the unit's luma-tree leaves onto `grid`, in leaf
     /// order, as the parser published them on its own grid.
     /// Each inter command takes its leaf index in `grid`.
@@ -1087,7 +1268,7 @@ fn superblock_coefficient_capacity(sb_h4: usize, chroma: ChromaFormatIdc) -> Res
     let luma = side
         .checked_mul(side)
         .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-    let (sx, sy) = chroma_subsampling(chroma);
+    let (sx, sy) = chroma.subsampling();
     let chroma = if chroma == ChromaFormatIdc::Monochrome {
         0
     } else {
@@ -1103,6 +1284,7 @@ struct ReadyReconRow<T: ReconSample> {
     row: ReconRow,
     tile_offset: ByteOffset,
     surface: Option<splot_recon::OwnedFrameRect<T>>,
+    surface_written: bool,
     bounds: row_gate::RowReferenceBounds,
 }
 
@@ -1217,15 +1399,12 @@ fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRe
 }
 
 #[cfg(not(debug_assertions))]
-#[expect(
-    clippy::inline_always,
-    reason = "empty in release; inlining removes the call the poison check costs"
-)]
 #[inline(always)]
 fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
-#[allow(clippy::too_many_arguments)]
-fn precompute_recon_row<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
@@ -1245,9 +1424,10 @@ fn precompute_recon_row<T: ReconSample>(
     let Some(surface) = ready.surface.as_mut() else {
         return ready;
     };
-    let mut surface = mc::WorkspaceSink::OwnedRect(surface);
-    ready.row = precompute_recon_row_on_surface(
-        ready.row,
+    let mut surface = CurrentFrameSurface::OwnedRect(surface);
+    ready.surface_written = precompute_recon_row_on_surface(
+        backend,
+        &mut ready.row,
         ready.tile_offset,
         &mut surface,
         scratch,
@@ -1276,11 +1456,12 @@ fn precompute_recon_row<T: ReconSample>(
 /// entry precomputed past a skipped one would land writes that overlap it
 /// (mixed-region chroma residual) before it instead of after, reading
 /// prepublish samples as its residual base.
-#[allow(clippy::too_many_arguments)]
-fn precompute_recon_row_on_surface<T: ReconSample>(
-    mut row: ReconRow,
+#[expect(clippy::too_many_arguments)]
+fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    row: &mut ReconRow,
     tile_offset: ByteOffset,
-    surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
+    surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
     temporal_context: &TemporalMvContext,
@@ -1295,10 +1476,11 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-) -> ReconRow {
+) -> bool {
     if row.has_terminal_error() {
-        return row;
+        return false;
     }
+    let mut surface_written = false;
     let info = surface.info();
     let shared = deferred_recon::ReconShared {
         tile_offset,
@@ -1361,6 +1543,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     Some(ReconCommandMut::Inter(command)) => {
                         let start = row.temporal.len();
                         let result = scratch.derive_motion_logged(
+                            backend,
                             command,
                             surface,
                             &mut row.temporal,
@@ -1392,8 +1575,10 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 continue;
             };
             let start = row.temporal.len();
+            surface_written = true;
             let result = {
                 scratch.reconstruct(
+                    backend,
                     command,
                     surface,
                     block_decoded,
@@ -1412,7 +1597,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         }
     }
     row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-    row
+    surface_written
 }
 
 /// One tile's units after the entropy pass, owned so the § 7.12 resolve pass
@@ -1899,7 +2084,7 @@ pub(crate) fn publish_tile_geometry(
 
 impl<'payload> TileParser<'payload> {
     /// Opens tile `index` of a scheduled frame of `tiles` tiles.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn scheduled(
         tile: &mut DecodeTileWorkUnit,
         tile_bytes: &'payload [u8],
@@ -2002,7 +2187,7 @@ fn reset_tile_block_decoded(
     mi_col_end: usize,
     mi_row_end: usize,
 ) -> Result<()> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+    let (subsampling_x, subsampling_y) = chroma.subsampling();
     state
         .reset(
             if chroma == ChromaFormatIdc::Monochrome {
@@ -2106,8 +2291,9 @@ pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn decode_tiles<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn decode_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     payload: &[u8],
@@ -2198,7 +2384,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
             parse_state,
             NeighbourGridMode::MotionAndEdges,
         )?;
-        let mut resolve_state = TileResolveState::new(sequence);
+        let mut resolve_state = TileResolveState::new(
+            sequence,
+            context.core,
+            tile_mi_rows.clone(),
+            tile_mi_cols.clone(),
+            sb_h4,
+        );
         let mut commit = TileCommit::direct(
             ordered,
             workspace,
@@ -2207,6 +2399,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             core::mem::take(frame_filter_records),
         );
         admission::run_ordinary_tile(
+            backend,
             &mut parser,
             tile,
             &mut resolve_state,

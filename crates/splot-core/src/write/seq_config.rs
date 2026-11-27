@@ -25,8 +25,7 @@
 //! position exactly. The top-level `write_sequence_header` composes these writers
 //! with the filter/tile configs in § 5.4.1 read order.
 //!
-//! This module is additive: it depends on the model/parser read-only and serializes a
-//! parsed config back to bits via [`BitWriter`]. The universal contract is semantic
+//! Serializes a parsed config back to bits via [`BitWriter`]. The universal contract is semantic
 //! `read(write(x)) == x` for every model the parser can produce, e.g.
 //! `parse_sequence_partition_config(write_sequence_partition_config(c, ..), ..) == c`.
 //!

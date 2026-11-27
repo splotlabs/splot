@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use super::*;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{CoreSeqRestorationView, LrGeometry, parse_lr_params_for_inter};

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::*;
 
 fn mode_index(value: usize) -> ModeIndex {
@@ -37,7 +35,7 @@ fn intra_y_mode_encodes_the_complete_thirteen_mode_domain() {
     assert_eq!(modes[4].mode_to_angle(), Some(135));
     assert_eq!(
         modes[10].class(),
-        IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothVertical)
+        IntraYModeClass::Smooth(IntraSmoothMode::SmoothVertical)
     );
     assert_eq!(modes[12].class(), IntraYModeClass::Paeth);
 }

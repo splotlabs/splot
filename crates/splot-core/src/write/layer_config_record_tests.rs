@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -260,7 +259,7 @@ mod tests {
         let rep = info.xlayer_info.rep_info.unwrap();
         assert_eq!(rep.max_pic_width, 1920);
         assert_eq!(rep.format_info.unwrap().bit_depth_idc, 10);
-        assert_eq!(rep.cropping_window.unwrap().bottom_offset, 5);
+        assert_eq!(rep.cropping_window.unwrap().bottom, 5);
     }
 
     /// A local LCR whose xlayer_info carries color info and a two-layer embedded map (bits 0 and 1),

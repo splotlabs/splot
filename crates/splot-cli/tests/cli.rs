@@ -4,7 +4,7 @@
 //! End-to-end CLI tests: run the built `splot` binary against the committed
 //! fixtures in `tests/fixtures/` and assert on exit codes and output.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 mod common;
 use common::{splot, temp_input};
@@ -527,6 +527,25 @@ fn inspect_json_surfaces_operating_point_set() {
     assert_eq!(view["ops_id"], 0);
     assert_eq!(view["ops_cnt"], 1);
     assert_eq!(view["payload_count"], 1);
+}
+
+#[test]
+fn inspect_json_lists_each_atlas_mode_and_its_segment_labels() {
+    for mode in 0..=4 {
+        let path = common::conformance_vector(&format!("syn-atlas-mode-{mode}.obu"));
+        let records = inspect_json(&path);
+        let atlas = records
+            .as_array()
+            .expect("OBU records")
+            .iter()
+            .find_map(|record| record.get("atlas_segment"))
+            .expect("atlas segment OBU");
+        assert_eq!(atlas["mode"], mode);
+        assert_eq!(atlas["atlas_id"], 5);
+        assert_eq!(atlas["explicit_segment_ids"], true);
+        let labels = if mode == 2 { vec![41] } else { vec![41, 77] };
+        assert_eq!(atlas["segment_ids"], serde_json::json!(labels));
+    }
 }
 
 #[test]

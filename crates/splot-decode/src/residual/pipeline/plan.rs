@@ -197,7 +197,7 @@ fn chroma_reconstruction(
 }
 
 impl ResidualPlanePlan {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn new(
         block_ctx: BlockCtx,
         plane_id: PlaneId,
@@ -432,7 +432,6 @@ fn push_chroma_plans<E: From<ResidualPlanError>>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
 
     use super::*;
     use crate::tile::block_context::ChromaSampling;

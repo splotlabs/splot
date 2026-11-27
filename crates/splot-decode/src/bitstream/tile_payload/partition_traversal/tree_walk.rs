@@ -81,7 +81,7 @@ pub(crate) fn decode_block_frontier(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per leaf")]
+#[expect(clippy::inline_always, reason = "measured: once per leaf")]
 #[inline(always)]
 pub(crate) fn decode_block_part(
     call: TilePartitionCall,
@@ -155,6 +155,26 @@ pub(crate) trait LeafDecoder<'payload> {
         frontier: &DecodeBlockFrontier,
         neighbours: LeafNeighbours<'_>,
     ) -> Result<(GeneralIntraLeafMode, Self::Command), Self::Error>;
+
+    /// Whether the decoder tracks out-of-frame partition nodes (`r >= MiRows ||
+    /// c >= MiCols`).
+    #[inline]
+    fn wants_out_of_frame_partitions(&self) -> bool {
+        false
+    }
+
+    /// Notifies the decoder when an out-of-frame partition node terminates
+    /// (`r >= MiRows || c >= MiCols`), for § 5.20.3.1 `IBCCoded` and IBC
+    /// buffer updates.
+    fn on_out_of_frame_partition(&mut self, _publication: DecodedLeafPublication) {}
+
+    #[cfg(feature = "block-evidence")]
+    fn evidence(&self, _tile: usize) -> Option<crate::block_evidence::BlockEvidenceTile<'_>> {
+        None
+    }
+
+    #[cfg(feature = "block-evidence")]
+    fn set_evidence_parent(&mut self, _parent: Option<TilePartitionCall>) {}
 }
 
 /// A closure as the leaf syntax of both BRU states.
@@ -203,6 +223,8 @@ struct LeafHooks<'h, L, P> {
     mi_size_state: &'h mut TileMiSizeState,
     on_leaf: &'h mut L,
     on_published: &'h mut P,
+    #[cfg(feature = "block-evidence")]
+    evidence_parent: Option<TilePartitionCall>,
 }
 
 /// Tile-slot storage lent to partition traversal and returned after record merging.
@@ -238,16 +260,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
 
     pub(crate) const fn sb_mask(&self) -> usize {
         self.walker.sb_mask
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new(
-        work_unit: &DecodeTileWorkUnit,
-        frame: TilePartitionFrameFacts,
-        limits: DecodeLimits,
-        storage: TileTraversalStorage,
-    ) -> Result<Self, TilePartitionTraversalError> {
-        Self::new_with_bytes(work_unit, work_unit.tile_bytes(), frame, limits, storage)
     }
 
     pub(crate) fn new_with_bytes(
@@ -333,7 +345,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let sb_row = self.next_sb_row;
         let sb_col = self.next_sb_col;
         if sb_col == tile_bounds.mi_col_start {
-            mi_size_state.enter_sb_row(sb_row);
+            mi_size_state.enter_sb_row();
         }
         mi_size_state
             .check_extent(sb_row, sb_col, self.sb_size4, self.sb_size4)
@@ -343,6 +355,8 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             mi_size_state,
             on_leaf,
             on_published,
+            #[cfg(feature = "block-evidence")]
+            evidence_parent: None,
         };
         if hooks.work_unit.bru_tile_active().is_some() {
             self.walker.bru_mode = superblock_bru_mode(hooks.work_unit, &mut self.walker.symbols)
@@ -417,6 +431,15 @@ where
             .map_err(TilePartitionTraversalError::from)?;
     }
     if !walker.sb_inside_frame && !call_in_frame(frame, call) {
+        if hooks.on_leaf.wants_out_of_frame_partitions() {
+            hooks
+                .on_leaf
+                .on_out_of_frame_partition(DecodedLeafPublication::new(
+                    call,
+                    call.b_size,
+                    walker.sb_mask,
+                ));
+        }
         return Ok(());
     }
     let chroma_ref = call.chroma_ref(walker.chroma_ref);
@@ -464,6 +487,18 @@ where
                 hooks.work_unit.cdf_mut().tile_cdfs_mut(),
                 &mut walker.symbols,
             )?;
+            #[cfg(feature = "block-evidence")]
+            let previous_parent = hooks.evidence_parent;
+            #[cfg(feature = "block-evidence")]
+            let tracing = if let Some(evidence) =
+                hooks.on_leaf.evidence(hooks.work_unit.tile_num() as usize)
+            {
+                evidence.record_partition(call, previous_parent, partition);
+                hooks.evidence_parent = Some(call);
+                true
+            } else {
+                false
+            };
             let extended_chroma = visit_partition_children(
                 &mut |child, inherited| {
                     walker.chroma_ref = inherited;
@@ -477,7 +512,7 @@ where
                 chroma_offset,
                 using_extended_sdp,
             )?;
-            return match extended_chroma {
+            let detached = match extended_chroma {
                 Some(chroma) => walk_detached::<_, _, ACTIVE>(
                     frame,
                     walker,
@@ -487,6 +522,11 @@ where
                 ),
                 None => Ok(()),
             };
+            #[cfg(feature = "block-evidence")]
+            if tracing {
+                hooks.evidence_parent = previous_parent;
+            }
+            return detached;
         }
         let chroma_offset = updated_chroma_offset(call, PartitionType::None, call.b_size, frame)?;
         (call, chroma_offset)
@@ -496,6 +536,11 @@ where
     let frontier = decode_block_frontier(call, chroma_ref, frame, sub_size, chroma_offset, part)
         .with_bru_active(ACTIVE);
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
+    #[cfg(feature = "block-evidence")]
+    if let Some(evidence) = hooks.on_leaf.evidence(hooks.work_unit.tile_num() as usize) {
+        evidence.record_terminal_partition(call, hooks.evidence_parent);
+        hooks.on_leaf.set_evidence_parent(hooks.evidence_parent);
+    }
     let (leaf_mode, command) = hooks
         .on_leaf
         .decode_leaf::<ACTIVE>(
@@ -540,7 +585,7 @@ where
 
 /// Hands `sink` the children of `call` in syntax order and returns the
 /// extended-SDP chroma block decoded after its luma tree.
-#[allow(
+#[expect(
     clippy::inline_always,
     clippy::too_many_arguments,
     reason = "measured: the decoder walk recurses through each push"
@@ -587,7 +632,7 @@ impl TreeWalker<'_> {
 
     /// Reads the § 5.20.3.2 partition of `call`, then the `CflAllowedInSdp`
     /// state it sets.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: keeps the call in registers"
     )]
@@ -746,7 +791,6 @@ pub(crate) fn is_intra_sdp_shared_root(
 
 #[cfg(test)]
 mod row_cursor_tests {
-    #![allow(clippy::unwrap_used)]
 
     const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
 
@@ -817,9 +861,14 @@ mod row_cursor_tests {
             let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
             let mut states = parser_states(frame);
             let mut superblocks = Vec::new();
-            let mut cursor =
-                GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT, storage)
-                    .unwrap();
+            let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
+                &work,
+                &payload,
+                frame,
+                DecodeLimits::DEFAULT,
+                storage,
+            )
+            .unwrap();
             assert!(cursor.walker.intra_facts.grid_mut().cell(0, 0).is_none());
             loop {
                 let superblock = cursor
@@ -850,8 +899,9 @@ mod row_cursor_tests {
         let frame = frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -890,8 +940,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -942,8 +993,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -986,8 +1038,9 @@ mod row_cursor_tests {
         let frame = sdp_frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut cursor = GeneralIntraPartitionTreeCursor::new(
+        let mut cursor = GeneralIntraPartitionTreeCursor::new_with_bytes(
             &work,
+            &payload,
             frame,
             DecodeLimits::DEFAULT,
             TileTraversalStorage::default(),
@@ -1144,7 +1197,7 @@ pub(crate) fn extended_sdp_allowed_for_child(
 
 /// Reads the § 5.20.3.1 `region_type` of `call` when it codes one and
 /// applies it; returns whether the call starts an extended-SDP luma tree.
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(super) fn read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
@@ -1185,7 +1238,7 @@ fn read_region_type(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(crate) fn should_read_extended_sdp_region_type(
     frame: &TilePartitionFrameFacts,
@@ -1263,7 +1316,7 @@ pub(crate) struct SdpPartitionState {
 }
 
 impl SdpPartitionState {
-    #[allow(clippy::inline_always, reason = "measured: once per partition node")]
+    #[expect(clippy::inline_always, reason = "measured: once per partition node")]
     #[inline(always)]
     pub(crate) fn record_partition(
         &mut self,
@@ -1345,7 +1398,7 @@ impl SdpPartitionState {
     }
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the decoder walk recurses through each push"
 )]

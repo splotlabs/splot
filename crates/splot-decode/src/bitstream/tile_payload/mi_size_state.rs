@@ -175,14 +175,14 @@ impl TileMiSizeState {
     }
 
     /// Starts a superblock row: clears the left context lines.
-    pub(crate) fn enter_sb_row(&mut self, _sb_row: usize) {
+    pub(crate) fn enter_sb_row(&mut self) {
         self.left = [[CLEAR_PARTITION_CONTEXT; SB_ROW_SPAN]; PLANE_COUNT];
         self.palettes.clear();
     }
 
     /// The facts of the luma leaf on the left line at row `r`, `NONE` for an
     /// inter leaf or a row the superblock row has not written.
-    #[allow(clippy::inline_always, reason = "measured: per-leaf edge reads")]
+    #[expect(clippy::inline_always, reason = "measured: per-leaf edge reads")]
     #[inline(always)]
     fn left_luma(&self, r: usize) -> IntraFacts {
         let i = r % SB_ROW_SPAN;
@@ -194,7 +194,7 @@ impl TileMiSizeState {
     }
 
     /// [`Self::left_luma`] on the above line at tile column `col`.
-    #[allow(clippy::inline_always, reason = "measured: per-leaf edge reads")]
+    #[expect(clippy::inline_always, reason = "measured: per-leaf edge reads")]
     #[inline(always)]
     fn above_luma(&self, col: usize) -> IntraFacts {
         match (self.above.get(col), self.above_facts.get(col)) {
@@ -206,7 +206,7 @@ impl TileMiSizeState {
     /// The four § 8.3.2 `get_joint_mode` / `NPos` probes of the luma block at
     /// `(r, c)`: left-bottom, above-right, left-top and above-left, a
     /// position outside the tile reading as absent.
-    #[allow(clippy::inline_always, reason = "measured: once per intra luma leaf")]
+    #[expect(clippy::inline_always, reason = "measured: once per intra luma leaf")]
     #[inline(always)]
     pub(crate) fn intra_neighbours(
         &self,
@@ -312,7 +312,7 @@ impl TileMiSizeState {
 
     /// Writes a luma leaf's MiSizes and, for an intra or intra block copy
     /// leaf, its `facts` with `palette`.
-    #[allow(clippy::inline_always, reason = "measured: once per decoded leaf")]
+    #[expect(clippy::inline_always, reason = "measured: once per decoded leaf")]
     #[inline(always)]
     pub(crate) fn update_luma_block(
         &mut self,
@@ -418,7 +418,7 @@ impl TileMiSizeState {
 
     /// Writes one plane's entries of a block, `flags` beside its MiSizes,
     /// and returns the left and above line ranges it covered.
-    #[allow(clippy::inline_always, reason = "measured: two calls per decoded leaf")]
+    #[expect(clippy::inline_always, reason = "measured: two calls per decoded leaf")]
     #[inline(always)]
     fn update_plane_block(
         &mut self,

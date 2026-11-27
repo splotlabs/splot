@@ -4,14 +4,16 @@
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BilinearOverlapCarry, CompoundCells, OptflowScratch, REFINEMV_SEARCH_AREA, WindowSample,
-    derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
+    derive_optflow_mv_delta_8x8_strided_into_with, derive_optflow_mv_deltas_into_with,
 };
 
 use super::blend::{ImplicitMaskBlend, blend_implicit_mask_region};
 use super::*;
 
 pub(super) trait CompoundAverageOutput: ReconSample {
-    fn predict_second<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
+        backend: B,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -21,13 +23,11 @@ pub(super) trait CompoundAverageOutput: ReconSample {
         output_stride: usize,
     ) -> splot_recon::Result<()>;
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::inline_always,
-        reason = "per-cell grid hot path"
-    )]
+    #[expect(clippy::too_many_arguments)]
+    #[expect(clippy::inline_always, reason = "per-cell grid hot path")]
     #[inline(always)]
-    fn predict_fast<T: ReconSample>(
+    fn predict_fast<B: splot_core::simd::SimdBackend, T: ReconSample>(
+        backend: B,
         reference0: &ReferencePlaneView<'_, T>,
         params0: &SubpelPredictParams,
         reference1: &ReferencePlaneView<'_, T>,
@@ -36,7 +36,8 @@ pub(super) trait CompoundAverageOutput: ReconSample {
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<bool> {
-        subpel_predict_block_compound_average_fast_validated_strided_into(
+        subpel_predict_block_compound_average_fast_validated_strided_into_with(
+            backend,
             reference0,
             params0,
             reference1,
@@ -49,7 +50,8 @@ pub(super) trait CompoundAverageOutput: ReconSample {
 }
 
 impl CompoundAverageOutput for u16 {
-    fn predict_second<T: ReconSample>(
+    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
+        backend: B,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -58,7 +60,8 @@ impl CompoundAverageOutput for u16 {
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<()> {
-        subpel_predict_block_compound_average_strided_into(
+        subpel_predict_block_compound_average_strided_into_with(
+            backend,
             reference,
             params,
             pred0,
@@ -71,7 +74,8 @@ impl CompoundAverageOutput for u16 {
 }
 
 impl CompoundAverageOutput for u8 {
-    fn predict_second<T: ReconSample>(
+    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
+        backend: B,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -80,7 +84,8 @@ impl CompoundAverageOutput for u8 {
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<()> {
-        subpel_predict_block_compound_average_strided_into_u8(
+        subpel_predict_block_compound_average_strided_into_u8_with(
+            backend,
             reference,
             params,
             pred0,
@@ -94,12 +99,12 @@ impl CompoundAverageOutput for u8 {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct MotionCell {
-    base_mvs: [Mv; 2],
+    base_mvs: [MotionVector; 2],
     mvs: [[i32; 2]; 2],
 }
 
 impl MotionCell {
-    pub(super) fn from_optflow(base_mvs: [Mv; 2], delta: [[i32; 2]; 2]) -> Self {
+    pub(super) fn from_optflow(base_mvs: [MotionVector; 2], delta: [[i32; 2]; 2]) -> Self {
         let mut refined = [[0i32; 2]; 2];
         for reference in 0..2 {
             let base = [base_mvs[reference].row, base_mvs[reference].col];
@@ -114,7 +119,7 @@ impl MotionCell {
         }
     }
 
-    pub(super) fn from_refinemv(base_mvs: [Mv; 2]) -> Self {
+    pub(super) fn from_refinemv(base_mvs: [MotionVector; 2]) -> Self {
         let mvs = core::array::from_fn(|reference| {
             [base_mvs[reference].row * 2, base_mvs[reference].col * 2]
         });
@@ -126,13 +131,15 @@ impl MotionCell {
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
 /// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
 const MAX_MOTION_GRID_SUBPEL_INTERMEDIATE: usize = 16 * (16 + 7);
+type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
+type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
 
 /// A grid plane's cell program and the scratch of the cells it declines,
 /// kept by the caller so that a plane neither zeroes nor allocates them.
 struct GridProgram {
     cells: CompoundCells,
-    pred: [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate: [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred: Pred,
+    intermediate: Intermediate,
 }
 
 impl Default for GridProgram {
@@ -154,7 +161,7 @@ pub(crate) struct CompoundMotionGrid {
     /// The TIP plane pass's cells, which it lends back to the caller's scratch.
     cells: Vec<MotionCell>,
     /// The § 7.11.3 candidates of each TIP unit, whose refine-MV area clips it.
-    refinemv_candidates: Vec<[Mv; 2]>,
+    refinemv_candidates: Vec<[MotionVector; 2]>,
     /// Whether some row holds two adjacent equal full-pel cells, the
     /// precondition of every merged run.
     fullpel_runs: bool,
@@ -180,12 +187,12 @@ impl CompoundMotionGrid {
     }
 }
 
-fn stored_mvs(cell: MotionCell) -> [Mv; 2] {
+fn stored_mvs(cell: MotionCell) -> [MotionVector; 2] {
     core::array::from_fn(|reference| {
         let base = cell.base_mvs[reference];
         let row_delta = cell.mvs[reference][0] - base.row * 2;
         let col_delta = cell.mvs[reference][1] - base.col * 2;
-        Mv {
+        MotionVector {
             row: base.row + round2_signed_i32(row_delta, 1),
             col: base.col + round2_signed_i32(col_delta, 1),
         }
@@ -200,8 +207,9 @@ fn subblock_reference_area_size(
     (plane != PlaneId::Y || (width == 8 && height == 8)).then_some((width, height))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn tip_optflow_motion_cell_strided(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn tip_optflow_motion_cell_strided<B: splot_core::simd::SimdBackend>(
+    backend: B,
     pred0: &[u16],
     start0: usize,
     pred1: &[u16],
@@ -210,7 +218,7 @@ pub(super) fn tip_optflow_motion_cell_strided(
     bit_depth: splot_recon::BitDepth,
     distances: [i32; 2],
     sad_threshold: Option<u32>,
-    base_mvs: [Mv; 2],
+    base_mvs: [MotionVector; 2],
 ) -> Result<MotionCell> {
     if sad_threshold.is_some_and(|threshold| {
         let rows = (0..8).map(|row| {
@@ -218,13 +226,13 @@ pub(super) fn tip_optflow_motion_cell_strided(
             let (left, right) = (pred0.get(at(start0)), pred1.get(at(start1)));
             (left.unwrap_or_default(), right.unwrap_or_default())
         });
-        let sad = super::refinemv::sad_rows::<8>(rows, u16::MAX);
+        let sad = super::refinemv::sad_rows::<_, 8>(backend, rows, u16::MAX);
         sad >> bit_depth.bits().saturating_sub(8) < threshold
     }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
     }
-    let delta = derive_optflow_mv_delta_8x8_strided_into(
-        pred0, start0, pred1, start1, stride, bit_depth, distances,
+    let delta = derive_optflow_mv_delta_8x8_strided_into_with(
+        backend, pred0, start0, pred1, start1, stride, bit_depth, distances,
     )?;
     Ok(MotionCell::from_optflow(base_mvs, delta))
 }
@@ -234,10 +242,11 @@ pub(super) fn tip_optflow_motion_cell_strided(
 /// not take: an unsearched unit, or one whose § 7.13.3.6 search ends at once
 /// at its candidates (out of range). Its two initial predictions and
 /// § 7.13.3.9 delta stay on the stack.
-pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+pub(super) fn tip_unit_motion_cell<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'a, T>,
-    (rect, mvs): (McBlockRect, [Mv; 2]),
+    (rect, mvs): (McBlockRect, [MotionVector; 2]),
     luma: &mut [LumaReference<'a, T>; 2],
 ) -> Result<MotionCell> {
     let (Some(distances), 8, 8) = (block.optflow_distances, rect.luma_w, rect.luma_h) else {
@@ -245,7 +254,8 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     };
     let mut predictions = [[[0u16; 8]; 8]; 2];
     for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
-        initial_luma_prediction::<_, 0>(
+        initial_luma_prediction::<_, _, 0>(
+            backend,
             luma,
             rect,
             mvs[reference],
@@ -257,7 +267,13 @@ pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
     }
     let bit_depth = sink.info().bit_depth();
     let threshold = block.optflow_sad_threshold;
-    let delta = splot_recon::optflow_unit_8x8_u16(predictions, bit_depth, distances, threshold)?;
+    let delta = splot_recon::optflow_unit_8x8_u16_with(
+        backend,
+        predictions,
+        bit_depth,
+        distances,
+        threshold,
+    )?;
     Ok(delta.map_or_else(
         || MotionCell::from_refinemv(mvs),
         |delta| MotionCell::from_optflow(mvs, delta),
@@ -351,12 +367,19 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
 /// Predicts the bilinear refine-MV or optical-flow luma area `rect`, `INSET`
 /// samples in from each edge. `tip_centre` holds the carry of the 12x12 TIP
 /// refine-MV centre, which then takes the dedicated kernel when it applies.
-pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn initial_luma_prediction<
+    'a,
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+    const INSET: usize,
+>(
+    backend: B,
     luma: &mut LumaReference<'a, T>,
     rect: McBlockRect,
-    mv: Mv,
+    mv: MotionVector,
     interp: InterpolationFilter,
-    refinemv_area: Option<(Mv, usize, usize)>,
+    refinemv_area: Option<(MotionVector, usize, usize)>,
     tip_centre: Option<&mut BilinearOverlapCarry<'a, T>>,
     output: &mut [u16],
 ) -> Result<()> {
@@ -405,14 +428,22 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
             actual: available,
         })?;
     if let Some(carry) = tip_centre
-        && subpel_predict_12x12_bilinear_overlap_into(view, &params, output, rect.luma_w, carry)?
+        && subpel_predict_12x12_bilinear_overlap_into_with(
+            backend,
+            view,
+            &params,
+            output,
+            rect.luma_w,
+            carry,
+        )?
     {
         return Ok(());
     }
-    if INSET == 0 && super::refinemv::bilinear_search_window(view, &params, output) {
+    if INSET == 0 && super::refinemv::bilinear_search_window(backend, view, &params, output) {
         return Ok(());
     }
-    subpel_predict_block_strided_into(view, &params, output, rect.luma_w).map_err(Into::into)
+    subpel_predict_block_strided_into_with(backend, view, &params, output, rect.luma_w)
+        .map_err(Into::into)
 }
 
 /// Whether the § 7.13.3.6 search of the eight-bit refine-MV unit `rect` ends
@@ -421,10 +452,11 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
 /// [`search_windows`] builds holds the reference samples unclipped.
 /// `None` when a candidate is not full-pel or the byte kernel would not take
 /// its window.
-pub(super) fn fullpel_center_ends_search<T: ReconSample>(
+pub(super) fn fullpel_center_ends_search<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
 ) -> Result<Option<bool>> {
     let [width, height] = [rect.luma_w, rect.luma_h];
     if !super::refinemv::fullpel_candidates(candidates)
@@ -460,7 +492,8 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
         return Ok(None);
     };
     let (sad_w, sad_h) = (width - 4, height - 4);
-    let Some(sad) = splot_recon::refinemv_area_sad_u8([first, second], corners, [sad_w, sad_h])
+    let Some(sad) =
+        splot_recon::refinemv_area_sad_u8_with(backend, [first, second], corners, [sad_w, sad_h])
     else {
         return Ok(None);
     };
@@ -473,10 +506,11 @@ pub(super) fn fullpel_center_ends_search<T: ReconSample>(
 /// for every searching block (§ 5.20.7.17 `is_refinemv_allowed_reference`,
 /// TIP `search_refinemv`), so a scaled one or a window the kernel rejects
 /// is a state error.
-pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
+pub(super) fn search_windows<B: splot_core::simd::SimdBackend, T: ReconSample, P: WindowSample>(
+    backend: B,
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
     allow_center: bool,
     windows: [&mut [P; REFINEMV_SEARCH_AREA]; 2],
 ) -> Result<(i32, i32)> {
@@ -506,7 +540,8 @@ pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
     let [Some((first, first_params)), Some((second, second_params))] = found else {
         return Err(crate::DecodeHeaderStateError::InvalidBlockGeometry.into());
     };
-    splot_recon::refinemv_search_windows(
+    splot_recon::refinemv_search_windows_with(
+        backend,
         [first, second],
         [&first_params, &second_params],
         allow_center,
@@ -520,17 +555,19 @@ type GridPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O],
 
 /// Runs a program of the uniform cells of a grid plane (or U and V) into
 /// each plane and predicts each cell it declines through [`predict_grid_cell`].
-fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
+fn run_cell_program<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
+    backend: B,
     program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
-    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred_scratch: &mut Pred,
+    intermediate_scratch: &mut Intermediate,
 ) -> Result<()> {
     if program.is_empty() {
         return Ok(());
     }
-    let written = splot_recon::subpel_compound_cells(
+    let written = splot_recon::subpel_compound_cells_with(
+        backend,
         planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
             Some((*views, &mut **output, *stride))
@@ -557,6 +594,7 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
                 unscaled_cell_params(placement, [size; 2], (grid.bit_depth, interp))
             });
             predict_grid_cell(
+                backend,
                 views,
                 (&params, true, [col, row, size, size]),
                 grid,
@@ -574,12 +612,12 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
 /// whether its weights are uniform: each start is its 1/16-sample position,
 /// and each refine-MV area starts at the candidate's integer sample (as in
 /// `unscaled_area_bounds`).
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn unscaled_cell_placements<T: ReconSample>(
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
-    candidates: [Mv; 2],
+    candidates: [MotionVector; 2],
     [col, row, width, height]: [usize; 4],
     sub: (u32, u32),
     check_uniform: bool,
@@ -600,7 +638,7 @@ fn unscaled_cell_placements<T: ReconSample>(
 
 /// Whether both placed `width` x `height` cells lie inside the frame, so
 /// that § 7.13.3.15 weighs them uniformly.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn placements_inside(
     placements: &[CellPlacement; 2],
@@ -619,7 +657,7 @@ fn placements_inside(
 
 /// The unscaled 1/1024-sample start of a prescaled MV from a cell's
 /// 1/16-sample origin.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_start(
     [x16, y16]: [i32; 2],
@@ -637,12 +675,12 @@ type CellUnit = ([i32; 2], [usize; 2], (u32, u32));
 
 /// One reference's placement of [`unscaled_cell_placements`] for the cell at
 /// 1/16-sample `[x16, y16]`.
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_placement(
     scaling: &PlaneScaling,
     [mv_row, mv_col]: [i32; 2],
-    candidate: Mv,
+    candidate: MotionVector,
     ([x16, y16], [width, height], (sub_x, sub_y)): CellUnit,
 ) -> CellPlacement {
     let bounds = super::refinemv::unscaled_area_bounds(
@@ -659,7 +697,7 @@ fn unscaled_cell_placement(
 }
 
 /// The unscaled parameters of a [`CellPlacement`].
-#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[expect(clippy::inline_always, reason = "per-cell grid hot path")]
 #[inline(always)]
 fn unscaled_cell_params(
     ([start_x, start_y], [first_x, first_y, last_x, last_y]): CellPlacement,
@@ -705,14 +743,16 @@ struct GridBlock<'a, 'b, T: ReconSample> {
 }
 
 /// Predicts one grid cell from `views` into `output`.
-#[allow(clippy::inline_always, reason = "per-cell motion-grid hot path")]
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::inline_always, reason = "per-cell motion-grid hot path")]
 #[inline(always)]
-fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
+fn predict_grid_cell<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
+    backend: B,
     views: &[ReferencePlaneView<'_, T>; 2],
     (params, uniform, [col, row, width, height]): GridCell<'_>,
     block: &GridBlock<'_, '_, T>,
-    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+    pred_scratch: &mut Pred,
+    intermediate_scratch: &mut Intermediate,
     output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
@@ -721,7 +761,8 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
         let [pred0, pred1] = pred_scratch;
         let preds = views.iter().zip([&mut *pred0, &mut *pred1]);
         for ((view, pred), params) in preds.zip(params) {
-            subpel_predict_block_compound_intermediate_into(
+            subpel_predict_block_compound_intermediate_into_with(
+                backend,
                 view,
                 params,
                 Some(intermediate_scratch),
@@ -731,6 +772,7 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
         }
         let (frame_w, frame_h) = block.frame;
         return Ok(blend_implicit_mask_region(
+            backend,
             [&pred0[..], &pred1[..]],
             width,
             [col, row, width, height],
@@ -752,6 +794,7 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
         scalings: prediction.scalings,
     };
     Ok(super::predict_compound_average_into(
+        backend,
         &subplane,
         params,
         block.cwp_weight,
@@ -790,7 +833,6 @@ mod run_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::super::blend::blend_nonuniform_implicit_mask;
     use super::*;
@@ -808,12 +850,18 @@ mod tests {
     #[test]
     fn stored_mvs_round_refined_sixteenth_pel_values_to_eighth_pel() {
         let cell = MotionCell {
-            base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
+            base_mvs: [
+                MotionVector { row: 5, col: -5 },
+                MotionVector { row: -5, col: 5 },
+            ],
             mvs: [[7, -7], [-7, 7]],
         };
         assert_eq!(
             stored_mvs(cell),
-            [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
+            [
+                MotionVector { row: 3, col: -3 },
+                MotionVector { row: -3, col: 3 }
+            ]
         );
     }
 
@@ -836,15 +884,18 @@ mod tests {
             });
             let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
             let mut output = vec![T::default(); w * h];
-            blend_nonuniform_implicit_mask(
-                &pred0,
-                &pred1,
-                (bit_depth, w),
-                scalings,
-                (frame_w, frame_h),
-                &mut output,
-                w,
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                blend_nonuniform_implicit_mask(
+                    backend,
+                    &pred0,
+                    &pred1,
+                    (bit_depth, w),
+                    scalings,
+                    (frame_w, frame_h),
+                    &mut output,
+                    w,
+                )
+            })
             .unwrap();
             for (index, sample) in output.iter().enumerate() {
                 let (row, col) = ((index / w) as i32, (index % w) as i32);

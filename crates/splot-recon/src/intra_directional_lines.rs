@@ -19,6 +19,7 @@ use fearless_simd::{
 };
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdFrom, u8x32};
+use splot_core::{simd::SimdBackend, with_simd};
 
 use super::{
     DR_INTERP_FILTER, DirectionalAngleBranch, IntraMiddleDirectionalAngle, directional_shift,
@@ -73,12 +74,192 @@ static IDIF_TAPS: [[i8; 4]; 32] = {
     taps
 };
 
+macro_rules! line_methods {
+    ($runner:ident, $($mode:tt)+) => {
+        simd_runner_methods! {
+            $($mode)+;
+
+            (fn select_left<P: LineSample>(
+                $runner,
+                left: &[P; 16],
+                above: &[P; 16],
+                runs: &[u16; 16],
+                along: &[u16; 16],
+            ) -> [P; 16]) simd =>
+                select_left_simd(simd, left, above, runs, along);
+
+            #[inline]
+            (fn small_lanes_u8($runner, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16]) simd =>
+                small_lanes_u8_simd(simd, lanes, last);
+
+            (fn transpose_u8(
+                $runner,
+                width: usize,
+                height: usize,
+                columns: &[u8],
+                output: &mut [u8],
+                stride: usize,
+            )) simd =>
+                transpose_tiles(simd, width, height, columns, output, stride);
+
+            #[inline]
+            (fn small_lanes_u16(
+                $runner,
+                lanes: &SmallLanes<u16>,
+                filter: LineFilter,
+                max: u16,
+                last: u16,
+            ) -> [u16; 16]) simd =>
+                small_lanes_u16(simd, lanes, filter, max, last);
+
+            (fn transpose_u16(
+                $runner,
+                width: usize,
+                height: usize,
+                columns: &[u16],
+                output: &mut [u16],
+                stride: usize,
+            )) simd =>
+                transpose_tiles_u16(simd, width, height, columns, output, stride);
+
+            #[inline]
+            (fn filter_four_tap_u8($runner, window: &[u8], taps: [i8; 4], out: &mut [u8])) simd =>
+                line_lanes(simd, window, taps, out);
+
+            #[inline(always)]
+            (fn bilinear_u16($runner, window: &[u16], weights: [u16; 2], out: &mut [u16])) simd =>
+                bilinear_lanes_u16(simd, window, weights, out);
+
+            #[inline(always)]
+            (fn four_tap_u16($runner, window: &[u16], taps: [i8; 4], max: u16, out: &mut [u16])) simd =>
+                line_lanes_u16(simd, window, taps, max, out);
+        }
+    };
+}
+
+pub(super) trait LineRunner: Copy {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    line_methods!(self, declare);
+
+    #[inline]
+    fn filter_u8(self, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = self.avx2_token() {
+            filter_u8_avx2(token, window, taps, out);
+            return;
+        }
+        self.filter_four_tap_u8(window, taps, out);
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "measured: one call per line was the line cost"
+    )]
+    #[inline(always)]
+    fn filter_u16(
+        self,
+        window: &[u16],
+        filter: LineFilter,
+        taps: [i8; 4],
+        max: u16,
+        out: &mut [u16],
+    ) {
+        if filter == LineFilter::Bilinear {
+            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
+            self.bilinear_u16(window, weights, out);
+            return;
+        }
+        self.four_tap_u16(window, taps, max, out);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct BaselineLines;
+
+#[derive(Clone, Copy)]
+pub(super) struct TypedLines<B>(pub(super) B);
+
+#[inline]
+fn select_left_simd<S: Simd, P: LineSample>(
+    simd: S,
+    left: &[P; 16],
+    above: &[P; 16],
+    runs: &[u16; 16],
+    along: &[u16; 16],
+) -> [P; 16] {
+    let mut values = [P::default(); 16];
+    let pick = simd.simd_lt_u16x16(
+        u16x16::from_slice(simd, along),
+        u16x16::from_slice(simd, runs),
+    );
+    let chosen = simd.select_u16x16(pick, P::load16(simd, left), P::load16(simd, above));
+    P::store16(simd, chosen, &mut values);
+    values
+}
+
+#[inline]
+fn small_lanes_u8_simd<S: Simd>(simd: S, lanes: &SmallLanes<u8>, last: u8) -> [u8; 16] {
+    let tap = |t: usize| {
+        let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, &lanes.taps[t][..16]));
+        simd.combine_u16x8(low, high) * u16x16::from_slice(simd, &lanes.weights[t][..16])
+    };
+    let sum = tap(0) + tap(1) + tap(2) + tap(3) + (LINE_BIAS * 128 + 64);
+    let values = simd
+        .saturating_sub_u16x16(sum >> 7, u16x16::splat(simd, LINE_BIAS))
+        .min(255);
+    let values = lanes.clamp_tail(simd, values, u16::from(last));
+    let (low, high) = simd.split_u16x16(values);
+    simd.relaxed_narrow_u16x8(low, high).into()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn filter_u8_avx2(token: fearless_simd::Avx2, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
+    let pair = |low: i8, high: i8| i16::from_le_bytes([low as u8, high as u8]);
+    line_avx2(
+        token,
+        window,
+        pair(taps[0], taps[1]),
+        pair(taps[2], taps[3]),
+        out,
+    );
+}
+
+impl LineRunner for BaselineLines {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        fearless_simd::Level::baseline().as_avx2()
+    }
+
+    line_methods!(self, baseline);
+}
+
+impl<B: SimdBackend> LineRunner for TypedLines<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.narrow().avx2_token()
+    }
+
+    line_methods!(self, typed(with_simd, self.0.narrow()));
+}
+
 /// A sample type with a directional line kernel and a column transpose.
 pub(super) trait LineSample: IntraLaneSample + Default {
     /// Filters `out.len()` samples: `out[j] = Clip1(Round2(Σ taps[t] *
     /// window[j + t], 7))` with `Clip1` to `max`, `taps` those of `filter`.
     /// `window` holds [`OVER_READ`] samples past the line.
-    fn filter(window: &[Self], filter: LineFilter, taps: [i8; 4], max: u16, out: &mut [Self]);
+    fn filter<R: LineRunner>(
+        runner: R,
+        window: &[Self],
+        filter: LineFilter,
+        taps: [i8; 4],
+        max: u16,
+        out: &mut [Self],
+    );
 
     /// Copies `out.len()` samples of `window`, which holds [`OVER_READ`]
     /// samples past them.
@@ -86,76 +267,50 @@ pub(super) trait LineSample: IntraLaneSample + Default {
 
     /// Sixteen small-block lanes: `Clip1(Round2(sum of taps[t] * weights[t], 7))`
     /// with `Clip1` to `max`, `last` where `along >= active`.
-    fn small_lanes(
+    fn small_lanes<R: LineRunner>(
+        runner: R,
         lanes: &SmallLanes<Self>,
         filter: LineFilter,
         max: u16,
         last: Self,
     ) -> [Self; 16];
 
-    /// Sixteen lanes of `width`-sample rows: `left` where the lane's column is
-    /// below its row's left run `runs`, else `above`.
-    fn select_left(
-        left: &[Self; 16],
-        above: &[Self; 16],
-        runs: &[u16; 16],
-        along: &[u16; 16],
-    ) -> [Self; 16] {
-        let mut values = [Self::default(); 16];
-        baseline_simd!(simd => {
-            let pick = simd.simd_lt_u16x16(
-                u16x16::from_slice(simd, along),
-                u16x16::from_slice(simd, runs),
-            );
-            let chosen = simd.select_u16x16(
-                pick,
-                Self::load16(simd, left),
-                Self::load16(simd, above),
-            );
-            Self::store16(simd, chosen, &mut values);
-        });
-        values
-    }
-
     /// Writes the first `width` columns of the column-major `columns` (column
     /// `c` at `c * height`) as the rows of a `height`-row block. `width` and
     /// `height` are multiples of 4; `columns` holds [`COLUMN_SLACK`] samples
     /// past its last column.
-    fn transpose(width: usize, height: usize, columns: &[Self], output: &mut [Self], stride: usize);
+    fn transpose<R: LineRunner>(
+        runner: R,
+        width: usize,
+        height: usize,
+        columns: &[Self],
+        output: &mut [Self],
+        stride: usize,
+    );
 }
 
 impl LineSample for u8 {
     #[inline]
-    fn small_lanes(lanes: &SmallLanes<u8>, _filter: LineFilter, _max: u16, last: u8) -> [u8; 16] {
-        baseline_simd!(simd => {
-            let tap = |t: usize| {
-                let (low, high) = simd.widen_u8x16(u8x16::from_slice(simd, &lanes.taps[t][..16]));
-                simd.combine_u16x8(low, high) * u16x16::from_slice(simd, &lanes.weights[t][..16])
-            };
-            let sum = tap(0) + tap(1) + tap(2) + tap(3) + (LINE_BIAS * 128 + 64);
-            let values =
-                simd.saturating_sub_u16x16(sum >> 7, u16x16::splat(simd, LINE_BIAS)).min(255);
-            let values = lanes.clamp_tail(simd, values, u16::from(last));
-            let (low, high) = simd.split_u16x16(values);
-            simd.relaxed_narrow_u16x8(low, high).into()
-        })
+    fn small_lanes<R: LineRunner>(
+        runner: R,
+        lanes: &SmallLanes<u8>,
+        _filter: LineFilter,
+        _max: u16,
+        last: u8,
+    ) -> [u8; 16] {
+        runner.small_lanes_u8(lanes, last)
     }
 
     #[inline]
-    fn filter(window: &[u8], _filter: LineFilter, taps: [i8; 4], _max: u16, out: &mut [u8]) {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-            let pair = |low: i8, high: i8| i16::from_le_bytes([low as u8, high as u8]);
-            line_avx2(
-                token,
-                window,
-                pair(taps[0], taps[1]),
-                pair(taps[2], taps[3]),
-                out,
-            );
-            return;
-        }
-        baseline_simd!(simd => line_lanes(simd, window, taps, out));
+    fn filter<R: LineRunner>(
+        runner: R,
+        window: &[u8],
+        _filter: LineFilter,
+        taps: [i8; 4],
+        _max: u16,
+        out: &mut [u8],
+    ) {
+        runner.filter_u8(window, taps, out);
     }
 
     #[inline]
@@ -163,29 +318,44 @@ impl LineSample for u8 {
         store_chunks::<u8, 16>(out, |at| window_chunk(window, at));
     }
 
-    fn transpose(width: usize, height: usize, columns: &[u8], output: &mut [u8], stride: usize) {
-        baseline_simd!(simd => transpose_tiles(simd, width, height, columns, output, stride));
+    fn transpose<R: LineRunner>(
+        runner: R,
+        width: usize,
+        height: usize,
+        columns: &[u8],
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        runner.transpose_u8(width, height, columns, output, stride);
     }
 }
 
 impl LineSample for u16 {
     #[inline]
-    fn small_lanes(lanes: &SmallLanes<u16>, filter: LineFilter, max: u16, last: u16) -> [u16; 16] {
-        baseline_simd!(simd => small_lanes_u16(simd, lanes, filter, max, last))
+    fn small_lanes<R: LineRunner>(
+        runner: R,
+        lanes: &SmallLanes<u16>,
+        filter: LineFilter,
+        max: u16,
+        last: u16,
+    ) -> [u16; 16] {
+        runner.small_lanes_u16(lanes, filter, max, last)
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: one call per line was the line cost"
     )]
     #[inline(always)]
-    fn filter(window: &[u16], filter: LineFilter, taps: [i8; 4], max: u16, out: &mut [u16]) {
-        if filter == LineFilter::Bilinear {
-            let weights = [taps[1], taps[2]].map(|tap| tap as u8 as u16 >> 2);
-            baseline_simd!(simd => bilinear_lanes_u16(simd, window, weights, out));
-            return;
-        }
-        baseline_simd!(simd => line_lanes_u16(simd, window, taps, max, out));
+    fn filter<R: LineRunner>(
+        runner: R,
+        window: &[u16],
+        filter: LineFilter,
+        taps: [i8; 4],
+        max: u16,
+        out: &mut [u16],
+    ) {
+        runner.filter_u16(window, filter, taps, max, out);
     }
 
     #[inline]
@@ -193,8 +363,15 @@ impl LineSample for u16 {
         store_chunks::<u16, 8>(out, |at| window_chunk(window, at));
     }
 
-    fn transpose(width: usize, height: usize, columns: &[u16], output: &mut [u16], stride: usize) {
-        baseline_simd!(simd => transpose_tiles_u16(simd, width, height, columns, output, stride));
+    fn transpose<R: LineRunner>(
+        runner: R,
+        width: usize,
+        height: usize,
+        columns: &[u16],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        runner.transpose_u16(width, height, columns, output, stride);
     }
 }
 
@@ -220,13 +397,14 @@ impl<P: LineSample> PaddedEdge<P> {
 
     /// Filters `out.len()` samples from the window at `first`: `out[j] =
     /// Clip1(Round2(Σ taps[t] * edge[first + j + t], 7))`.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: one call per line was the line cost"
     )]
     #[inline(always)]
-    pub(super) fn line(
+    pub(super) fn line<R: LineRunner>(
         &self,
+        runner: R,
         filter: LineFilter,
         first: usize,
         shift: u16,
@@ -245,7 +423,7 @@ impl<P: LineSample> PaddedEdge<P> {
             P::copy(&window[1..], out);
             return Ok(());
         };
-        P::filter(window, filter, taps, self.max, out);
+        P::filter(runner, window, filter, taps, self.max, out);
         Ok(())
     }
 }
@@ -258,7 +436,7 @@ const LINE_BIAS: u16 = 48;
 /// The portable 8-bit line kernel in wrapping `u16` lanes: the biased sum is
 /// exact, so `(sum >> 7) - 48` is the signed `Round2`, clipped by the
 /// saturating subtract and the minimum.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -287,7 +465,7 @@ fn line_lanes<S: Simd>(simd: S, window: &[u8], taps: [i8; 4], out: &mut [u8]) {
 /// the whole chunks, then the last `N` samples once more (overlapping, so the
 /// same values), or for a line shorter than `N` one chunk by two overlapping
 /// power-of-two stores, so no store is ever partial.
-#[allow(clippy::inline_always, reason = "keeps every store a fixed-size one")]
+#[expect(clippy::inline_always, reason = "keeps every store a fixed-size one")]
 #[inline(always)]
 fn store_chunks<P: Copy, const N: usize>(out: &mut [P], mut lanes: impl FnMut(usize) -> [P; N]) {
     let len = out.len();
@@ -321,7 +499,6 @@ fn window_chunk<P: Copy + Default, const N: usize>(window: &[P], at: usize) -> [
 
 /// Stores the first `out.len()` (`1..N`) of `lanes` as two overlapping copies
 /// of the largest power of two that fits.
-#[allow(clippy::inline_always, reason = "keeps every store a fixed-size one")]
 #[inline(always)]
 fn store_short<P: Copy, const N: usize>(out: &mut [P], lanes: &[P; N]) {
     fn pair<P: Copy, const W: usize>(out: &mut [P], lanes: &[P]) {
@@ -351,7 +528,7 @@ fn store_short<P: Copy, const N: usize>(out: &mut [P], lanes: &[P; N]) {
 /// multiply-adds of the interleaved windows `(edge[j], edge[j + 1])` and
 /// `(edge[j + 2], edge[j + 3])` with the tap pairs, in `i32` sums. Callers
 /// validate the edge samples to the bit depth, so each fits an `i16` lane.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -429,7 +606,7 @@ fn small_lanes_u16<S: Simd>(
 /// shift) + b * shift, 5)` of the windows at taps 1 and 2. Callers validate the
 /// edge samples to the bit depth (at most 10 bits), so each weighted sum fits
 /// `u16` lanes.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: a call per line was the line cost"
 )]
@@ -572,8 +749,9 @@ pub(super) fn is_small_one_sided(size: IntraRectBlockSize, branch: DirectionalAn
 /// [`write_one_sided`] for a block that [`is_small_one_sided`]: four 4-sample
 /// or two 8-sample lines per sixteen lanes, read from a small padded copy of
 /// `edge` after `front` zero samples, with no per-line kernel call.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_one_sided_small<P: LineSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn write_one_sided_small<R: LineRunner, P: LineSample>(
+    runner: R,
     size: IntraRectBlockSize,
     branch: DirectionalAngleBranch,
     filter: LineFilter,
@@ -596,9 +774,9 @@ pub(super) fn write_one_sided_small<P: LineSample>(
         last,
     };
     if along == 4 {
-        small_lines::<P, 4>(request, (edge, front), line, output, stride)
+        small_lines::<R, P, 4>(runner, request, (edge, front), line, output, stride)
     } else {
-        small_lines::<P, 8>(request, (edge, front), line, output, stride)
+        small_lines::<R, P, 8>(runner, request, (edge, front), line, output, stride)
     }
 }
 
@@ -613,7 +791,8 @@ struct SmallRequest<P> {
 }
 
 #[inline]
-fn small_lines<P: LineSample, const L: usize>(
+fn small_lines<R: LineRunner, P: LineSample, const L: usize>(
+    runner: R,
     request: SmallRequest<P>,
     (edge, front): (&[P], usize),
     mut line: impl FnMut(usize) -> Result<Line>,
@@ -674,7 +853,7 @@ fn small_lines<P: LineSample, const L: usize>(
                 *to = [spec.active.min(L) as u16; L];
             }
         }
-        let values = P::small_lanes(&lanes, filter, max, last);
+        let values = P::small_lanes(runner, &lanes, filter, max, last);
         if rows {
             for j in 0..16 / L {
                 if let (Some(row), Some(from)) = (
@@ -694,7 +873,14 @@ fn small_lines<P: LineSample, const L: usize>(
         }
     }
     if !rows {
-        P::transpose(size.width(), size.height(), &columns, output, stride);
+        P::transpose(
+            runner,
+            size.width(),
+            size.height(),
+            &columns,
+            output,
+            stride,
+        );
     }
     Ok(())
 }
@@ -744,8 +930,9 @@ pub(super) fn is_small_middle(size: IntraRectBlockSize) -> bool {
 /// candidate from its row's line and left candidate from its column's line,
 /// each line copied whole into sixteen-lane groups from the first lane it
 /// owns, then one select per lane by the row's left run.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_middle_small<P: LineSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn write_middle_small<R: LineRunner, P: LineSample>(
+    runner: R,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
     filter: LineFilter,
@@ -773,12 +960,12 @@ pub(super) fn write_middle_small<P: LineSample>(
         max,
     };
     match (size.width(), size.height()) {
-        (4, 4) => middle_small::<P, 4, 4>(request, &edges, output, stride),
-        (4, 8) => middle_small::<P, 4, 8>(request, &edges, output, stride),
-        (8, 4) => middle_small::<P, 8, 4>(request, &edges, output, stride),
-        (8, 8) => middle_small::<P, 8, 8>(request, &edges, output, stride),
-        (4, 16) => middle_small::<P, 4, 16>(request, &edges, output, stride),
-        (16, 4) => middle_small::<P, 16, 4>(request, &edges, output, stride),
+        (4, 4) => middle_small::<R, P, 4, 4>(runner, request, &edges, output, stride),
+        (4, 8) => middle_small::<R, P, 4, 8>(runner, request, &edges, output, stride),
+        (8, 4) => middle_small::<R, P, 8, 4>(runner, request, &edges, output, stride),
+        (8, 8) => middle_small::<R, P, 8, 8>(runner, request, &edges, output, stride),
+        (4, 16) => middle_small::<R, P, 4, 16>(runner, request, &edges, output, stride),
+        (16, 4) => middle_small::<R, P, 16, 4>(runner, request, &edges, output, stride),
         _ => Err(ReconError::ArithmeticOverflow {
             context: "small middle directional block size",
         }),
@@ -833,7 +1020,8 @@ fn small_window<P>(edge: &[P; SMALL_PADDED_LEN], first: i32) -> Option<&[P; 19]>
 }
 
 #[inline]
-fn middle_small<P: LineSample, const W: usize, const H: usize>(
+fn middle_small<R: LineRunner, P: LineSample, const W: usize, const H: usize>(
+    runner: R,
     request: MiddleRequest,
     [left, above]: &[[P; SMALL_PADDED_LEN]; 2],
     output: &mut [P],
@@ -879,7 +1067,7 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
             let from = small_window(above, (above_idx >> 6) + front).ok_or_else(overflow)?;
             put_line::<P, W>(&mut lanes, from, (row - group) * W + run, taps(above_idx));
         }
-        let values = P::small_lanes(&lanes, filter, max, P::default());
+        let values = P::small_lanes(runner, &lanes, filter, max, P::default());
         if let Some(to) = above_values
             .get_mut(group * W..)
             .and_then(<[P]>::first_chunk_mut::<16>)
@@ -901,7 +1089,7 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
                 taps(left_idx),
             );
         }
-        let values = P::small_lanes(&lanes, filter, max, P::default());
+        let values = P::small_lanes(runner, &lanes, filter, max, P::default());
         if let Some(to) = columns
             .get_mut(group * H..)
             .and_then(<[P]>::first_chunk_mut::<16>)
@@ -911,7 +1099,7 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
     }
     let mut left_values = [P::default(); 64];
     if left_columns > 0 {
-        P::transpose(W, H, &columns, &mut left_values, W);
+        P::transpose(runner, W, H, &columns, &mut left_values, W);
     }
     let along: [u16; 16] = core::array::from_fn(|lane| (lane % W) as u16);
     for group in (0..W * H).step_by(16) {
@@ -926,7 +1114,7 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
         let values = if left_columns == 0 {
             *above
         } else {
-            P::select_left(left, above, &runs, &along)
+            runner.select_left(left, above, &runs, &along)
         };
         for row in 0..16 / W {
             if let (Some(out), Some(from)) = (
@@ -944,8 +1132,9 @@ fn middle_small<P: LineSample, const W: usize, const H: usize>(
 
 /// Writes a zone-1 (`rows`) or zone-3 prediction whose `line(i)` gives row or
 /// column `i`, filling each line past its active samples with `last`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_one_sided<P: LineSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn write_one_sided<R: LineRunner, P: LineSample>(
+    runner: R,
     size: IntraRectBlockSize,
     branch: DirectionalAngleBranch,
     filter: LineFilter,
@@ -961,7 +1150,7 @@ pub(super) fn write_one_sided<P: LineSample>(
             let spec = line(row)?;
             let out = &mut output[row * stride..row * stride + width];
             let active = spec.active.min(width);
-            edge.line(filter, spec.first, spec.shift, &mut out[..active])?;
+            edge.line(runner, filter, spec.first, spec.shift, &mut out[..active])?;
             if active < width {
                 out[active..].fill(last);
             }
@@ -972,12 +1161,18 @@ pub(super) fn write_one_sided<P: LineSample>(
         for (column, samples) in columns.chunks_exact_mut(height).enumerate().take(width) {
             let spec = line(column)?;
             let active = spec.active.min(height);
-            edge.line(filter, spec.first, spec.shift, &mut samples[..active])?;
+            edge.line(
+                runner,
+                filter,
+                spec.first,
+                spec.shift,
+                &mut samples[..active],
+            )?;
             if active < height {
                 samples[active..].fill(last);
             }
         }
-        P::transpose(width, height, columns, output, stride);
+        P::transpose(runner, width, height, columns, output, stride);
         Ok(())
     })
 }
@@ -1132,8 +1327,9 @@ fn middle_line(idx: i32, front: i32) -> Result<(usize, u16)> {
 /// `above_front` map a tap-0 base to its padded window start, and
 /// `above_last`/`left_last` bound each run's active samples as in the lane
 /// writers (`None` when the run has no clamped tail).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn write_middle<P: LineSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn write_middle<R: LineRunner, P: LineSample>(
+    runner: R,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
     filter: LineFilter,
@@ -1153,7 +1349,7 @@ pub(super) fn write_middle<P: LineSample>(
         let active = last.map_or(out.len(), |(end, _)| {
             end.saturating_sub(first).min(out.len())
         });
-        edge.line(filter, first, shift, &mut out[..active])?;
+        edge.line(runner, filter, first, shift, &mut out[..active])?;
         if let Some((_, value)) = last
             && active < out.len()
         {
@@ -1191,6 +1387,7 @@ pub(super) fn write_middle<P: LineSample>(
         }
         let tile_width = if width >= 8 { 8 } else { 4 };
         P::transpose(
+            runner,
             left_columns.next_multiple_of(tile_width).min(width),
             height,
             columns,

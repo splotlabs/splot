@@ -3,7 +3,7 @@
 
 //! End-to-end `splot decode` CLI contract tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::{Path, PathBuf};
 use std::process::Output;
@@ -15,7 +15,7 @@ use common::{
 };
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
-const UNSUPPORTED_MULTISTREAM: &[u8] = &[0x01, 0x50];
+const INVALID_MSDO_LAYER_SCOPE: &[u8] = &[0x02, 0xD0, 0x03];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
 const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
 
@@ -63,6 +63,82 @@ fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json
 }
 
 #[cfg(unix)]
+#[test]
+fn decode_accepts_an_explicit_atlas_at_random_access() {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/vectors/needs-external-hls");
+    let stream = std::fs::read(folder.join("syn-atlas-global-local-id-scope-8bit.obu")).unwrap();
+    let sidecar_path = folder.join("syn-atlas-local-8bit.annexb");
+    let sidecar = std::fs::read(&sidecar_path).unwrap();
+    let local_start = 1931;
+    let local_end = local_start + sidecar.len();
+    assert_eq!(&stream[local_start..local_end], sidecar);
+    let suffix = [&stream[1862..local_start], &stream[local_end..]].concat();
+    let input = temp_input("obu", &suffix);
+    let args = [
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ];
+    assert_eq!(splot(&args).status.code(), Some(1));
+    let mut args = args.to_vec();
+    args.extend(["--external-atlas", sidecar_path.to_str().unwrap()]);
+    let output = splot(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let frames = report["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 4);
+    for frame in [&frames[0], &frames[2]] {
+        let local = &frame["atlas"]["associations"][1];
+        assert_eq!(local["scope_xlayer_id"], 3);
+        assert_eq!(local["layout"]["external"], true);
+        assert_eq!(local["layout"]["byte_offset"], 1);
+    }
+}
+
+#[test]
+fn decode_reports_scoped_atlas_associations_at_each_picture() {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/conformance/vectors/needs-external-hls");
+    let path = folder.join("syn-atlas-global-local-id-scope-8bit.obu");
+    let report = decode_hash_json(&path, "3", "auto");
+    let frames = report["frames"].as_array().unwrap();
+    assert_eq!(frames.len(), 8);
+    for (n, frame) in frames.iter().enumerate() {
+        let atlas = &frame["atlas"];
+        let xlayer = if n % 2 == 0 { 3 } else { 7 };
+        assert_eq!(atlas["extended_layer_id"], xlayer);
+        assert_eq!(atlas["embedded_layer_id"], 0);
+        let associations = atlas["associations"].as_array().unwrap();
+        assert_eq!(
+            associations.len(),
+            if n >= 4 && xlayer == 3 { 2 } else { 1 }
+        );
+        let global = &associations[0];
+        assert_eq!(global["scope_xlayer_id"], 31);
+        assert_eq!(global["segment_index"], usize::from(xlayer == 7));
+        assert_eq!(global["atlas_id"], 5);
+        assert_eq!(global["segment_id"], if xlayer == 3 { 41 } else { 77 });
+        assert_eq!(global["layout"]["segment_ids"], serde_json::json!([41, 77]));
+        assert_eq!(
+            global["layout"]["byte_offset"],
+            if n < 4 { 37 } else { 1899 }
+        );
+        assert_eq!(global["layout"]["mode"], if n < 4 { 3 } else { 4 });
+        if let Some(local) = associations.get(1) {
+            assert_eq!(local["scope_xlayer_id"], 3);
+            assert_eq!(local["atlas_id"], 5);
+            assert_eq!(local["layout"]["byte_offset"], 1932);
+        }
+    }
+}
+
 #[test]
 fn decode_reads_non_seekable_input_from_a_pipe() {
     use std::io::Write as _;
@@ -821,7 +897,7 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
 
 #[test]
 fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
-    let input = temp_input("av2", UNSUPPORTED_MULTISTREAM);
+    let input = temp_input("av2", INVALID_MSDO_LAYER_SCOPE);
     let output = temp_output("y4m");
     let original_output = b"unsupported output sentinel";
     std::fs::write(&output, original_output).expect("write temporary output sentinel");
@@ -838,9 +914,9 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "7.1");
+    assert_eq!(json["spec_section"], "6.2.2");
     assert_eq!(json["detail_kind"], "unsupported_structure");
-    assert_eq!(json["unsupported_reason"], "multistream_selection");
+    assert_eq!(json["unsupported_reason"], "invalid_layer_scope");
     assert_eq!(json["obu_type"], "OBU_MSDO");
     assert_eq!(json["byte_offset"], 1);
     assert_eq!(

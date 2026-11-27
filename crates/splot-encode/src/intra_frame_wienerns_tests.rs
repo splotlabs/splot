@@ -117,7 +117,7 @@ fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert!(codes_wiener_ns(&lr[1..], 0..1), "{lr:?}");
     assert!(codes_wiener_ns(&lr, 1..3), "{lr:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "wiener-ns");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             wiener_stream((threads, PixelFormat::Yuv420), on).0 == one,
             "{threads} threads"

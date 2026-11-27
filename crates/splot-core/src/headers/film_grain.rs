@@ -14,16 +14,17 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `MAX_FILM_GRAIN`: number of film grain model slots (AV2 v1.0.0 § 3).
 pub const MAX_FILM_GRAIN: usize = 8;
 
 /// `CHROMA_FORMAT_420` (AV2 v1.0.0 § 6.4.2, chroma format table).
-const CHROMA_FORMAT_420: u32 = 0;
+pub(crate) const CHROMA_FORMAT_420: u32 = 0;
 /// `CHROMA_FORMAT_400` (monochrome).
-const CHROMA_FORMAT_400: u32 = 1;
+pub(crate) const CHROMA_FORMAT_400: u32 = 1;
 /// `CHROMA_FORMAT_444`.
-const CHROMA_FORMAT_444: u32 = 2;
+pub(crate) const CHROMA_FORMAT_444: u32 = 2;
 /// `CHROMA_FORMAT_422`.
 const CHROMA_FORMAT_422: u32 = 3;
 
@@ -129,8 +130,8 @@ pub struct FilmGrainModel {
 /// Out-of-range values (`> 3`, a § 6.13 conformance violation handled by the
 /// validator) fall back to `(false, false)`; `subX` / `subY` are not used by
 /// `film_grain_model()` itself, so the fallback only affects the preserved summary.
-const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
-    #[allow(clippy::match_same_arms)]
+pub(crate) const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
+    #[expect(clippy::match_same_arms)]
     match chroma_idc {
         CHROMA_FORMAT_420 | CHROMA_FORMAT_400 => (true, true),
         CHROMA_FORMAT_422 => (true, false),
@@ -151,171 +152,230 @@ const fn chroma_subsampling(chroma_idc: u32) -> (bool, bool) {
 /// [`Error::BitWidthTooLarge`](crate::error::Error::BitWidthTooLarge) from
 /// [`BitReader`] when the input is truncated or a descriptor is malformed.
 pub fn parse_film_grain(reader: &mut BitReader<'_>) -> Result<FilmGrainObu> {
-    let update_flags = reader.read_bits_u8(8)?;
-    let chroma_idc = reader.read_uvlc()?;
-    let monochrome = chroma_idc == CHROMA_FORMAT_400;
-    let (sub_x, sub_y) = chroma_subsampling(chroma_idc);
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_film_grain_with_reader(&mut sr)
+}
 
-    let mut models = Vec::new();
-    for slot in 0..MAX_FILM_GRAIN {
-        if update_flags & (1 << slot) == 0 {
-            continue;
+/// Parses a `film_grain_obu()` (AV2 v1.0.0 § 5.14) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor or [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof)
+/// errors when the input is truncated or malformed.
+pub fn parse_film_grain_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<FilmGrainObu> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_film_grain_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_film_grain_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<FilmGrainObu> {
+    sr.in_struct("film_grain_obu", Some("5.14"), |sr| {
+        let update_flags = sr.read_bits_u8("fgm_update_flags", 8)?;
+        let chroma_idc = sr.read_uvlc("fgm_chroma_format_idc")?;
+        let monochrome = chroma_idc == CHROMA_FORMAT_400;
+        let (sub_x, sub_y) = chroma_subsampling(chroma_idc);
+
+        let mut models = Vec::new();
+        for slot in 0..MAX_FILM_GRAIN {
+            if update_flags & (1 << slot) == 0 {
+                continue;
+            }
+            let model =
+                sr.in_loop_item("slot", slot, |sr| parse_film_grain_model(sr, monochrome))?;
+            models.push(FilmGrainSlotUpdate {
+                slot: slot as u8,
+                model,
+            });
         }
-        let model = parse_film_grain_model(reader, monochrome)?;
-        models.push(FilmGrainSlotUpdate {
-            slot: slot as u8,
-            model,
-        });
-    }
 
-    Ok(FilmGrainObu {
-        update_flags,
-        chroma_idc,
-        sub_x,
-        sub_y,
-        monochrome,
-        models,
+        Ok(FilmGrainObu {
+            update_flags,
+            chroma_idc,
+            sub_x,
+            sub_y,
+            monochrome,
+            models,
+        })
     })
 }
 
-/// Reads one scaling function's points: a count `f(4)`, then per-point cumulative
-/// `point_*_value` and `point_*_scaling` (AV2 v1.0.0 § 5.18.10.2).
-fn read_scaling_points(reader: &mut BitReader<'_>) -> Result<(u8, Vec<FilmGrainScalingPoint>)> {
-    let num_points = reader.read_bits_u8(4)?;
+fn read_scaling_points<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    count_name: &'static str,
+    value_name: &'static str,
+    scaling_name: &'static str,
+) -> Result<(u8, Vec<FilmGrainScalingPoint>)> {
+    let num_points = sr.read_bits_u8(count_name, 4)?;
     if num_points == 0 {
         return Ok((0, Vec::new()));
     }
 
-    let bits_incr = reader.read_bits(3)? + 1; // point_value_increment_bits_minus_1 + 1
-    let bits_scal = reader.read_bits(2)? + 5; // point_scaling_bits_minus_5 + 5
+    let bits_incr = sr.read_bits("point_value_increment_bits_minus_1", 3)? + 1;
+    let bits_scal = sr.read_bits("point_scaling_bits_minus_5", 2)? + 5;
     let mut points = Vec::with_capacity(num_points as usize);
     let mut value = 0u32;
     for i in 0..num_points {
-        let increment = reader.read_bits(bits_incr)?;
-        value = if i == 0 { increment } else { value + increment };
-        let scaling = reader.read_bits(bits_scal)?;
-        points.push(FilmGrainScalingPoint { value, scaling });
+        let point = sr.in_loop_item("i", usize::from(i), |sr| {
+            let increment = sr.read_bits(value_name, bits_incr)?;
+            value = if i == 0 { increment } else { value + increment };
+            let scaling = sr.read_bits(scaling_name, bits_scal)?;
+            Ok(FilmGrainScalingPoint { value, scaling })
+        })?;
+        points.push(point);
     }
     Ok((num_points, points))
 }
 
-/// Reads `count` de-biased AR coefficients of width `bits_per_coeff_minus_5 + 5`
-/// (AV2 v1.0.0 § 5.18.10.2): `ar_coeffs[i] = f(bitsCoef) - (1 << (bitsCoef - 1))`.
-fn read_ar_coeffs(reader: &mut BitReader<'_>, count: usize) -> Result<Vec<i32>> {
-    let bits_coef = reader.read_bits(2)? + 5;
+fn read_ar_coeffs<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    coeff_name: &'static str,
+    count: usize,
+) -> Result<Vec<i32>> {
+    let bits_coef = sr.read_bits("bits_per_coeff_minus_5", 2)? + 5;
     let midpoint = 1i32 << (bits_coef - 1);
     let mut coeffs = Vec::with_capacity(count);
-    for _ in 0..count {
-        let raw = reader.read_bits(bits_coef)? as i32;
+    for i in 0..count {
+        let raw = sr.in_loop_item("i", i, |sr| sr.read_bits(coeff_name, bits_coef))? as i32;
         coeffs.push(raw - midpoint);
     }
     Ok(coeffs)
 }
 
-/// Parses a `film_grain_model()` (AV2 v1.0.0 § 5.18.10.2).
-///
-/// `subX` / `subY` are parameters of the spec syntax but are not referenced in its
-/// body, so they are not threaded here.
-fn parse_film_grain_model(reader: &mut BitReader<'_>, monochrome: bool) -> Result<FilmGrainModel> {
-    let chroma_scaling_from_luma = if monochrome {
-        false
-    } else {
-        reader.read_flag()?
-    };
-
-    let (num_y_points, point_y) = read_scaling_points(reader)?;
-
-    let (num_cb_points, point_cb, num_cr_points, point_cr) =
-        if monochrome || chroma_scaling_from_luma {
-            (0, Vec::new(), 0, Vec::new())
+fn parse_film_grain_model<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    monochrome: bool,
+) -> Result<FilmGrainModel> {
+    sr.in_struct("film_grain_model", Some("5.18.10.2"), |sr| {
+        let chroma_scaling_from_luma = if monochrome {
+            sr.inferred_bool("chroma_scaling_from_luma", "monochrome", false);
+            false
         } else {
-            let (num_cb, cb) = read_scaling_points(reader)?;
-            let (num_cr, cr) = read_scaling_points(reader)?;
-            (num_cb, cb, num_cr, cr)
+            sr.read_flag("chroma_scaling_from_luma")?
         };
 
-    let grain_scaling_minus_8 = reader.read_bits_u8(2)?;
-    let ar_coeff_lag = reader.read_bits_u8(2)?;
-    let num_pos_luma = 2 * (ar_coeff_lag as usize) * (ar_coeff_lag as usize + 1);
+        let (num_y_points, point_y) = read_scaling_points(
+            sr,
+            "num_y_points",
+            "point_y_value_increment",
+            "point_y_scaling",
+        )?;
 
-    let mut num_pos_chroma = num_pos_luma;
-    let ar_coeffs_y = if num_y_points > 0 {
-        num_pos_chroma = num_pos_luma + 1;
-        read_ar_coeffs(reader, num_pos_luma)?
-    } else {
-        Vec::new()
-    };
+        let (num_cb_points, point_cb, num_cr_points, point_cr) =
+            if monochrome || chroma_scaling_from_luma {
+                sr.inferred_u64("num_cb_points", "monochrome || chroma_scaling_from_luma", 0);
+                sr.inferred_u64("num_cr_points", "monochrome || chroma_scaling_from_luma", 0);
+                (0, Vec::new(), 0, Vec::new())
+            } else {
+                let (num_cb, cb) = read_scaling_points(
+                    sr,
+                    "num_cb_points",
+                    "point_cb_value_increment",
+                    "point_cb_scaling",
+                )?;
+                let (num_cr, cr) = read_scaling_points(
+                    sr,
+                    "num_cr_points",
+                    "point_cr_value_increment",
+                    "point_cr_scaling",
+                )?;
+                (num_cb, cb, num_cr, cr)
+            };
 
-    let ar_coeffs_cb = if chroma_scaling_from_luma || num_cb_points > 0 {
-        read_ar_coeffs(reader, num_pos_chroma)?
-    } else {
-        Vec::new()
-    };
-    let ar_coeffs_cr = if chroma_scaling_from_luma || num_cr_points > 0 {
-        read_ar_coeffs(reader, num_pos_chroma)?
-    } else {
-        Vec::new()
-    };
+        let grain_scaling_minus_8 = sr.read_bits_u8("grain_scaling_minus_8", 2)?;
+        let ar_coeff_lag = sr.read_bits_u8("ar_coeff_lag", 2)?;
+        let num_pos_luma = 2 * (ar_coeff_lag as usize) * (ar_coeff_lag as usize + 1);
 
-    let ar_coeff_shift_minus_6 = reader.read_bits_u8(2)?;
-    let grain_scale_shift = reader.read_bits_u8(2)?;
+        let mut num_pos_chroma = num_pos_luma;
+        let ar_coeffs_y = if num_y_points > 0 {
+            num_pos_chroma = num_pos_luma + 1;
+            read_ar_coeffs(sr, "ar_coeffs_y_plus_128", num_pos_luma)?
+        } else {
+            Vec::new()
+        };
 
-    let (cb_mult, cb_luma_mult, cb_offset) = if num_cb_points > 0 {
-        let mult = reader.read_bits_u8(8)?;
-        let luma_mult = reader.read_bits_u8(8)?;
-        let offset = reader.read_bits(9)? as u16;
-        (Some(mult), Some(luma_mult), Some(offset))
-    } else {
-        (None, None, None)
-    };
-    let (cr_mult, cr_luma_mult, cr_offset) = if num_cr_points > 0 {
-        let mult = reader.read_bits_u8(8)?;
-        let luma_mult = reader.read_bits_u8(8)?;
-        let offset = reader.read_bits(9)? as u16;
-        (Some(mult), Some(luma_mult), Some(offset))
-    } else {
-        (None, None, None)
-    };
+        let ar_coeffs_cb = if chroma_scaling_from_luma || num_cb_points > 0 {
+            read_ar_coeffs(sr, "ar_coeffs_cb_plus_128", num_pos_chroma)?
+        } else {
+            Vec::new()
+        };
+        let ar_coeffs_cr = if chroma_scaling_from_luma || num_cr_points > 0 {
+            read_ar_coeffs(sr, "ar_coeffs_cr_plus_128", num_pos_chroma)?
+        } else {
+            Vec::new()
+        };
 
-    let overlap_flag = reader.read_flag()?;
-    let clip_to_restricted_range = reader.read_flag()?;
-    let mc_identity = if clip_to_restricted_range {
-        reader.read_flag()?
-    } else {
-        false
-    };
-    let film_grain_block_size = reader.read_flag()?;
+        let ar_coeff_shift_minus_6 = sr.read_bits_u8("ar_coeff_shift_minus_6", 2)?;
+        let grain_scale_shift = sr.read_bits_u8("grain_scale_shift", 2)?;
 
-    Ok(FilmGrainModel {
-        chroma_scaling_from_luma,
-        num_y_points,
-        point_y,
-        num_cb_points,
-        point_cb,
-        num_cr_points,
-        point_cr,
-        grain_scaling_minus_8,
-        ar_coeff_lag,
-        ar_coeffs_y,
-        ar_coeffs_cb,
-        ar_coeffs_cr,
-        ar_coeff_shift_minus_6,
-        grain_scale_shift,
-        cb_mult,
-        cb_luma_mult,
-        cb_offset,
-        cr_mult,
-        cr_luma_mult,
-        cr_offset,
-        overlap_flag,
-        clip_to_restricted_range,
-        mc_identity,
-        film_grain_block_size,
+        let (cb_mult, cb_luma_mult, cb_offset) = if num_cb_points > 0 {
+            let mult = sr.read_bits_u8("cb_mult", 8)?;
+            let luma_mult = sr.read_bits_u8("cb_luma_mult", 8)?;
+            let offset = sr.read_bits("cb_offset", 9)? as u16;
+            (Some(mult), Some(luma_mult), Some(offset))
+        } else {
+            sr.absent("cb_mult", "num_cb_points == 0");
+            sr.absent("cb_luma_mult", "num_cb_points == 0");
+            sr.absent("cb_offset", "num_cb_points == 0");
+            (None, None, None)
+        };
+        let (cr_mult, cr_luma_mult, cr_offset) = if num_cr_points > 0 {
+            let mult = sr.read_bits_u8("cr_mult", 8)?;
+            let luma_mult = sr.read_bits_u8("cr_luma_mult", 8)?;
+            let offset = sr.read_bits("cr_offset", 9)? as u16;
+            (Some(mult), Some(luma_mult), Some(offset))
+        } else {
+            sr.absent("cr_mult", "num_cr_points == 0");
+            sr.absent("cr_luma_mult", "num_cr_points == 0");
+            sr.absent("cr_offset", "num_cr_points == 0");
+            (None, None, None)
+        };
+
+        let overlap_flag = sr.read_flag("overlap_flag")?;
+        let clip_to_restricted_range = sr.read_flag("clip_to_restricted_range")?;
+        let mc_identity = if clip_to_restricted_range {
+            sr.read_flag("mc_identity")?
+        } else {
+            sr.inferred_bool("mc_identity", "!clip_to_restricted_range", false);
+            false
+        };
+        let film_grain_block_size = sr.read_flag("film_grain_block_size")?;
+
+        Ok(FilmGrainModel {
+            chroma_scaling_from_luma,
+            num_y_points,
+            point_y,
+            num_cb_points,
+            point_cb,
+            num_cr_points,
+            point_cr,
+            grain_scaling_minus_8,
+            ar_coeff_lag,
+            ar_coeffs_y,
+            ar_coeffs_cb,
+            ar_coeffs_cr,
+            ar_coeff_shift_minus_6,
+            grain_scale_shift,
+            cb_mult,
+            cb_luma_mult,
+            cb_offset,
+            cr_mult,
+            cr_luma_mult,
+            cr_offset,
+            overlap_flag,
+            clip_to_restricted_range,
+            mc_identity,
+            film_grain_block_size,
+        })
     })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

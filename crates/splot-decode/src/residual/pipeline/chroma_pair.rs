@@ -3,13 +3,14 @@
 
 //! Paired chroma residual reconstruction.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     CurrentFrameSurface, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconSample,
 };
 
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    TileBlockDecodedState, add_cctx_pair_residual_in_place, is_cctx_geometry_allowed,
+    TileBlockDecodedState, add_cctx_pair_residual_in_place_with, is_cctx_geometry_allowed,
     with_residual_scratch,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
@@ -37,8 +38,9 @@ pub(super) fn cctx_allowed(plane: &ResidualPlanePlan, frame: FrameTileCtx) -> bo
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn reconstruct_chroma_pair_or_planes<B: SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -58,6 +60,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             });
         }
         return u_plane.reconstruct(
+            backend,
             frame,
             scratch,
             workspace,
@@ -71,6 +74,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     };
     if cctx_type == 0 {
         if reconstruct_cfl_pair(
+            backend,
             frame,
             scratch,
             workspace,
@@ -82,6 +86,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             return Ok(());
         }
         u_plane.reconstruct(
+            backend,
             frame,
             scratch,
             workspace,
@@ -93,6 +98,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             luma_context,
         )?;
         return v_plane.reconstruct(
+            backend,
             frame,
             scratch,
             workspace,
@@ -105,6 +111,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         );
     }
     reconstruct_chroma_cctx_pair(
+        backend,
         frame,
         scratch,
         workspace,
@@ -118,7 +125,9 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     )
 }
 
-fn reconstruct_cfl_pair<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn reconstruct_cfl_pair<B: SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -159,6 +168,7 @@ fn reconstruct_cfl_pair<T: ReconSample>(
     let u_neighbours = u_plane.plane_neighbours(frame, block_decoded);
     let v_neighbours = v_plane.plane_neighbours(frame, block_decoded);
     reconstruct_general_intra_chroma_cfl_pair_into(
+        backend,
         scratch,
         workspace,
         u_coeffs,
@@ -178,8 +188,9 @@ fn reconstruct_cfl_pair<T: ReconSample>(
     Ok(true)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconstruct_chroma_cctx_pair<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn reconstruct_chroma_cctx_pair<B: SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -205,6 +216,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     }
     let u_prediction_block = prediction_only_coeff_block(u_coeffs);
     u_plane.reconstruct(
+        backend,
         frame,
         scratch,
         workspace,
@@ -217,6 +229,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     )?;
     let v_prediction_block = prediction_only_coeff_block(v_coeffs);
     v_plane.reconstruct(
+        backend,
         frame,
         scratch,
         workspace,
@@ -233,7 +246,8 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         log2(u_plane.tx.height_log2()),
     )?;
     with_residual_scratch(|scratch| {
-        add_cctx_pair_residual_in_place(
+        add_cctx_pair_residual_in_place_with(
+            backend,
             &mut CurrentFrameSurface::Frame(workspace),
             scratch,
             [u_coeffs, v_coeffs],

@@ -547,7 +547,6 @@ fn validate_plane_samples<T: ReconSample>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

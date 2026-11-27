@@ -145,7 +145,7 @@ pub(super) fn read_loop_restoration_for_call(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_lr_units_for_plane(
     plane: usize,
     tool: TilePartitionLoopRestorationPlaneTool,
@@ -421,7 +421,7 @@ fn read_switchable_lr_unit(
     Ok(LrUnitRestorationType::WienerNonsep)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_wiener_ns_lr_unit(
     plane: usize,
     frame_filters_on: bool,

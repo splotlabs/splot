@@ -7,6 +7,8 @@
 //! bitstreams, allocate frames, compute digests, write output paths, or invoke
 //! external decoders.
 
+use splot_recon::PixelFormat;
+
 /// Stable contract identifier for decode hash reports.
 pub const DECODE_HASH_REPORT_CONTRACT_ID: &str = "splot.decode.hash_report";
 
@@ -75,33 +77,6 @@ impl DecodeOutputVariant {
     }
 }
 
-/// Decoded output pixel format identifiers used by hash report frame entries.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum DecodeHashPixelFormat {
-    /// Monochrome output samples.
-    Monochrome,
-    /// YUV 4:2:0 output samples.
-    Yuv420,
-    /// YUV 4:2:2 output samples.
-    Yuv422,
-    /// YUV 4:4:4 output samples.
-    Yuv444,
-}
-
-impl DecodeHashPixelFormat {
-    /// Returns the stable string identifier for the pixel format.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Monochrome => "monochrome",
-            Self::Yuv420 => "yuv420",
-            Self::Yuv422 => "yuv422",
-            Self::Yuv444 => "yuv444",
-        }
-    }
-}
-
 /// One output frame entry in a decode hash report.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeHashFrame {
@@ -126,7 +101,13 @@ pub struct DecodeHashFrame {
     /// Decoded sample bit depth.
     pub bit_depth: u8,
     /// Decoded output pixel format.
-    pub pixel_format: DecodeHashPixelFormat,
+    pub pixel_format: PixelFormat,
+    /// Extended layer that produced this picture.
+    pub extended_layer_id: crate::ExtendedLayerId,
+    /// Embedded layer that produced this picture.
+    pub embedded_layer_id: crate::EmbeddedLayerId,
+    /// Atlas associations at the position of this picture.
+    pub atlas_associations: Vec<crate::AtlasAssociation>,
     /// Hashes computed for this output frame.
     pub hashes: Vec<DecodeHashEntry>,
 }

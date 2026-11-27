@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use std::sync::Arc;
 
 use super::cdf::{TileCdfError, TileCdfPolicyInput, TileCdfSelector};
@@ -96,11 +94,11 @@ fn single_tile_payload_yields_deterministic_work_unit() {
         plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited())).unwrap();
 
     assert_eq!(plan.work_units().len(), 1);
-    let unit = &mut plan.work_units_mut()[0];
+    let (tile_bytes, unit) = plan.tile_mut(0).unwrap();
     assert_eq!(unit.tile_num(), 0);
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
-    assert_eq!(unit.tile_bytes(), &payload);
+    assert_eq!(tile_bytes, &payload);
     assert_eq!(
         unit.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(256), 2)
@@ -215,7 +213,7 @@ fn multiple_tiles_are_retained_as_work_units() {
     assert_eq!(first.tile_num(), 0);
     assert_eq!(first.mi_row_range(), 0..8);
     assert_eq!(first.mi_col_range(), 0..16);
-    assert_eq!(first.tile_bytes(), &[0x80]);
+    assert_eq!(plan.resolved_tile_bytes(first).unwrap(), &[0x80]);
     assert_eq!(
         first.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(257), 1)
@@ -225,7 +223,7 @@ fn multiple_tiles_are_retained_as_work_units() {
     assert_eq!(second.tile_num(), 1);
     assert_eq!(second.mi_row_range(), 0..8);
     assert_eq!(second.mi_col_range(), 16..32);
-    assert_eq!(second.tile_bytes(), &[0x00]);
+    assert_eq!(plan.resolved_tile_bytes(second).unwrap(), &[0x00]);
     assert_eq!(
         second.tile_byte_span(),
         ByteSpan::new(ByteOffset::new(258), 1)
@@ -542,7 +540,10 @@ fn minimal_tier_admission_and_rejections_are_structured_inner() {
     let plan = plan_tile_payload_boundary(&input).unwrap();
     assert_eq!(plan.work_units().len(), 1);
     assert_eq!(plan.work_units()[0].tile_num(), 0);
-    assert_eq!(plan.work_units()[0].tile_bytes(), &payload);
+    assert_eq!(
+        plan.resolved_tile_bytes(&plan.work_units()[0]).unwrap(),
+        &payload
+    );
     assert!(plan.reaches_last_tile_group());
 
     let cases = vec![

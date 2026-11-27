@@ -9,9 +9,14 @@
 //! in-band availability automatically; external availability must be declared
 //! explicitly by the caller, so the default assumes none.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use splot_core::headers::sequence::MAX_SEQ_NUM;
+use splot_core::headers::operating_point_set::OperatingPointSet;
+use splot_core::headers::sequence::{MAX_SEQ_NUM, SequenceHeader, SequenceHeaderId};
+use splot_core::span::ByteOffset;
+use splot_core::types::ExtendedLayerId;
+
+use crate::Diagnostic;
 
 /// Caller-declared external HLS objects (AV2 § 7.3.8): objects provided "through
 /// external means" rather than in-band in the bitstream.
@@ -40,7 +45,8 @@ impl ExternalHlsSet {
     }
 
     /// Declares that a sequence header with `seq_header_id` is available externally
-    /// (AV2 § 7.3.8.6).
+    /// (AV2 § 7.3.8.6). This ID-only declaration applies to every extended layer.
+    /// In-band headers remain local to the extended layer that contains them.
     ///
     /// An out-of-range id (`>= MAX_SEQ_NUM`) cannot be a valid `seq_header_id`
     /// (AV2 § 6.4.1), so it is ignored — declaring one must not make the set act as
@@ -88,6 +94,75 @@ impl ExternalHlsSet {
     }
 }
 
+/// A validated snapshot of external sequence header and operating point set OBUs.
+///
+/// Each object has an exact extended-layer key. Availability does not activate a
+/// sequence header. The stream replaces definitions and applies OPS resets as
+/// specified by AV2 § 7.3.8.1 and § 6.10.1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalHlsObjects {
+    pub(crate) sequences: BTreeMap<(ExtendedLayerId, SequenceHeaderId), ExternalSequenceHeader>,
+    pub(crate) operating_points: BTreeMap<(ExtendedLayerId, u8), Box<OperatingPointSet>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalSequenceHeader {
+    pub(crate) header: Box<SequenceHeader>,
+    pub(crate) fingerprint: u64,
+}
+
+impl ExternalHlsObjects {
+    /// Parses a nonempty Annex B snapshot of sequence header and OPS definitions.
+    ///
+    /// # Errors
+    /// Rejects malformed or unsupported OBUs, duplicate keys, sequence headers
+    /// that require an LCR, and OPS resets or inherited layer configurations.
+    pub fn from_annex_b(bytes: &[u8]) -> Result<Self, ExternalHlsError> {
+        crate::context::parse_external_hls(bytes)
+    }
+
+    /// Returns the sequence header keys in extended-layer and sequence-ID order.
+    pub fn sequence_headers(
+        &self,
+    ) -> impl Iterator<Item = (ExtendedLayerId, SequenceHeaderId)> + '_ {
+        self.sequences.keys().copied()
+    }
+
+    /// Returns the OPS keys in extended-layer and OPS-ID order.
+    pub fn operating_point_sets(&self) -> impl Iterator<Item = (ExtendedLayerId, u8)> + '_ {
+        self.operating_points.keys().copied()
+    }
+}
+
+/// An external HLS snapshot error. Byte offsets are relative to the snapshot.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ExternalHlsError {
+    /// No objects were supplied.
+    #[error("Supply at least one external HLS object.")]
+    Empty,
+    /// A native parser rejected the OBU envelope or payload.
+    #[error("Invalid external HLS syntax. {0}")]
+    Syntax(#[from] splot_core::error::Error),
+    /// A native per-object check rejected an OBU.
+    #[error("Invalid external HLS object. {0}")]
+    InvalidObject(Box<Diagnostic>),
+    /// An OBU needs state that the snapshot cannot express.
+    #[error("Unsupported external HLS object at byte {offset}. {reason}")]
+    Unsupported {
+        /// Byte offset of the OBU header.
+        offset: ByteOffset,
+        /// Why the snapshot cannot express the OBU.
+        reason: &'static str,
+    },
+    /// More than one OBU defines the same native key.
+    #[error("Duplicate external HLS object at byte {offset}.")]
+    Duplicate {
+        /// Byte offset of the duplicate OBU header.
+        offset: ByteOffset,
+    },
+}
+
 /// Whether caller-provided external HLS is available during validation
 /// (AV2 § 7.3.8). Defaults to [`ExternalHlsMode::Disabled`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -111,6 +186,12 @@ pub enum ExternalHlsMode {
     /// reference only when the exact referenced key is declared, so a reference to an
     /// expressible key the caller did not declare still fires.
     Provided(ExternalHlsSet),
+    /// The complete initial external HLS snapshot supplies content for activation
+    /// and reference checks.
+    ///
+    /// RAP replay does not decide availability for keys with both supplied and
+    /// in-band definitions. Linear validation uses the current definition.
+    Objects(ExternalHlsObjects),
 }
 
 /// Options controlling a validation run.

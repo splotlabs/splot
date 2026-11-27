@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 use crate::filters::source::DeblockedWindow;
 use crate::filters::source::StripeInitialization::CopyAll;
@@ -44,7 +42,7 @@ impl CdefTapOffsets {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gather_taps<T: ReconSample>(
     snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,
@@ -139,7 +137,8 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
         .storage_size()
         .height();
     let format = workspace.info().pixel_format();
-    let frame = cdef_stripe(
+    let frame = crate::test_support::with_auto_backend!(backend => cdef_stripe(
+        backend,
         DeblockedPlanes::frame(workspace).ok_or(CdefError::Workspace)?,
         Some(strengths),
         Some(grid),
@@ -154,7 +153,7 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
         None,
         0,
         height,
-    )?;
+    ))?;
     let CdefFrame {
         filtered_y,
         filtered_u,
@@ -194,10 +193,16 @@ fn pair_gather_matches_the_scalar_copy() {
     let u: Vec<u8> = (0..side * 9).map(|i| (i * 7 % 256) as u8).collect();
     let v: Vec<u8> = (0..side * 9).map(|i| (i * 11 % 256) as u8).collect();
     let mut pad = [0u16; CDEF_PADDED_AREA];
-    gather_chroma_pair(&u, &v, 1, 9, &mut pad).unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        gather_chroma_pair(backend, &u, &v, 1, 9, &mut pad)
+    })
+    .unwrap();
     let wide = |x: &[u8]| x.iter().map(|&b| u16::from(b)).collect::<Vec<_>>();
     let mut pad16 = [0u16; CDEF_PADDED_AREA];
-    gather_chroma_pair(&wide(&u), &wide(&v), 1, 9, &mut pad16).unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        gather_chroma_pair(backend, &wide(&u), &wide(&v), 1, 9, &mut pad16)
+    })
+    .unwrap();
     assert_eq!(pad16, pad);
     for row in 0..side {
         for col in 0..CHROMA_PAIR_SPAN {
@@ -511,8 +516,10 @@ fn assert_cdef_block_matches_per_sample_reference(
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
             let mut filtered = StripePlane::copy_from_into(snap, 0, 64, None, CopyAll).unwrap();
-            compute_cdef_filter_plane::<u8>(snap, &ctx, false, &filter, &mut pad, &mut filtered)
-                .unwrap();
+            crate::test_support::with_auto_backend!(backend => {
+                compute_cdef_filter_plane::<_, u8>(backend, snap, &ctx, false, &filter, &mut pad, &mut filtered)
+            })
+            .unwrap();
             let offsets = CdefTapOffsets::for_direction(filter.dir);
             for i in 0..8 {
                 for j in 0..8 {
@@ -640,7 +647,8 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
         .into_iter()
         .zip(&leases)
         .map(|((start, end), deblocked)| {
-            cdef_stripe(
+            crate::test_support::with_auto_backend!(backend => cdef_stripe(
+                backend,
                 deblocked.planes().unwrap(),
                 Some(&[params]),
                 Some(&grid),
@@ -652,7 +660,7 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
                 None,
                 start,
                 end,
-            )
+            ))
             .unwrap()
         })
         .collect::<Vec<_>>();
@@ -1048,7 +1056,8 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
         "the reference filters every plane"
     );
     let storage = ws.plane(PlaneId::Y).unwrap().storage_size().height();
-    let frame = cdef_stripe(
+    let frame = crate::test_support::with_auto_backend!(backend => cdef_stripe(
+        backend,
         DeblockedPlanes::frame(&ws).unwrap(),
         Some(case.strengths),
         Some(&grid),
@@ -1060,7 +1069,7 @@ fn run_reference_case<T: ReconSample>(case: &ReferenceCase<'_>, bit_depth: BitDe
         case.tile_starts,
         0,
         storage,
-    )
+    ))
     .unwrap();
     let got = [
         Some(&frame.filtered_y),

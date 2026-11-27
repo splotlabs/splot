@@ -152,7 +152,7 @@ pub(crate) fn select_kernel(sz: usize, tx_type: InverseTransform1dType) -> Optio
 /// instead of panicking (spec-conformant callers use shift 0 or 3). The result
 /// is returned as `i32` (lossless residuals are bounded well within `i32`).
 #[cfg(test)]
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 #[must_use]
 pub(crate) fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
     let shift = u32::from(shift).min(i32::BITS - 1);
@@ -259,7 +259,6 @@ fn kernel_transform<const N: usize>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

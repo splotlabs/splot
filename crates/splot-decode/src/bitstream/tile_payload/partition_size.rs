@@ -98,7 +98,7 @@ impl BlockSize {
         table[self.0 as usize & 31] as usize
     }
 
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "callers share the table-error plumbing"
     )]
@@ -107,7 +107,7 @@ impl BlockSize {
         Ok(self.num_4x4()[1])
     }
 
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "callers share the table-error plumbing"
     )]
@@ -133,7 +133,7 @@ impl BlockSize {
         Ok(self.num_4x4_high()? * 4)
     }
 
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "callers share the table-error plumbing"
     )]
@@ -142,7 +142,7 @@ impl BlockSize {
         Ok(self.entry(&MI_WIDTH_LOG2_U8))
     }
 
-    #[allow(
+    #[expect(
         clippy::unnecessary_wraps,
         reason = "callers share the table-error plumbing"
     )]
@@ -173,7 +173,7 @@ pub(crate) enum PartitionSizeError {
     },
 }
 
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "callers share the table-error plumbing"
 )]
@@ -186,7 +186,7 @@ pub(crate) fn partition_subsize(
     ))
 }
 
-#[allow(
+#[expect(
     clippy::unnecessary_wraps,
     reason = "callers share the table-error plumbing"
 )]

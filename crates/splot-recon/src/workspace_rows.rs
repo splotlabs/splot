@@ -27,11 +27,12 @@ use super::{
     IntraPredictionScratch, block_rect, chroma_plane_geometry, ensure_rect_in_storage,
     subsampled_rect,
 };
-use crate::reconstruct::add_block_residual_into_rows;
+use crate::reconstruct::{add_block_residual_into_rows, add_block_residual_into_rows_with};
 use crate::{
     BitDepth, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, PlaneSize,
     ReconError, ReconSample, Result,
 };
+use splot_core::simd::SimdBackend;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Creates a workspace over recycled plane storage, without initializing
@@ -424,6 +425,28 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
             self.rect.height(),
         )
     }
+
+    /// Typed [`Self::add_block_residual`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::add_block_residual`].
+    pub fn add_block_residual_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        prediction: &[T],
+        residual: &[i32],
+    ) -> Result<()> {
+        add_block_residual_into_rows_with(
+            backend,
+            prediction,
+            residual,
+            self.bit_depth,
+            self.samples,
+            self.stride_samples,
+            self.rect.width(),
+            self.rect.height(),
+        )
+    }
 }
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -577,6 +600,27 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
         )
     }
 
+    fn dc_block(
+        &self,
+        size: IntraRectBlockSize,
+        bit_depth: BitDepth,
+        [left, above]: [bool; 2],
+        ibp: bool,
+    ) -> crate::intra_ibp_dc::DcFrameBlock {
+        let rows = self.samples.len().saturating_sub(self.row_start) / self.stride.max(1);
+        crate::intra_ibp_dc::DcFrameBlock {
+            size,
+            bit_depth,
+            origin: self.origin,
+            stride: self.stride,
+            left: left
+                && self.origin != self.row_start
+                && self.rows_below.min(rows) >= size.height(),
+            above: above && self.above_len >= size.width(),
+            ibp,
+        }
+    }
+
     /// Writes the § 7.13.2.10 DC prediction of the block in place, blended by
     /// § 7.13.2.12 IBP when `ibp`, from the stored left column and above row
     /// that `[left, above]` make available.
@@ -588,22 +632,28 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
         &mut self,
         size: IntraRectBlockSize,
         bit_depth: BitDepth,
-        [left, above]: [bool; 2],
+        edges: [bool; 2],
         ibp: bool,
     ) -> Result<()> {
-        let rows = self.samples.len().saturating_sub(self.row_start) / self.stride.max(1);
-        let block = crate::intra_ibp_dc::DcFrameBlock {
-            size,
-            bit_depth,
-            origin: self.origin,
-            stride: self.stride,
-            left: left
-                && self.origin != self.row_start
-                && self.rows_below.min(rows) >= size.height(),
-            above: above && self.above_len >= size.width(),
-            ibp,
-        };
+        let block = self.dc_block(size, bit_depth, edges, ibp);
         crate::intra_ibp_dc::predict_dc_in_frame(self.samples, block)
+    }
+
+    /// Typed [`Self::predict_dc`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a sample type that cannot hold `bit_depth`.
+    #[inline]
+    pub fn predict_dc_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        size: IntraRectBlockSize,
+        bit_depth: BitDepth,
+        edges: [bool; 2],
+        ibp: bool,
+    ) -> Result<()> {
+        let block = self.dc_block(size, bit_depth, edges, ibp);
+        crate::intra_ibp_dc::predict_dc_in_frame_with(backend, self.samples, block)
     }
 }
 
@@ -668,7 +718,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
     /// The block of `target` at `(x, y)`, or `None` when it overhangs plane
     /// storage or its above row lies outside a band.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: the intra glue folds into its caller"
     )]
@@ -701,7 +751,6 @@ impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::reconstruct::reconstruct_add_residual;
@@ -980,5 +1029,78 @@ mod tests {
     fn dc_in_frame_matches_the_edge_kernels_at_both_depths() {
         dc_in_frame_matches_the_edge_kernels::<u8>(BitDepth::Eight);
         dc_in_frame_matches_the_edge_kernels::<u16>(BitDepth::Ten);
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_routes() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let info8 = DecodedFrameInfo::new(
+                    crate::OutputIndex::new(0),
+                    BitDepth::Eight,
+                    crate::PixelFormat::Monochrome,
+                    PlaneSize::new(32, 32).unwrap(),
+                    PlaneRect::new(0, 0, 32, 32).unwrap(),
+                )
+                .unwrap();
+                let mut ws_a = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+                let mut ws_b = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+                let init8: Vec<u8> = (0..32 * 32).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+                ws_a.write_rect(
+                    PlaneId::Y,
+                    PlaneRect::new(0, 0, 32, 32).unwrap(),
+                    &init8,
+                    32,
+                )
+                .unwrap();
+                ws_b.write_rect(
+                    PlaneId::Y,
+                    PlaneRect::new(0, 0, 32, 32).unwrap(),
+                    &init8,
+                    32,
+                )
+                .unwrap();
+
+                let size = IntraRectBlockSize::new(3, 3).unwrap();
+                let pred8 = vec![120u8; 64];
+                let res = vec![-15i32; 64];
+                ws_a.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                    row.add_block_residual(&pred8, &res)
+                })
+                .unwrap()
+                .unwrap();
+                ws_b.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                    row.add_block_residual_with(backend, &pred8, &res)
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    ws_b.samples(PlaneId::Y).unwrap(),
+                    ws_a.samples(PlaneId::Y).unwrap()
+                );
+
+                ws_a.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                    f.predict_dc(size, BitDepth::Eight, [true, true], true)
+                })
+                .unwrap()
+                .unwrap();
+                ws_b.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                    f.predict_dc_with(backend, size, BitDepth::Eight, [true, true], true)
+                })
+                .unwrap()
+                .unwrap();
+                assert_eq!(
+                    ws_b.samples(PlaneId::Y).unwrap(),
+                    ws_a.samples(PlaneId::Y).unwrap()
+                );
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

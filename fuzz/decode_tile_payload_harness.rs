@@ -11,7 +11,6 @@
 
 use splot_core::headers::tile_group::parse_tile_group_framing;
 use splot_core::span::ByteOffset;
-use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::bitstream::tile_payload::{
@@ -43,8 +42,6 @@ pub struct TilePayloadBoundaryFuzzOutcome {
     pub tile_bytes_len: usize,
     /// Planned `tileSize`.
     pub tile_size: u64,
-    /// Whether the attached tile CDF boundary enables CDF updates.
-    pub cdf_update_enabled: bool,
 }
 
 /// Runs one bounded tile-payload fuzzing case.
@@ -162,6 +159,5 @@ fn boundary_outcome(
         tile_num: unit.tile_num(),
         tile_bytes_len: unit.payload_range().len(),
         tile_size: unit.tile_size(),
-        cdf_update_enabled: unit.cdf().update_mode() == CdfUpdateMode::Enabled,
     })
 }

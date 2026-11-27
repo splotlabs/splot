@@ -4,11 +4,12 @@
 //! Luma palette syntax and color maps of the encoder facade: § 5.20.8.1
 //! `palette_mode_info` and § 5.20.8.4 `palette_tokens`.
 
+use splot_core::headers::frame::ceil_log2;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 
 use super::super::cdf::TileCdfSelector;
-use super::super::general_intra_block::{ceil_log2_u32, palette_y_mode_allowed};
+use super::super::general_intra_block::palette_y_mode_allowed;
 use super::super::intra_joint_modes::{LumaPalette, PALETTE_MAX_SIZE};
 use super::{EncoderSyntaxError, IntraMode, IntraModes, IntraTileSyntax, LeafBlock, Result, rule};
 use crate::residual::pipeline::palette_color_index_context;
@@ -191,7 +192,7 @@ impl IntraTileSyntax {
         let mut delta_bits = min_bits + extra;
         for pair in rest.windows(2) {
             literal(symbols, pair[1] - pair[0] - 1, delta_bits)?;
-            delta_bits = delta_bits.min(ceil_log2_u32((1 << bits) - pair[1] - 1));
+            delta_bits = delta_bits.min(ceil_log2((1 << bits) - pair[1] - 1));
         }
         Ok(())
     }

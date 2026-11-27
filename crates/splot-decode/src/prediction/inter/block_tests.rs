@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use crate::reference::buffer::RefSlots;
 use splot_core::error::SymbolCdfErrorKind;
-use splot_core::headers::sequence::SuperblockSize;
+use splot_core::headers::sequence::{DrlReorder, SuperblockSize};
 use splot_core::span::{BitOffset, ByteOffset};
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -176,11 +174,12 @@ use crate::bitstream::tile_payload::{
 use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::filters::wienerns_lr::intrabc_records::IntrabcRefSelection;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-    DrlReorderMode, IntrabcStackGeometry, SpatialScanGeometry, capture_spatial_intrabc_probes,
+    IntrabcStackGeometry, SpatialScanGeometry, capture_spatial_intrabc_probes,
     select_intrabc_ref_mv_from_candidates,
 };
 use crate::prediction::inter::{
-    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, Mv, PlacedInterBlock,
+    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, MotionVector,
+    PlacedInterBlock,
     find_mv_stack::{
         BlockPrecisionRecord, INTRABC_REF_FRAME, MvBlockContext, NON_INTER_FLAG_SYNTAX,
         NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, RefMvBank,
@@ -482,14 +481,14 @@ fn intrabc_spatial_probe_waits_for_ordered_motion_publication() -> TestResult {
         "future flags alone are not an IntrABC candidate"
     );
 
-    let bv = Mv { row: 0, col: -128 };
+    let bv = MotionVector { row: 0, col: -128 };
     grid.record_motion(
         4,
         2,
         2,
         2,
         NeighbourMotionValues {
-            mv: [bv, Mv::ZERO],
+            mv: [bv, MotionVector::ZERO],
             cwp_weight: 0,
             stored_warp: None,
             global_mv: [false, false],
@@ -520,7 +519,7 @@ fn intrabc_spatial_probe_excludes_future_block_geometry() {
     let future = (18, 8);
     let probes =
         capture_spatial_intrabc_probes(geometry, |row, col| (row, col) != future, |_, _| None);
-    let future_mv = Mv { row: -64, col: 64 };
+    let future_mv = MotionVector { row: -64, col: 64 };
     assert!(
         probes
             .resolve(|row, col| ((row, col) == future).then_some(future_mv))
@@ -564,10 +563,10 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
             },
             &spatial,
             true,
-            DrlReorderMode::Disabled,
+            DrlReorder::Disabled,
             IntrabcRefSelection::new(2, 0).ok_or("valid intrabc DRL selection")?,
         ),
-        Mv { row: -1024, col: 0 }
+        MotionVector { row: -1024, col: 0 }
     );
 
     let grid = NeighbourMvGrid::new(64, 64).ok_or("valid neighbour grid")?;
@@ -577,7 +576,7 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
     bank.update_for_block(
         INTRABC_REF_FRAME,
         None,
-        Mv { row: 0, col: -128 },
+        MotionVector { row: 0, col: -128 },
         None,
         0,
         0,
@@ -586,7 +585,10 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
         4,
         sb_h4,
     );
-    assert_eq!(bank.intrabc_candidates()[..], [Mv { row: 0, col: -128 }]);
+    assert_eq!(
+        bank.intrabc_candidates()[..],
+        [MotionVector { row: 0, col: -128 }]
+    );
     bank.reset_for_leaf(&grid, 32, 0, sb_h4, false);
     assert!(
         bank.intrabc_candidates().is_empty(),
@@ -606,7 +608,7 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
         8,
         8,
         false,
-        Mv::ZERO,
+        MotionVector::ZERO,
         false,
         3,
         false,
@@ -638,7 +640,7 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
         0,
         None,
         false,
-        Mv { row: 8, col: 16 },
+        MotionVector { row: 8, col: 16 },
         false,
         3,
         false,
@@ -703,7 +705,7 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
 
 #[test]
 fn regular_interintra_syntax_precedes_drl() -> TestResult {
-    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let bsize_group = usize::from(super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8]);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
@@ -758,7 +760,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
 
 #[test]
 fn regular_interintra_wedge_syntax_couples_index_to_wedge() -> TestResult {
-    let bsize_group = super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8];
+    let bsize_group = usize::from(super::SIZE_GROUP_LOOKUP[super::BLOCK_8X8]);
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
@@ -846,15 +848,18 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
     let placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Smooth);
 
     let mut scratch = InterIntraScratch::default();
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Smooth,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
     assert_eq!(planes.len(), 1);
@@ -877,15 +882,18 @@ fn interintra_invalid_derived_geometry_and_placement_are_typed() -> TestResult {
         let placed = placed_luma_block(x, 0, width, 8, InterIntraMode::Smooth);
         let mut scratch = InterIntraScratch::default();
 
-        let Err(error) = predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Smooth,
-            false,
-            BitDepth::Eight,
-        ) else {
+        let Err(error) = crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Smooth,
+                false,
+                BitDepth::Eight,
+            )
+        }) else {
             return Err("invalid interintra geometry must fail closed".into());
         };
 
@@ -954,15 +962,18 @@ fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
         placed.interintra_chroma = true;
 
         let mut scratch = InterIntraScratch::default();
-        predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Smooth,
-            false,
-            BitDepth::Eight,
-        )?;
+        crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Smooth,
+                false,
+                BitDepth::Eight,
+            )
+        })?;
         let planes = scratch.planes().collect::<Vec<_>>();
 
         assert_eq!(planes.len(), 3);
@@ -990,15 +1001,18 @@ fn interintra_chroma_fallback_edges_use_each_planes_neighbour() -> TestResult {
     placed.interintra_chroma = true;
     let mut scratch = InterIntraScratch::default();
 
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Horizontal,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Horizontal,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
     assert_eq!(planes.len(), 3);
@@ -1045,15 +1059,18 @@ fn interintra_ignores_unavailable_tile_edges_on_each_plane() -> TestResult {
             InterIntraMode::Horizontal,
             InterIntraMode::Smooth,
         ] {
-            predict_interintra_planes(
-                &mut scratch,
-                &workspace,
-                &placed,
-                &block_decoded,
-                mode,
-                true,
-                BitDepth::Eight,
-            )?;
+            crate::test_support::with_auto_backend!(backend => {
+                predict_interintra_planes(
+                    backend,
+                    &mut scratch,
+                    &workspace,
+                    &placed,
+                    &block_decoded,
+                    mode,
+                    true,
+                    BitDepth::Eight,
+                )
+            })?;
             assert_eq!(scratch.planes().count(), 3);
             for (plane, samples) in scratch.planes() {
                 assert!(
@@ -1074,15 +1091,18 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
     let mut scratch = InterIntraScratch::default();
 
     for _ in 0..2 {
-        predict_interintra_planes(
-            &mut scratch,
-            &workspace,
-            &placed,
-            &block_decoded,
-            InterIntraMode::Vertical,
-            false,
-            BitDepth::Eight,
-        )?;
+        crate::test_support::with_auto_backend!(backend => {
+            predict_interintra_planes(
+                backend,
+                &mut scratch,
+                &workspace,
+                &placed,
+                &block_decoded,
+                InterIntraMode::Vertical,
+                false,
+                BitDepth::Eight,
+            )
+        })?;
         assert!(
             scratch
                 .storage_identity()
@@ -1091,15 +1111,18 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
         );
     }
     let warmed = scratch.storage_identity();
-    predict_interintra_planes(
-        &mut scratch,
-        &workspace,
-        &placed,
-        &block_decoded,
-        InterIntraMode::Vertical,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Vertical,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
 
     assert_eq!(scratch.storage_identity(), warmed);
     Ok(())
@@ -1141,15 +1164,18 @@ fn interintra_smooth_predictions(
     block_decoded: &TileBlockDecodedState,
 ) -> TestResult<Vec<(PlaneId, Vec<u8>)>> {
     let mut scratch = InterIntraScratch::default();
-    predict_interintra_planes(
-        &mut scratch,
-        workspace,
-        placed,
-        block_decoded,
-        InterIntraMode::Smooth,
-        false,
-        BitDepth::Eight,
-    )?;
+    crate::test_support::with_auto_backend!(backend => {
+        predict_interintra_planes(
+            backend,
+            &mut scratch,
+            workspace,
+            placed,
+            block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+        )
+    })?;
     Ok(scratch
         .planes()
         .map(|(plane, samples)| (plane.plane, samples.to_vec()))
@@ -1173,8 +1199,8 @@ fn placed_luma_block(
         block: InterBlock {
             ref_frame0: 0,
             ref_frame1: None,
-            mv: Mv { row: 0, col: 0 },
-            mv1: Mv { row: 0, col: 0 },
+            mv: MotionVector { row: 0, col: 0 },
+            mv1: MotionVector { row: 0, col: 0 },
             interp: ReconInterpolationFilter::EightTap,
             warp_params: [None, None],
             bawp: BawpSyntax::default(),

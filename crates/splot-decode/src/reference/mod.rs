@@ -4,3 +4,4 @@
 //! Reference-frame state used by decode orchestration.
 
 pub(crate) mod buffer;
+pub(crate) mod observation;

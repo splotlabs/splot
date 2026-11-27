@@ -3,7 +3,7 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, RESTRICTED_ORDER_HINT, get_relative_dist};
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
 use splot_core::tables::loop_restoration::{GDF_INTER_ERROR, GDF_INTRA_ERROR};
@@ -52,7 +52,6 @@ const GDF_COORDS: [(isize, isize); 18] = [
 
 pub(crate) const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
-const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 
 fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
     let local_y = y.checked_sub(tile_start)?;
@@ -161,8 +160,8 @@ impl GdfBlockGrid {
         rows: usize,
         cols: usize,
         values: Vec<u8>,
-    ) -> core::result::Result<Self, ()> {
-        let expected = rows.checked_mul(cols).ok_or(())?;
+    ) -> Option<Self> {
+        let expected = rows.checked_mul(cols)?;
         if block_size == 0
             || !block_size.is_multiple_of(MI_SIZE)
             || rows == 0
@@ -170,9 +169,9 @@ impl GdfBlockGrid {
             || values.len() != expected
             || values.iter().any(|&value| value > 1)
         {
-            return Err(());
+            return None;
         }
-        Ok(Self {
+        Some(Self {
             block_size,
             rows,
             cols,
@@ -208,6 +207,12 @@ impl GdfBlockGrid {
             stop = unit_end(stop);
         }
         Some(start..stop)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enabled_unit_counts(&self) -> (usize, usize) {
+        let enabled = self.values.iter().filter(|&&value| value != 0).count();
+        (enabled, self.values.len())
     }
 }
 
@@ -267,8 +272,9 @@ pub(crate) fn is_active(
     gdf_config(core, block_grid, bit_depth, reference).map(|config| config.is_some())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_stripe<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn apply_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
     separate_cdef_luma: Option<&StripePlane<T>>,
@@ -279,11 +285,13 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
     reference: Option<GdfReferenceContext>,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
 ) -> Result<()> {
     let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
     };
     apply_stripe_config(
+        backend,
         config,
         core,
         (deblocked_luma, separate_cdef_luma, cdef_overlap),
@@ -291,6 +299,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
         (block_grid, lossless_grid),
         bit_depth,
         disable_loopfilters_across_tiles,
+        bru_modes,
     )
 }
 
@@ -299,8 +308,9 @@ pub(crate) fn apply_stripe<T: ReconSample>(
 /// `GDF_ERROR_BASE + err`: the stripe runs with `GdfPixScale = 1 << (12 -
 /// BitDepth)`, so the rounding keeps `err` exact, and a sample range wide
 /// enough that no `err` clips.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn error_stripe(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn error_stripe<B: splot_core::simd::SimdBackend>(
+    backend: B,
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, u16>,
     separate_cdef_luma: Option<&StripePlane<u16>>,
@@ -320,6 +330,7 @@ pub(crate) fn error_stripe(
         ..config
     };
     apply_stripe_config(
+        backend,
         config,
         core,
         (deblocked_luma, separate_cdef_luma, cdef_overlap),
@@ -327,6 +338,7 @@ pub(crate) fn error_stripe(
         (block_grid, None),
         bit_depth,
         disable_loopfilters_across_tiles,
+        None,
     )
 }
 
@@ -334,7 +346,9 @@ pub(crate) fn error_stripe(
 /// inside `-GDF_ERROR_BASE..GDF_ERROR_BASE`.
 pub(crate) const GDF_ERROR_BASE: u16 = 1024;
 
-fn apply_stripe_config<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn apply_stripe_config<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     config: GdfConfig,
     core: &FrameHeaderCore,
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
@@ -349,6 +363,7 @@ fn apply_stripe_config<T: ReconSample>(
     ),
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
+    bru_modes: Option<&crate::filters::bru::BruModeMap>,
 ) -> Result<()> {
     let (width, stride, frame_height, y) = (
         post_lr_luma.width(),
@@ -395,6 +410,8 @@ fn apply_stripe_config<T: ReconSample>(
     };
     let segment_count = tile_columns.map_or(1, |starts| starts.len().saturating_sub(1));
     let stripe_row = gdf_stripe_row(core, y, frame_height)?;
+    let mi_row = y / MI_SIZE;
+    let tile_mi_row_end = tile_end.div_ceil(MI_SIZE);
     with_reusable_scratch(&GDF_SCRATCH, |scratch| {
         for segment_index in 0..segment_count {
             let (segment_x, segment_width) = if let Some(starts) = tile_columns {
@@ -409,41 +426,68 @@ fn apply_stripe_config<T: ReconSample>(
                 .ok_or_else(gdf_state_error)?;
             let mut next_x = segment_x;
             while next_x < segment_end {
-                let run = if config.per_block {
-                    block_grid
-                        .and_then(|grid| grid.enabled_run(stripe_row, next_x, segment_end))
-                        .ok_or_else(gdf_state_error)?
+                let active = if let Some(modes) = bru_modes {
+                    let range =
+                        bru_active_run(modes, mi_row, tile_mi_row_end, next_x, segment_end)?;
+                    next_x = range.end;
+                    range
                 } else {
+                    next_x = segment_end;
                     segment_x..segment_end
                 };
-                next_x = run.end;
-                if run.is_empty() {
+                if active.is_empty() {
                     continue;
                 }
-                let run_block = GdfBlock {
-                    x: run.start,
-                    y,
-                    width: run.len(),
-                    height,
-                    frame_width: width,
-                    frame_height,
-                    base_stride: stride,
-                    bit_depth,
-                    qp_idx: config.qp_idx,
-                    ref_dst_idx: config.ref_dst_idx,
-                    pix_scale: config.pix_scale,
-                    max_sample: config.max_sample,
-                };
-                let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
-                let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
-                if let Some(grid) = lossless_grid {
-                    let samples = post_lr_luma.samples_mut();
-                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, false)?;
-                }
-                filter_run_tiles(sources, &bounds, &run_block, post_lr_luma, scratch)?;
-                if let Some(grid) = lossless_grid {
-                    let samples = post_lr_luma.samples_mut();
-                    keep_lossless_spans(grid, &run_block, samples, &mut scratch.lossless, true)?;
+                let mut active_x = active.start;
+                while active_x < active.end {
+                    let run = if config.per_block {
+                        block_grid
+                            .and_then(|grid| grid.enabled_run(stripe_row, active_x, active.end))
+                            .ok_or_else(gdf_state_error)?
+                    } else {
+                        active.start..active.end
+                    };
+                    active_x = run.end;
+                    if run.is_empty() {
+                        continue;
+                    }
+                    let run_block = GdfBlock {
+                        x: run.start,
+                        y,
+                        width: run.len(),
+                        height,
+                        frame_width: width,
+                        frame_height,
+                        base_stride: stride,
+                        bit_depth,
+                        qp_idx: config.qp_idx,
+                        ref_dst_idx: config.ref_dst_idx,
+                        pix_scale: config.pix_scale,
+                        max_sample: config.max_sample,
+                    };
+                    let bounds = source_bounds(core, &run_block, disable_loopfilters_across_tiles)?;
+                    let sources = (deblocked_luma, separate_cdef_luma, cdef_overlap);
+                    if let Some(grid) = lossless_grid {
+                        let samples = post_lr_luma.samples_mut();
+                        keep_lossless_spans(
+                            grid,
+                            &run_block,
+                            samples,
+                            &mut scratch.lossless,
+                            false,
+                        )?;
+                    }
+                    filter_run_tiles(backend, sources, &bounds, &run_block, post_lr_luma, scratch)?;
+                    if let Some(grid) = lossless_grid {
+                        let samples = post_lr_luma.samples_mut();
+                        keep_lossless_spans(
+                            grid,
+                            &run_block,
+                            samples,
+                            &mut scratch.lossless,
+                            true,
+                        )?;
+                    }
                 }
             }
         }
@@ -451,11 +495,37 @@ fn apply_stripe_config<T: ReconSample>(
     })
 }
 
+fn bru_active_run(
+    modes: &crate::filters::bru::BruModeMap,
+    mi_row: usize,
+    tile_mi_row_end: usize,
+    x: usize,
+    end: usize,
+) -> Result<core::ops::Range<usize>> {
+    let sb_w = modes.sb_samples();
+    let sb_end = |col_x: usize| ((col_x / sb_w + 1) * sb_w).min(end);
+    let active = |col_x: usize| {
+        modes
+            .lr_stripe_active(mi_row, col_x / MI_SIZE, tile_mi_row_end)
+            .ok_or_else(gdf_state_error)
+    };
+    let mut start = x;
+    while start < end && !active(start)? {
+        start = sb_end(start);
+    }
+    let mut stop = start;
+    while stop < end && active(stop)? {
+        stop = sb_end(stop);
+    }
+    Ok(start..stop)
+}
+
 /// Filters the run `run` in column tiles of at most [`simd::TILE_COLS`]
 /// columns, each tile's source window copied just before the tile is
 /// filtered. When `post_lr_luma` is the CDEF luma the windows read, the next
 /// tile's window is copied before a tile writes the columns it shares.
-fn filter_run_tiles<T: ReconSample>(
+fn filter_run_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
         FramePlane<'_, T>,
         Option<&StripePlane<T>>,
@@ -497,22 +567,23 @@ fn filter_run_tiles<T: ReconSample>(
     grow_scratch(&mut scratch.class_scratch.errors, errors)?;
     let layout = |index: usize| (simd::TILE_STRIDE, simd::TILE_COLS, index);
     let buffer = |index: usize| index % buffers * area..(index % buffers + 1) * area;
+    let params = simd::RunParams::new(run);
     for index in 0..tiles {
         let first = if index == 0 { 0 } else { index + ahead };
         for staged in first..=(index + ahead).min(tiles - 1) {
             let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
             let rows = stripe_rows(deblocked_luma, cdef_luma, cdef_overlap);
             let samples = source.get_mut(buffer(staged)).ok_or_else(gdf_state_error)?;
-            fill_tile::<T, T>(samples, layout(staged), bounds, run, rows)?;
+            fill_tile::<_, T, T>(backend, samples, layout(staged), bounds, run, rows)?;
         }
         let samples = source.get(buffer(index)).ok_or_else(gdf_state_error)?;
         let tile = tile(index);
         let scratch = &mut scratch.class_scratch;
         let output = post_lr_luma.samples_mut();
         if let Some(output) = T::u8_slice_mut(output) {
-            simd::filter_run(samples, &tile, output, scratch)
+            simd::filter_run(backend, samples, (&tile, &params), output, scratch)
         } else if let Some(output) = T::u16_slice_mut(output) {
-            simd::filter_run(samples, &tile, output, scratch)
+            simd::filter_run(backend, samples, (&tile, &params), output, scratch)
         } else {
             None
         }
@@ -680,11 +751,24 @@ fn compute_enabled_segment(
             if let Some(classes) = classes.first_chunk::<8>().filter(|_| width == 16) {
                 let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
-                sym_rows(&window, output, classes, block, &params);
+                crate::test_support::with_auto_backend!(backend => {
+                    sym_rows(backend, &window, output, classes, block, &params);
+                });
             } else {
                 let output = [&mut top[x..], &mut bottom[x..]];
-                sym_rows_narrow(&window_rows, x, width, output, classes, block, &params)
-                    .ok_or_else(geometry_error)?;
+                crate::test_support::with_auto_backend!(backend => {
+                    sym_rows_narrow(
+                        backend,
+                        &window_rows,
+                        x,
+                        width,
+                        output,
+                        classes,
+                        block,
+                        &params,
+                    )
+                })
+                .ok_or_else(geometry_error)?;
             }
             x += width;
         }
@@ -820,26 +904,23 @@ fn source_bounds(
     LoopRestorationPlaneBounds::new(PlaneId::Y, &bounds).map_err(|_| gdf_state_error())
 }
 
-/// [`resize_overwrite_scratch`] that never shrinks `buffer`, so that a
-/// later longer use refills nothing.
+/// Grows `buffer` without shrinking it, so a later longer use refills nothing.
 fn grow_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
-    if len > buffer.len() {
-        resize_overwrite_scratch(buffer, len)?;
+    if len <= buffer.len() {
+        return Ok(());
     }
+    if buffer.try_reserve_exact(len - buffer.len()).is_err() {
+        buffer.clear();
+        return Err(gdf_allocation_error());
+    }
+    buffer.resize(len, T::default());
     Ok(())
 }
 
+#[cfg(test)]
 fn resize_overwrite_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
-    if len > buffer.len() {
-        let additional = len - buffer.len();
-        if buffer.try_reserve_exact(additional).is_err() {
-            buffer.clear();
-            return Err(gdf_allocation_error());
-        }
-        buffer.resize(len, T::default());
-    } else {
-        buffer.truncate(len);
-    }
+    grow_scratch(buffer, len)?;
+    buffer.truncate(len);
     Ok(())
 }
 
@@ -860,17 +941,18 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         self.0.len()
     }
 
-    fn copy_range_as<U: ReconSample>(
+    fn copy_range_as<B: splot_core::simd::SimdBackend, U: ReconSample>(
         &self,
+        backend: B,
         start: usize,
         dst: &mut [u16],
         shift: u32,
     ) -> Option<()> {
         let src = self.0.get(start..start.checked_add(dst.len())?)?;
         let max = if let Some(src) = T::u8_slice(src) {
-            simd::copy_shifted(src, dst, shift)
+            simd::copy_shifted(backend, src, dst, shift)
         } else {
-            simd::copy_shifted(T::u16_slice(src)?, dst, shift)
+            simd::copy_shifted(backend, T::u16_slice(src)?, dst, shift)
         };
         (max <= U::MAX_VALUE).then_some(())
     }
@@ -925,7 +1007,9 @@ impl<'a> GdfSource<'a> {
         let sample_count = width.checked_mul(height).ok_or_else(gdf_state_error)?;
         resize_overwrite_scratch(samples, sample_count)?;
         let layout = (width, block.width.max(1), 0);
-        let (origin_x, origin_y) = fill_tile::<S, T>(samples, layout, bounds, block, source_row)?;
+        let (origin_x, origin_y) = crate::test_support::with_auto_backend!(backend => {
+            fill_tile::<_, S, T>(backend, samples, layout, bounds, block, source_row)
+        })?;
         Ok(Self {
             samples: samples.as_slice(),
             stride: width,
@@ -989,7 +1073,8 @@ fn window_size(block: &GdfBlock) -> Result<(usize, usize)> {
 /// is the § 7.20.2 source row; a row that § 7.20.2 clips to the row above
 /// copies that row, and the columns it clips repeat the row's edge sample.
 #[inline(never)]
-fn fill_tile<'b, S: ReconSample, T: ReconSample>(
+fn fill_tile<'b, B: splot_core::simd::SimdBackend, S: ReconSample, T: ReconSample>(
+    backend: B,
     samples: &mut [u16],
     (stride, tile_cols, tile): (usize, usize, usize),
     bounds: &LoopRestorationPlaneBounds,
@@ -1039,7 +1124,7 @@ fn fill_tile<'b, S: ReconSample, T: ReconSample>(
         let (pads, rest) = dst.split_at_mut(pre);
         let (copied, posts) = rest.split_at_mut(mid);
         source_row
-            .copy_range_as::<T>(mid_start, copied, shift)
+            .copy_range_as::<_, T>(backend, mid_start, copied, shift)
             .ok_or_else(gdf_state_error)?;
         pads.fill(copied[0]);
         posts.fill(copied[mid - 1]);
@@ -1220,7 +1305,7 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
 }
 
 #[cfg(test)]
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn gdf_sample(
     base_luma: &[u16],
     source: &GdfSource<'_>,
@@ -1263,7 +1348,7 @@ fn gdf_sample(
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
@@ -1284,7 +1369,7 @@ fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
     base: i32,
@@ -1370,10 +1455,6 @@ const fn gdf_inter_ref_dst_idx_from_max_dist(max_dist: usize) -> usize {
     }
 }
 
-fn get_relative_dist(a: i32, b: i32) -> i32 {
-    (a - b).clamp(-127, 127)
-}
-
 #[cold]
 #[inline(never)]
 fn gdf_state_error() -> crate::error::DecodeError {
@@ -1396,7 +1477,6 @@ mod wide_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::expect_used)]
     use super::{
         ClassScratch, GDF_COORDS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, GdfSourceRow, LoopRestorationSource, RESTRICTED_ORDER_HINT,
@@ -1450,10 +1530,10 @@ mod tests {
 
     #[test]
     fn per_block_grid_rejects_invalid_shape_and_values() {
-        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_err());
-        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_err());
-        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_err());
+        assert!(GdfBlockGrid::new(0, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(62, 1, 1, vec![1]).is_none());
+        assert!(GdfBlockGrid::new(64, 2, 2, vec![1, 0, 1]).is_none());
+        assert!(GdfBlockGrid::new(64, 1, 1, vec![2]).is_none());
     }
 
     #[test]
@@ -1696,8 +1776,10 @@ mod tests {
             for index in 0..run.width.div_ceil(simd::TILE_COLS) {
                 let mut samples = vec![u16::MAX; area];
                 let layout = (simd::TILE_STRIDE, simd::TILE_COLS, index);
-                fill_tile::<S, S>(&mut samples, layout, &plane, &run, rows)
-                    .expect("valid tile window");
+                crate::test_support::with_auto_backend!(backend => {
+                    fill_tile::<_, S, S>(backend, &mut samples, layout, &plane, &run, rows)
+                })
+                .expect("valid tile window");
                 let tile = GdfBlock {
                     x: run.x + index * simd::TILE_COLS,
                     width: simd::TILE_COLS.min(run.width - index * simd::TILE_COLS),

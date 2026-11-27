@@ -13,6 +13,7 @@ mod celu;
 mod content_interpretation_timing;
 mod decoder_model;
 mod distinct_mlayer;
+mod external_hls;
 mod fixtures;
 mod frame_header_core;
 mod frame_size_semantics;

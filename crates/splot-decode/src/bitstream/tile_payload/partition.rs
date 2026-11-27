@@ -191,7 +191,7 @@ pub(crate) trait PartitionSymbols {
 }
 
 impl PartitionSymbols for SymbolDecoder<'_> {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"
     )]
@@ -226,7 +226,7 @@ impl PartitionDecisionError {
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput,
@@ -247,7 +247,7 @@ pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
 
 /// The symbol reads of [`read_partition_decision`] for a block whose facts
 /// give no unread partition.
-#[allow(clippy::inline_always, reason = "measured: once per partition node")]
+#[expect(clippy::inline_always, reason = "measured: once per partition node")]
 #[inline(always)]
 pub(crate) fn read_partition_symbols<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput,
@@ -287,9 +287,8 @@ pub(crate) fn read_partition_symbols<S: PartitionSymbols + ?Sized>(
     Ok(partition)
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
-    clippy::trivially_copy_pass_by_ref,
     reason = "measured: the walk keeps the context unpacked"
 )]
 #[inline(always)]
@@ -342,9 +341,8 @@ fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     ))
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
-    clippy::trivially_copy_pass_by_ref,
     reason = "measured: the walk keeps the context unpacked"
 )]
 #[inline(always)]

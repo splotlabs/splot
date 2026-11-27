@@ -45,9 +45,9 @@ fn check_predict(block: &Block<'_, u16>, max: u16, label: &str) {
     let run = |neon: bool, sink: &mut Sink<'_>| {
         let mut stage = vec![0x5a5a_u16 as i16; len];
         let filtered = block.horizontal.is_some() || block.vertical.is_some();
-        if !neon || !super::predict(block, sink) {
+        if !neon || !super::predict(crate::subpel_mc::BaselineSubpel, block, sink) {
             assert!(!neon || !filtered, "declined {label}");
-            portable::predict(block, sink, &mut stage);
+            portable::predict(crate::subpel_mc::BaselineSubpel, block, sink, &mut stage);
         }
     };
     let words = |neon: bool| {
@@ -224,14 +224,21 @@ fn neon_compound_matches_portable() {
                         let mut stage = vec![0x5a5a_u16 as i16; len];
                         let mut output = vec![0xa5a5_u16; stride * h];
                         let blocks = [&first, &second];
-                        let taken =
-                            neon && super::compound(blocks, (forward, max), &mut output, stride);
+                        let taken = neon
+                            && super::compound(
+                                crate::subpel_mc::BaselineSubpel,
+                                blocks,
+                                (forward, max),
+                                &mut output,
+                                stride,
+                            );
                         let cell = [&first, &second]
                             .iter()
                             .all(|block| is_cell(w, h, block.horizontal, block.vertical));
                         assert_eq!(taken, neon && cell);
                         if !taken {
                             portable::compound_u16(
+                                crate::subpel_mc::BaselineSubpel,
                                 blocks,
                                 forward,
                                 max,

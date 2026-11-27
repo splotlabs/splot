@@ -42,7 +42,7 @@ impl<T: ReconSample> Plane<T> {
     /// Returns a [`ReconError`] if the stride is too small, arithmetic
     /// overflows, `samples.len()` does not match the derived backing length, or
     /// `visible_rect` falls outside `storage_size`.
-    #[allow(
+    #[expect(
         clippy::needless_pass_by_value,
         reason = "callers hand over plain Vec storage; it is copied into aligned storage"
     )]
@@ -216,7 +216,6 @@ impl<'a, T: ReconSample> Iterator for VisibleRows<'a, T> {
 impl<T: ReconSample> ExactSizeIterator for VisibleRows<'_, T> {}
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

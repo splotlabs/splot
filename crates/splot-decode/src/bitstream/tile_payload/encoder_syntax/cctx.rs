@@ -7,10 +7,9 @@ use splot_recon::PlaneId;
 
 use super::super::cdf::TileCdfSelector;
 use super::super::general_intra_residual::cctx::{
-    CCTX_MTX, reconstruct_general_intra_chroma_cctx_pair_into,
+    CCTX_MTX, reconstruct_general_intra_chroma_cctx_pair_into_with,
 };
 use super::super::general_intra_residual::{CoeffBlock, LumaCoeffBlock, is_cctx_geometry_allowed};
-use super::super::tile_frontier::chroma_subsampling;
 use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, coefficient_scan, rule,
     tx_log2,
@@ -88,21 +87,21 @@ impl IntraTileSyntax {
         let (log2_w, log2_h) = tx_log2(u.tx_size)?;
         let (mut u_out, mut v_out) = (Vec::new(), Vec::new());
         let _quant = self.tools.quant_scopes();
-        reconstruct_general_intra_chroma_cctx_pair_into(
-            CoeffBlock::new(&u_block, levels[0]).map_err(rule("CCTX block"))?,
-            predictions[0],
-            CoeffBlock::new(&v_block, levels[1]).map_err(rule("CCTX block"))?,
-            predictions[1],
-            self.tools.qindex,
-            log2_w,
-            log2_h,
-            u.cctx.into(),
-            false,
-            self.tools.bit_depth,
-            &mut u_out,
-            &mut v_out,
-        )
-        .map_err(rule("CCTX reconstruction"))?;
+        self.backend
+            .enter(CctxScope {
+                u_block: CoeffBlock::new(&u_block, levels[0]).map_err(rule("CCTX block"))?,
+                u_prediction: predictions[0],
+                v_block: CoeffBlock::new(&v_block, levels[1]).map_err(rule("CCTX block"))?,
+                v_prediction: predictions[1],
+                qindex: self.tools.qindex,
+                log2_w,
+                log2_h,
+                cctx: u.cctx.into(),
+                bit_depth: self.tools.bit_depth,
+                u_out: &mut u_out,
+                v_out: &mut v_out,
+            })
+            .map_err(rule("CCTX reconstruction"))?;
         Ok([u_out, v_out])
     }
 
@@ -110,7 +109,7 @@ impl IntraTileSyntax {
     /// `is_cctx_allowed` geometry), for the leaf just planned.
     pub(super) fn plan_cctx(&mut self, leaf: &LeafBlock) {
         let (block_ctx, _) = self.block_ctx(leaf);
-        let (sub_x, sub_y) = chroma_subsampling(self.chroma);
+        let (sub_x, sub_y) = self.chroma.subsampling();
         let plane = block_ctx.plane_block(PlaneId::U);
         self.cctx_leaf = leaf.has_chroma()
             && is_cctx_geometry_allowed(sub_x && sub_y, plane.width4() * 4, plane.height4() * 4);
@@ -123,4 +122,46 @@ pub(super) fn block_eob(tx: &TransformBlock, levels: &[i32]) -> Result<usize> {
         .iter()
         .rposition(|&pos| levels.get(usize::from(pos)).is_some_and(|&l| l != 0))
         .map_or(0, |last| last + 1))
+}
+
+struct CctxScope<'a> {
+    u_block: CoeffBlock<'a>,
+    u_prediction: &'a [u16],
+    v_block: CoeffBlock<'a>,
+    v_prediction: &'a [u16],
+    qindex: u32,
+    log2_w: u32,
+    log2_h: u32,
+    cctx: usize,
+    bit_depth: splot_recon::BitDepth,
+    u_out: &'a mut Vec<u16>,
+    v_out: &'a mut Vec<u16>,
+}
+
+impl
+    splot_core::simd::SimdScope<
+        core::result::Result<(), super::super::general_intra_residual::GeneralIntraResidualError>,
+    > for CctxScope<'_>
+{
+    fn run<B: splot_core::simd::SimdBackend>(
+        self,
+        backend: B,
+    ) -> core::result::Result<(), super::super::general_intra_residual::GeneralIntraResidualError>
+    {
+        reconstruct_general_intra_chroma_cctx_pair_into_with(
+            backend.narrow(),
+            self.u_block,
+            self.u_prediction,
+            self.v_block,
+            self.v_prediction,
+            self.qindex,
+            self.log2_w,
+            self.log2_h,
+            self.cctx,
+            false,
+            self.bit_depth,
+            self.u_out,
+            self.v_out,
+        )
+    }
 }

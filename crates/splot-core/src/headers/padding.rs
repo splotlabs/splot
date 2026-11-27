@@ -16,8 +16,12 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, PaddingErrorKind, Result};
-use crate::obu::parse_trailing_bits;
-use crate::span::{BitOffset, ByteOffset};
+use crate::obu::parse_trailing_bits_with_reader;
+use crate::span::{BitOffset, BitSpan, ByteOffset};
+use crate::syntax::{
+    NoopObserver, ScopeKind, SyntaxDescriptor, SyntaxErrorRef, SyntaxFieldRead, SyntaxObserver,
+    SyntaxReader, SyntaxValue,
+};
 
 /// Parsed `padding_obu()` syntax (AV2 v1.0.0 § 5.16).
 ///
@@ -38,7 +42,7 @@ pub struct PaddingObu {
 /// `payload` is the OBU payload (`obuPayloadSize` bytes) and `payload_offset` is its
 /// absolute start offset. The parser consumes the entire payload — the leading
 /// `obu_padding_byte` values and the `trailing_bits()` that begin at the last non-zero
-/// byte — so the caller must NOT additionally run the generic OBU trailing-bits logic
+/// byte — so the caller must not additionally run the generic OBU trailing-bits logic
 /// for `OBU_PADDING` (that would double-consume the trailing bits).
 ///
 /// # Errors
@@ -46,6 +50,44 @@ pub struct PaddingObu {
 /// non-empty all-zero payload, or [`PaddingErrorKind::InvalidTrailingBits`] if the bytes
 /// from the last non-zero byte are not a valid `trailing_bits()` pattern.
 pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<PaddingObu> {
+    let mut noop = NoopObserver;
+    parse_padding_obu_impl(payload, payload_offset, &mut noop)
+}
+
+/// Parses `padding_obu()` (AV2 v1.0.0 § 5.16 / § 6.15) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::InvalidPadding`] with [`PaddingErrorKind::AllZeroPayload`] for a
+/// non-empty all-zero payload, or [`PaddingErrorKind::InvalidTrailingBits`] if the bytes
+/// from the last non-zero byte are not a valid `trailing_bits()` pattern.
+pub fn parse_padding_obu_observed(
+    payload: &[u8],
+    payload_offset: ByteOffset,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<PaddingObu> {
+    parse_padding_obu_impl(payload, payload_offset, &mut { observer })
+}
+
+pub(crate) fn parse_padding_obu_impl<O: SyntaxObserver>(
+    payload: &[u8],
+    payload_offset: ByteOffset,
+    observer: &mut O,
+) -> Result<PaddingObu> {
+    observer.enter_scope(ScopeKind::Structure {
+        name: "padding_obu",
+        spec_section: Some("5.16"),
+    });
+    let result = parse_padding_obu_body(payload, payload_offset, observer);
+    observer.exit_scope();
+    result
+}
+
+fn parse_padding_obu_body<O: SyntaxObserver>(
+    payload: &[u8],
+    payload_offset: ByteOffset,
+    observer: &mut O,
+) -> Result<PaddingObu> {
     if payload.is_empty() {
         return Ok(PaddingObu {
             padding_len: 0,
@@ -54,21 +96,38 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
     }
 
     let Some(last_nonzero) = payload.iter().rposition(|&byte| byte != 0) else {
-        return Err(Error::InvalidPadding {
+        let error = Error::InvalidPadding {
             offset: payload_offset,
             bit_offset: BitOffset::from_bits(0),
             kind: PaddingErrorKind::AllZeroPayload,
+        };
+        observer.on_error(SyntaxErrorRef {
+            bit_offset: 0,
+            field: Some("obu_padding_byte"),
+            error: &error,
         });
+        return Err(error);
     };
 
     let padding_len = last_nonzero;
+    if padding_len > 0 {
+        observer.on_field_read(SyntaxFieldRead {
+            name: "obu_padding_byte",
+            descriptor: SyntaxDescriptor::Bytes(padding_len),
+            value: SyntaxValue::Bytes { len: padding_len },
+            span: BitSpan::new(0, (padding_len as u64).saturating_mul(8)),
+        });
+    }
+
     let trailing = &payload[padding_len..];
     let trailing_len = trailing.len();
     let trailing_offset = payload_offset.saturating_add(padding_len as u64);
+    let origin_abs_bit = payload_offset.get().saturating_mul(8);
 
     let mut reader = BitReader::new(trailing, trailing_offset);
     let nb_bits = (trailing_len as u64).saturating_mul(8);
-    if let Err(error) = parse_trailing_bits(&mut reader, nb_bits) {
+    let mut sr = SyntaxReader::with_origin(&mut reader, origin_abs_bit, observer);
+    if let Err(error) = parse_trailing_bits_with_reader(&mut sr, nb_bits) {
         let (offset, bit_offset) = match error {
             Error::InvalidTrailingBits {
                 offset, bit_offset, ..
@@ -89,7 +148,6 @@ pub fn parse_padding_obu(payload: &[u8], payload_offset: ByteOffset) -> Result<P
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::headers::frame::GmType;
 
 use super::super::super::find_mv_stack::NeighbourMvGrid;
@@ -41,7 +39,9 @@ fn rotzoom_core() -> FrameHeaderCore {
 /// The vectors `y_mode` resolves to with no neighbours, at a frame precision
 /// of a quarter sample and a block precision of one sample, with the global
 /// MVs of the block at both precisions.
-fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 2]) {
+fn resolve_without_neighbours(
+    y_mode: CompoundMode,
+) -> ([MotionVector; 2], [MotionVector; 2], [MotionVector; 2]) {
     let core = rotzoom_core();
     let block = MvBlockContext {
         mi_row: 8,
@@ -62,7 +62,7 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         local_warp: false,
         ref_mv_idx: 0,
         independent_idx: y_mode.has_second_drl().then_some([0, 0]),
-        mvd: [Mv::ZERO; 2],
+        mvd: [MotionVector::ZERO; 2],
         joint: None,
         jmvd_scale_mode: 0,
         temporal_allowed: true,
@@ -82,9 +82,12 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
     let order_hints = [Some(0), Some(0)];
     let state = MvResolutionState {
+        #[cfg(feature = "block-evidence")]
+        evidence: None,
         grid: &mut grid,
         ref_mv_bank: &mut None,
         warp_param_bank: &mut WarpParamBank::new(),
+        ibc_local: None,
         core: &core,
         temporal: None,
         order_hints: OrderHintMvContext::new(1, &order_hints, 0),
@@ -112,7 +115,7 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
 /// quarter-sample global MV its second-DRL stack offers.
 #[test]
 fn near_newmv_near_list_takes_the_frame_precision_global_mv() {
-    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundYMode::NearNew);
+    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundMode::NearNew);
 
     assert_ne!(frame_global[0], block_global[0]);
     assert_eq!(mv[0], frame_global[0]);
@@ -122,8 +125,65 @@ fn near_newmv_near_list_takes_the_frame_precision_global_mv() {
 /// frame-precision pair, so `NEW_NEARMV` keeps it on its NEAR list.
 #[test]
 fn new_nearmv_near_list_takes_the_frame_precision_global_mv() {
-    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundYMode::NewNear);
+    let (mv, frame_global, block_global) = resolve_without_neighbours(CompoundMode::NewNear);
 
     assert_ne!(frame_global[1], block_global[1]);
     assert_eq!(mv[1], frame_global[1]);
+}
+
+#[test]
+fn local_intrabc_replays_chroma_partition_padding_in_leaf_order() {
+    use crate::bitstream::tile_payload::{BlockSize, PartitionTreeType, TilePartitionCall};
+    use crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState;
+
+    let core = rotzoom_core();
+    let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
+    let mut ibc = TileLocalIbcState::new(0..16, 0..16, 32, false).unwrap();
+    let mut state = MvResolutionState {
+        #[cfg(feature = "block-evidence")]
+        evidence: None,
+        grid: &mut grid,
+        ref_mv_bank: &mut None,
+        warp_param_bank: &mut WarpParamBank::new(),
+        ibc_local: Some(&mut ibc),
+        core: &core,
+        temporal: None,
+        order_hints: OrderHintMvContext::new(1, &[], 0),
+        drl_reorder: DrlReorder::Disabled,
+        max_drl_bits_minus_1: 0,
+        frame_precision: MV_PRECISION_QUARTER_PEL,
+        tile_offset: ByteOffset::new(0),
+        sb_h4: 32,
+        mi_rows: MI_DIM,
+        mi_cols: MI_DIM,
+    };
+    let block = BlockSize::new(BLOCK_64X64).unwrap();
+    let mut entries = [
+        (0, 16, PartitionTreeType::LumaPart),
+        (16, 0, PartitionTreeType::ChromaPart),
+    ]
+    .map(|(row, col, tree)| {
+        let call = TilePartitionCall::root(row, col, block, true).with_tree_type(tree);
+        tile::ReconRowEntry::new(
+            DecodedLeafPublication::new(call, block, 31),
+            EntryState::OutOfFrame,
+        )
+    });
+
+    resolve_parsed_leaves_inner::<true>(
+        &[tile::ReconSuperblock {
+            origin: [0, 0],
+            entries: 0..entries.len(),
+            allow_extra_ibc_range: false,
+            bru_inactive: false,
+        }],
+        &mut entries,
+        &mut [],
+        &mut state,
+    )
+    .unwrap();
+
+    assert!(ibc.is_coded(16, 0));
+    assert_eq!(ibc.buffers().cur(), (1, 0));
+    assert_eq!(ibc.buffers().stored()[1], Some((0, 1)));
 }

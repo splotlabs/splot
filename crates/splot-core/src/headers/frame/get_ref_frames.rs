@@ -8,6 +8,10 @@
 //! quantizers, dimensions, order hints, and layer eligibility. The inter parser supplies
 //! known state and stops when a required ranking input is unavailable.
 
+use super::size::floor_log2;
+use crate::headers::sequence::{MLayerDependencyMap, TLayerDependencyMap};
+use crate::types::{EmbeddedLayerId, TemporalLayerId};
+
 /// `NUM_REF_FRAMES` (AV2 v1.0.0 § 3): the number of reference-frame buffer slots.
 pub(crate) const NUM_REF_FRAMES: usize = 16;
 
@@ -19,6 +23,10 @@ pub(crate) const REFS_PER_FRAME: u32 = 7;
 /// frame. § 7.7 excludes a slot whose `RefOrderHint` equals this from the scored set, then
 /// (when `checkRes && !IsBridge`) appends any remaining restricted slots at the end.
 pub const RESTRICTED_OH: i32 = -1;
+
+/// [`RESTRICTED_OH`] as stored in the unsigned `RefOrderHint` and `OrderHints`
+/// tables of the reference-state API.
+pub const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 
 /// `DIST_WEIGHT_BITS` (AV2 v1.0.0 § 3): the scaling applied to `tDist` in the
 /// `maxDisp > OrderHint` scoring arm (§ 7.7).
@@ -68,7 +76,7 @@ pub(crate) struct RefSlot {
 /// The caller fills `slots[0..num_ref_frames]`; entries at or beyond `num_ref_frames` are
 /// ignored (the § 7.7 loops run `i = 0 .. NumRefFrames - 1`).
 #[derive(Debug, Clone)]
-pub(crate) struct GetRefFramesInput {
+pub(crate) struct GetRefFramesInput<'a> {
     /// `NumRefFrames` (§ 5.4.6): the active reference-slot count; bounds the § 7.7 loops.
     pub num_ref_frames: u32,
     /// The per-slot saved reference state, one entry per `0..NUM_REF_FRAMES`.
@@ -95,14 +103,31 @@ pub(crate) struct GetRefFramesInput {
     pub frame_width: u32,
     /// `FrameHeight` (§ 5.18.4): the current frame height, used by `valid_ref_frame_size`.
     pub frame_height: u32,
-    /// `TLayerDependencyMap[ obu_mlayer_id ][ obu_tlayer_id ][ RefTLayerId[i] ]` and
-    /// `MLayerDependencyMap[ obu_mlayer_id ][ RefMLayerId[i] ]` collapsed to a single
-    /// predicate the caller evaluates per slot. For the single-spatial-layer minimal frame
-    /// this is always `1` (a layer depends on itself); the caller is responsible for the
-    /// general dependency-map lookup. The closure receives the frame's
-    /// `(obu_mlayer_id, obu_tlayer_id)` and the slot's `(ref_mlayer_id, ref_tlayer_id)`, so a
-    /// real implementation can index both dependency maps.
-    pub layer_dependency: fn(u8, u8, u8, u8) -> bool,
+    /// `MLayerDependencyMap` (§ 5.4.1), or `None` to allow any embedded layer in synthetic
+    /// unit tests.
+    pub mlayer_dependency_map: Option<&'a MLayerDependencyMap>,
+    /// `TLayerDependencyMap` (§ 5.4.1), or `None` to allow any temporal layer in synthetic
+    /// unit tests.
+    pub tlayer_dependency_map: Option<&'a TLayerDependencyMap>,
+}
+
+impl GetRefFramesInput<'_> {
+    fn layer_depends_on(&self, slot: &RefSlot) -> bool {
+        let mlayer_ok = self.mlayer_dependency_map.is_none_or(|map| {
+            map.depends_on(
+                EmbeddedLayerId::from_bits(self.obu_mlayer_id),
+                EmbeddedLayerId::from_bits(slot.mlayer_id),
+            )
+        });
+        let tlayer_ok = self.tlayer_dependency_map.is_none_or(|map| {
+            map.depends_on(
+                EmbeddedLayerId::from_bits(self.obu_mlayer_id),
+                TemporalLayerId::from_bits(self.obu_tlayer_id),
+                TemporalLayerId::from_bits(slot.tlayer_id),
+            )
+        });
+        mlayer_ok && tlayer_ok
+    }
 }
 
 /// A stack-resident list of at most `REFS_PER_FRAME` `u32` values, replacing the
@@ -265,7 +290,7 @@ fn valid_ref_frame_size(check_res: bool, frame_w: u32, frame_h: u32, slot: &RefS
 /// `check_res` is the § 7.7 `checkRes` input: the first inter-header call (mirror :4607)
 /// passes `false` (resolution unknown — `frame_size()` runs after), the second (mirror :4647)
 /// passes `true` once `FrameWidth` / `FrameHeight` are resolved.
-pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetRefFrames {
+pub(crate) fn get_ref_frames(input: &GetRefFramesInput<'_>, check_res: bool) -> GetRefFrames {
     let num_ref_frames = (input.num_ref_frames as usize).min(NUM_REF_FRAMES);
     let active_num_ref_frames = REFS_PER_FRAME.min(input.num_ref_frames);
 
@@ -276,12 +301,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let slot = &input.slots[i];
         let allowed = (input.allowed_frames & (1i32 << i)) != 0;
         let bridge_ok = !input.is_bridge || i as u32 == input.bridge_frame_ref_idx;
-        let layer_ok = (input.layer_dependency)(
-            input.obu_mlayer_id,
-            input.obu_tlayer_id,
-            slot.mlayer_id,
-            slot.tlayer_id,
-        );
+        let layer_ok = input.layer_depends_on(slot);
         if first_slot_with_ref(&input.slots, i)
             && slot.order_hint != RESTRICTED_OH
             && bridge_ok
@@ -310,13 +330,13 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let mut score = if max_disp > input.order_hint {
             (t_dist << DIST_WEIGHT_BITS) + q as i32
         } else {
-            // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
+            // TODO(spec: AV2-7.7-GET-REF-FRAMES): oracle-check tDist < 0 for multi-layer refs.
             let cap = DECAY_DIST_CAP;
             let lookup_idx = t_dist.clamp(0, cap) as usize;
             DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + q as i32
         };
         let area = u64::from(slot.width).saturating_mul(u64::from(slot.height));
-        let ref_ratio = floor_log2_u32_from_u64(area) as i32;
+        let ref_ratio = floor_log2(area) as i32;
         score -= ref_ratio << 5;
 
         if new_score_or_dist(&ranked[..ranked_len], d, score, slot.mlayer_id) {
@@ -360,12 +380,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         for i in 0..num_ref_frames {
             let slot = &input.slots[i];
             let allowed = (input.allowed_frames & (1i32 << i)) != 0;
-            let layer_ok = (input.layer_dependency)(
-                input.obu_mlayer_id,
-                input.obu_tlayer_id,
-                slot.mlayer_id,
-                slot.tlayer_id,
-            );
+            let layer_ok = input.layer_depends_on(slot);
             if slot.valid
                 && slot.order_hint == RESTRICTED_OH
                 && layer_ok
@@ -435,22 +450,9 @@ fn get_unmapped_ref(ranked: &[Ranked], q_thresh: u32) -> Option<usize> {
     None
 }
 
-/// `FloorLog2( value )` over a `u64` area product (§ 7.7 `refRatio`). `FloorLog2(0)` is `0` by
-/// the spec convention (the same convention [`super::size::ceil_log2`] uses for its degenerate
-/// inputs).
-fn floor_log2_u32_from_u64(value: u64) -> u32 {
-    if value < 2 { 0 } else { value.ilog2() }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A trivial all-layers-depend layer-dependency predicate for the single-spatial-layer
-    /// case (a layer always depends on itself; for the minimal frame every ref is layer 0).
-    fn all_depend(_frame_mlayer: u8, _frame_tlayer: u8, _ref_mlayer: u8, _ref_tlayer: u8) -> bool {
-        true
-    }
 
     fn empty_slot() -> RefSlot {
         RefSlot {
@@ -465,7 +467,7 @@ mod tests {
         }
     }
 
-    fn base_input() -> GetRefFramesInput {
+    fn base_input() -> GetRefFramesInput<'static> {
         GetRefFramesInput {
             num_ref_frames: 8,
             slots: [empty_slot(); NUM_REF_FRAMES],
@@ -477,14 +479,15 @@ mod tests {
             bridge_frame_ref_idx: 0,
             frame_width: 64,
             frame_height: 64,
-            layer_dependency: all_depend,
+            mlayer_dependency_map: None,
+            tlayer_dependency_map: None,
         }
     }
 
     /// AV2 § 7.7 worked example — the minimal `syn-key-inter-64x64` inter frame.
     ///
     /// After the CLK key frame (`refresh_frame_flags == 255`, § 7.23 :14132 `first` rule),
-    /// ONLY slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
+    /// only slot 0 is `RefValid` (slots 1..15 take `(KEY) ? first(0) : 1 == 0`). The key
     /// stored `RefOrderHint[0] == 0`, `RefBaseQIdx[0] == 70` (the fixture's `base_q_idx`),
     /// `RefFrameWidth/Height[0] == 64`. The inter frame has `OrderHint == 1`, single spatial
     /// layer (`obu_mlayer_id == obu_tlayer_id == 0`), `AllowedFrames == -1`.
@@ -527,7 +530,7 @@ mod tests {
         assert!(res.ref_frame_idx.is_empty());
     }
 
-    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the SAME decoded frame
+    /// AV2 § 7.7 `first_slot_with_ref` — two valid slots that store the same decoded frame
     /// (equal `RefCounter`) collapse to one distinct reference (the lowest-indexed slot).
     ///
     /// Slots 0 and 3 both valid with `RefCounter == 5`; slot 3 is suppressed because slot 0
@@ -722,13 +725,50 @@ mod tests {
         assert_eq!(get_relative_dist(5, RESTRICTED_OH), -127);
     }
 
-    /// FloorLog2 over the area product matches the spec convention (FloorLog2(0) == 0).
     #[test]
-    fn floor_log2_u64_matches_spec() {
-        assert_eq!(floor_log2_u32_from_u64(0), 0);
-        assert_eq!(floor_log2_u32_from_u64(1), 0);
-        assert_eq!(floor_log2_u32_from_u64(2), 1);
-        assert_eq!(floor_log2_u32_from_u64(4096), 12);
-        assert_eq!(floor_log2_u32_from_u64(4095), 11);
+    fn tlayer_dependency_map_filters_scored_and_restricted_slots() {
+        let tlayer_map = TLayerDependencyMap::default_for(
+            TemporalLayerId::from_bits(3),
+            EmbeddedLayerId::from_bits(0),
+        );
+        let mlayer_map = MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(0));
+        let mut input = base_input();
+        input.obu_tlayer_id = 1;
+        input.order_hint = 10;
+        input.mlayer_dependency_map = Some(&mlayer_map);
+        input.tlayer_dependency_map = Some(&tlayer_map);
+        input.slots[0] = RefSlot {
+            valid: true,
+            order_hint: 8,
+            base_q_idx: 40,
+            counter: 1,
+            mlayer_id: 0,
+            tlayer_id: 0,
+            width: 64,
+            height: 64,
+        };
+        input.slots[1] = RefSlot {
+            valid: true,
+            order_hint: 9,
+            base_q_idx: 40,
+            counter: 2,
+            mlayer_id: 0,
+            tlayer_id: 2,
+            width: 64,
+            height: 64,
+        };
+        input.slots[2] = RefSlot {
+            valid: true,
+            order_hint: RESTRICTED_OH,
+            base_q_idx: 40,
+            counter: 3,
+            mlayer_id: 0,
+            tlayer_id: 3,
+            width: 64,
+            height: 64,
+        };
+        let res = get_ref_frames(&input, true);
+        assert_eq!(res.num_total_refs, 1);
+        assert_eq!(res.ref_frame_idx, vec![0]);
     }
 }

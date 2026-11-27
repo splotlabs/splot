@@ -8,13 +8,9 @@
 //! and validates the § 5.2.1 payload tail. Cross-OBU stateful checks live in
 //! [`crate::context`].
 
-use std::collections::BTreeSet;
-
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::atlas_segment::{
-    AtlasModeInfo, AtlasSegment, AtlasSegmentMode, parse_atlas_segment,
-};
+use splot_core::headers::atlas_segment::parse_scoped_atlas_segment;
 use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::parse_content_interpretation;
 use splot_core::headers::film_grain::parse_film_grain;
@@ -104,7 +100,20 @@ impl Check for MsdoSyntax {
                         );
                     }
                 }
-                if crate::annex_a::is_reserved_profile(msdo.multistream_profile_idc.get()) {
+                if crate::annex_a::is_reserved_level(msdo.multistream_level_idx) {
+                    report.push(
+                        Diagnostic::error(
+                            "annex-a/level-reserved",
+                            format!(
+                                "multistream_level_idx {} is reserved by Table A.7.",
+                                msdo.multistream_level_idx
+                            ),
+                        )
+                        .with_spec_section("A.4")
+                        .with_byte_offset(obu.offset),
+                    );
+                }
+                if msdo.multistream_profile_idc.is_reserved() {
                     report.push(
                         Diagnostic::error(
                             "annex-a/profile-reserved",
@@ -337,61 +346,8 @@ impl Check for AtlasSegmentSyntax {
             ObuType::AtlasSegment,
             "5.9",
             true,
-            parse_atlas_segment,
-            check_atlas_segment_semantics,
-        );
-    }
-}
-
-/// Checks the locally decidable § 6.9 atlas-segment constraints on a parsed atlas and
-/// pushes any `atlas/*` diagnostics.
-fn check_atlas_segment_semantics(
-    atlas: &AtlasSegment,
-    obu: &ObuEnvelope<'_>,
-    report: &mut ValidationReport,
-) {
-    if matches!(
-        atlas.mode,
-        AtlasSegmentMode::Multistream | AtlasSegmentMode::MultistreamAlpha
-    ) && !obu.header.extended_layer_id.is_global()
-    {
-        report.push(
-            Diagnostic::error(
-                "atlas/multistream-requires-global-xlayer",
-                format!(
-                    "a multistream atlas (ats_atlas_segment_mode_idc {}) requires \
-                     obu_xlayer_id == GLOBAL_XLAYER_ID, found {}",
-                    atlas.mode.idc(),
-                    obu.header.extended_layer_id.get()
-                ),
-            )
-            .with_spec_section("6.9")
-            .with_byte_offset(obu.offset),
-        );
-    }
-
-    let input_stream_ids: Vec<u8> = match &atlas.mode_info {
-        AtlasModeInfo::Basic(basic) => basic
-            .segments
-            .iter()
-            .filter_map(|segment| segment.input_stream_id)
-            .collect(),
-        AtlasModeInfo::Multistream(msi) | AtlasModeInfo::MultistreamAlpha(msi) => msi
-            .segments
-            .iter()
-            .map(|segment| segment.input_stream_id)
-            .collect(),
-        _ => Vec::new(),
-    };
-    let mut seen = BTreeSet::new();
-    if input_stream_ids.iter().any(|id| !seen.insert(*id)) {
-        report.push(
-            Diagnostic::error(
-                "atlas/duplicate-input-stream-id",
-                "ats_input_stream_id / ats_msi_input_stream_id values of an atlas must be unique",
-            )
-            .with_spec_section("6.9.6")
-            .with_byte_offset(obu.offset),
+            |reader| parse_scoped_atlas_segment(reader, obu.header.extended_layer_id),
+            |_, _, _| {},
         );
     }
 }

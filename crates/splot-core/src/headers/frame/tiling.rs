@@ -19,9 +19,10 @@ use crate::headers::sequence::{
     LevelIdx, SequenceHeaderGeneral, SequencePartitionConfig, SequenceTileConfig,
     SequenceTqEntropyConfig, SuperblockSize, Tier,
 };
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 use crate::tile::{
     ReuseTileParamsInput, TileParams, TileParamsInput, mi_width_log2, num_4x4_blocks_wide,
-    parse_tile_layout, reuse_tile_params,
+    parse_tile_layout_with_reader, reuse_tile_params,
 };
 
 use super::size::FrameSize;
@@ -200,156 +201,201 @@ pub fn parse_tile_info(
     is_bridge: bool,
     tip_frame_as_output: bool,
 ) -> Result<TileInfo> {
-    let sb_size = tile.frame_sb_size(frame_is_intra);
-    let sb4x4 = num_4x4_blocks_wide(sb_size);
-    let sb_shift = mi_width_log2(sb_size);
-    let mi_cols = 2 * (frame_size.width.saturating_add(7) >> 3);
-    let mi_rows = 2 * (frame_size.height.saturating_add(7) >> 3);
-    let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
-    let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
+    SyntaxReader::with_noop(reader, |sr| {
+        parse_tile_info_with_reader(
+            sr,
+            tile,
+            frame_size,
+            frame_is_intra,
+            is_bridge,
+            tip_frame_as_output,
+        )
+    })
+}
 
-    let have_tile_params = !is_bridge && tile.seq_tile_info_present_flag;
+pub(crate) fn parse_tile_info_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    tile: &CoreSeqTileView,
+    frame_size: FrameSize,
+    frame_is_intra: bool,
+    is_bridge: bool,
+    tip_frame_as_output: bool,
+) -> Result<TileInfo> {
+    sr.in_struct("tile_info", Some("5.18.7.2"), |sr| {
+        let sb_size = tile.frame_sb_size(frame_is_intra);
+        let sb4x4 = num_4x4_blocks_wide(sb_size);
+        let sb_shift = mi_width_log2(sb_size);
+        let mi_cols = 2 * (frame_size.width.saturating_add(7) >> 3);
+        let mi_rows = 2 * (frame_size.height.saturating_add(7) >> 3);
+        let sb_cols = mi_cols.saturating_add(sb4x4 - 1) >> sb_shift;
+        let sb_rows = mi_rows.saturating_add(sb4x4 - 1) >> sb_shift;
 
-    let seq = tile.seq_tile_params.as_ref();
+        let have_tile_params = !is_bridge && tile.seq_tile_info_present_flag;
 
-    let eligible = match (have_tile_params, seq) {
-        (false, _) => false,
-        (true, None) => {
-            return Err(Error::Unimplemented {
-                feature: "AV2-5.18.7-SEGMENTATION-TILING",
-            });
-        }
-        (true, Some(seq)) => {
-            if seq.uniform_spacing {
-                uniform_eligible(seq.tile_rows_log2, sb_rows)
-                    && uniform_eligible(seq.tile_cols_log2, sb_cols)
+        let seq = tile.seq_tile_params.as_ref();
+
+        let eligible = match (have_tile_params, seq) {
+            (false, _) => false,
+            (true, None) => {
+                return Err(Error::Unimplemented {
+                    feature: "AV2-5.18.7-SEGMENTATION-TILING",
+                });
+            }
+            (true, Some(seq)) => {
+                if seq.uniform_spacing {
+                    uniform_eligible(seq.tile_rows_log2, sb_rows)
+                        && uniform_eligible(seq.tile_cols_log2, sb_cols)
+                } else {
+                    seq.sb_cols == sb_cols && seq.sb_rows == sb_rows
+                }
+            }
+        };
+
+        let reuse_tile_info = if eligible {
+            if tile.allow_tile_info_change {
+                sr.read_flag("reuse_tile_info")?
             } else {
-                seq.sb_cols == sb_cols && seq.sb_rows == sb_rows
+                sr.inferred_bool("reuse_tile_info", "!allow_tile_info_change", true);
+                true
+            }
+        } else {
+            sr.inferred_bool("reuse_tile_info", "!eligible", false);
+            false
+        };
+
+        let seq_sb_size = tile.seq_sb_size;
+
+        let mut explicit_tile_params: Option<TileParams> = None;
+        let (
+            sb_col_starts,
+            sb_row_starts,
+            tile_cols,
+            tile_rows,
+            tile_cols_log2,
+            tile_rows_log2,
+            sb_shift2,
+        ) = if reuse_tile_info {
+            let seq = seq.ok_or(Error::Unimplemented {
+                feature: "AV2-5.18.7-SEGMENTATION-TILING",
+            })?;
+            let (seq_sb_row_starts, seq_sb_col_starts): (&[u32], &[u32]) = if seq.uniform_spacing {
+                (&[], &[])
+            } else {
+                (&tile.seq_sb_row_starts, &tile.seq_sb_col_starts)
+            };
+            let reused = reuse_tile_params(ReuseTileParamsInput {
+                uniform_spacing: seq.uniform_spacing,
+                seq_sb_row_starts,
+                seq_tile_rows: seq.tile_rows,
+                seq_tile_rows_log2: seq.tile_rows_log2,
+                seq_sb_col_starts,
+                seq_tile_cols: seq.tile_cols,
+                seq_tile_cols_log2: seq.tile_cols_log2,
+                seq_sb_size,
+                sb_size,
+                mi_cols,
+                mi_rows,
+            });
+            (
+                reused.sb_col_starts,
+                reused.sb_row_starts,
+                reused.tile_cols,
+                reused.tile_rows,
+                reused.tile_cols_log2,
+                reused.tile_rows_log2,
+                reused.sb_shift2,
+            )
+        } else {
+            let layout = parse_tile_layout_with_reader(
+                sr,
+                TileParamsInput {
+                    frame_width: frame_size.width,
+                    frame_height: frame_size.height,
+                    uniform_sb_size: seq_sb_size,
+                    sb_size,
+                    is_bridge,
+                    seq_tier: tile.seq_tier,
+                    seq_level_idx: tile.seq_level_idx,
+                },
+            )?;
+            explicit_tile_params = Some(layout.params);
+            (
+                layout.sb_col_starts,
+                layout.sb_row_starts,
+                layout.params.tile_cols,
+                layout.params.tile_rows,
+                layout.params.tile_cols_log2,
+                layout.params.tile_rows_log2,
+                layout.sb_shift2,
+            )
+        };
+
+        let sb_shift2 = sb_shift2.min(31);
+        let mut mi_col_starts = crate::tile::TileStarts::default();
+        for &start in &sb_col_starts {
+            if mi_col_starts.push(start << sb_shift2).is_none() {
+                let err = tile_starts_overflow(sr.reader());
+                return sr.fail(sr.rel_bit(), None, err);
             }
         }
-    };
-
-    let reuse_tile_info = if eligible {
-        if tile.allow_tile_info_change {
-            reader.read_flag()?
-        } else {
-            true
+        if mi_col_starts.push(mi_cols).is_none() {
+            let err = tile_starts_overflow(sr.reader());
+            return sr.fail(sr.rel_bit(), None, err);
         }
-    } else {
-        false
-    };
+        let mut mi_row_starts = crate::tile::TileStarts::default();
+        for &start in &sb_row_starts {
+            if mi_row_starts.push(start << sb_shift2).is_none() {
+                let err = tile_starts_overflow(sr.reader());
+                return sr.fail(sr.rel_bit(), None, err);
+            }
+        }
+        if mi_row_starts.push(mi_rows).is_none() {
+            let err = tile_starts_overflow(sr.reader());
+            return sr.fail(sr.rel_bit(), None, err);
+        }
 
-    let seq_sb_size = tile.seq_sb_size;
-
-    let mut explicit_tile_params: Option<TileParams> = None;
-    let (
-        sb_col_starts,
-        sb_row_starts,
-        tile_cols,
-        tile_rows,
-        tile_cols_log2,
-        tile_rows_log2,
-        sb_shift2,
-    ) = if reuse_tile_info {
-        let seq = seq.ok_or(Error::Unimplemented {
-            feature: "AV2-5.18.7-SEGMENTATION-TILING",
-        })?;
-        let (seq_sb_row_starts, seq_sb_col_starts): (&[u32], &[u32]) = if seq.uniform_spacing {
-            (&[], &[])
-        } else {
-            (&tile.seq_sb_row_starts, &tile.seq_sb_col_starts)
-        };
-        let reused = reuse_tile_params(ReuseTileParamsInput {
-            uniform_spacing: seq.uniform_spacing,
-            seq_sb_row_starts,
-            seq_tile_rows: seq.tile_rows,
-            seq_tile_rows_log2: seq.tile_rows_log2,
-            seq_sb_col_starts,
-            seq_tile_cols: seq.tile_cols,
-            seq_tile_cols_log2: seq.tile_cols_log2,
-            seq_sb_size,
-            sb_size,
-            mi_cols,
-            mi_rows,
-        });
-        (
-            reused.sb_col_starts,
-            reused.sb_row_starts,
-            reused.tile_cols,
-            reused.tile_rows,
-            reused.tile_cols_log2,
-            reused.tile_rows_log2,
-            reused.sb_shift2,
-        )
-    } else {
-        let layout = parse_tile_layout(
-            reader,
-            TileParamsInput {
-                frame_width: frame_size.width,
-                frame_height: frame_size.height,
-                uniform_sb_size: seq_sb_size,
-                sb_size,
-                is_bridge,
-                seq_tier: tile.seq_tier,
-                seq_level_idx: tile.seq_level_idx,
-            },
-        )?;
-        explicit_tile_params = Some(layout.params);
-        (
-            layout.sb_col_starts,
-            layout.sb_row_starts,
-            layout.params.tile_cols,
-            layout.params.tile_rows,
-            layout.params.tile_cols_log2,
-            layout.params.tile_rows_log2,
-            layout.sb_shift2,
-        )
-    };
-
-    let sb_shift2 = sb_shift2.min(31);
-    let mut mi_col_starts = crate::tile::TileStarts::default();
-    for &start in &sb_col_starts {
-        mi_col_starts
-            .push(start << sb_shift2)
-            .ok_or_else(|| tile_starts_overflow(reader))?;
-    }
-    mi_col_starts
-        .push(mi_cols)
-        .ok_or_else(|| tile_starts_overflow(reader))?;
-    let mut mi_row_starts = crate::tile::TileStarts::default();
-    for &start in &sb_row_starts {
-        mi_row_starts
-            .push(start << sb_shift2)
-            .ok_or_else(|| tile_starts_overflow(reader))?;
-    }
-    mi_row_starts
-        .push(mi_rows)
-        .ok_or_else(|| tile_starts_overflow(reader))?;
-
-    let (context_update_tile_id, tile_size_bytes) =
-        if (tile_cols > 1 || tile_rows > 1) && !is_bridge && !tip_frame_as_output {
-            let context_update_tile_id = if !tile.enable_avg_cdf || tile.avg_cdf_type == 0 {
-                reader.read_bits(u32::from(tile_rows_log2) + u32::from(tile_cols_log2))?
+        let (context_update_tile_id, tile_size_bytes) =
+            if (tile_cols > 1 || tile_rows > 1) && !is_bridge && !tip_frame_as_output {
+                let context_update_tile_id = if !tile.enable_avg_cdf || tile.avg_cdf_type == 0 {
+                    sr.read_bits(
+                        "context_update_tile_id",
+                        u32::from(tile_rows_log2) + u32::from(tile_cols_log2),
+                    )?
+                } else {
+                    sr.inferred_u64(
+                        "context_update_tile_id",
+                        "enable_avg_cdf && avg_cdf_type != 0",
+                        0,
+                    );
+                    0
+                };
+                let tile_size_bytes_minus_1 = sr.read_bits("tile_size_bytes_minus_1", 2)?;
+                (context_update_tile_id, Some(tile_size_bytes_minus_1 + 1))
             } else {
-                0
+                sr.inferred_u64(
+                    "context_update_tile_id",
+                    "!(TileCols > 1 || TileRows > 1) || IsBridge || TipFrameAsOutput",
+                    0,
+                );
+                sr.absent(
+                    "tile_size_bytes_minus_1",
+                    "!(TileCols > 1 || TileRows > 1) || IsBridge || TipFrameAsOutput",
+                );
+                (0, None)
             };
-            let tile_size_bytes_minus_1 = reader.read_bits(2)?;
-            (context_update_tile_id, Some(tile_size_bytes_minus_1 + 1))
-        } else {
-            (0, None)
-        };
 
-    Ok(TileInfo {
-        reuse_tile_info,
-        tile_cols,
-        tile_rows,
-        tile_cols_log2,
-        tile_rows_log2,
-        mi_col_starts,
-        mi_row_starts,
-        context_update_tile_id,
-        tile_size_bytes,
-        tile_params: explicit_tile_params,
+        Ok(TileInfo {
+            reuse_tile_info,
+            tile_cols,
+            tile_rows,
+            tile_cols_log2,
+            tile_rows_log2,
+            mi_col_starts,
+            mi_row_starts,
+            context_update_tile_id,
+            tile_size_bytes,
+            tile_params: explicit_tile_params,
+        })
     })
 }
 
@@ -360,7 +406,7 @@ pub fn parse_tile_info(
 ///
 /// `lastTileWidth = sbNum - (tileNum - 1) * tileWidth` can be negative, so the
 /// arithmetic uses `i128` (the spec works on unbounded integers).
-pub(super) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
+pub(crate) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
     let tile_log2 = u32::from(tile_log2).min(64);
     let tile_num: i128 = 1 << tile_log2;
     let tile_width = (i128::from(sb_num) + tile_num - 1) >> tile_log2;
@@ -369,7 +415,6 @@ pub(super) fn uniform_eligible(tile_log2: u8, sb_num: u32) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

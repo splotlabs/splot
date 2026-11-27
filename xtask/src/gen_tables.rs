@@ -145,7 +145,7 @@ struct Section {
 /// Tables in the attachment whose element values are not integer literals and so
 /// cannot be emitted as typed integer arrays without an AV2 enum-value resolution
 /// map. Each is listed with the reason it is skipped; the run report enumerates
-/// them. A symbolic table NOT in this list is a hard error (loud failure),
+/// them. A symbolic table not in this list is a hard error (loud failure),
 /// preventing silent truncation.
 const SKIP_ALLOWLIST: &[(&str, &str)] = &[
     (

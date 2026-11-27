@@ -6,8 +6,12 @@
 //! Parses `frame_size()` from explicit dimensions or known multi-frame defaults
 //! (`docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-1`).
 
+#[cfg(test)]
 use crate::bitio::BitReader;
 use crate::error::Result;
+#[cfg(test)]
+use crate::syntax::NoopObserver;
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 
 /// A frame's luma dimensions, derived from `frame_size()` (AV2 v1.0.0 § 5.18.4.1).
 ///
@@ -34,13 +38,21 @@ impl FrameSize {
 /// (AV2 v1.0.0 § 4.8, `docs/spec/av2/1.0.0/04-conventions.md#s-4-8`).
 ///
 /// Returns `0` for `x < 2`, matching the spec's `CeilLog2(0) == CeilLog2(1) == 0`.
+#[inline]
 #[must_use]
-pub(crate) const fn ceil_log2(x: u32) -> u32 {
+pub const fn ceil_log2(x: u32) -> u32 {
     if x < 2 {
         0
     } else {
         u32::BITS - (x - 1).leading_zeros()
     }
+}
+
+/// `FloorLog2(x)` (AV2 v1.0.0 § 4.7), with `FloorLog2(0) == 0` like [`ceil_log2`].
+#[inline]
+#[must_use]
+pub const fn floor_log2(x: u64) -> u32 {
+    if x < 2 { 0 } else { x.ilog2() }
 }
 
 /// Parses `frame_size()` for the paths whose dimensions are exactly known
@@ -60,6 +72,7 @@ pub(crate) const fn ceil_log2(x: u32) -> u32 {
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends before an overridden width/height can be read.
+#[cfg(test)]
 pub(crate) fn parse_frame_size(
     reader: &mut BitReader<'_>,
     frame_size_override_flag: bool,
@@ -67,20 +80,54 @@ pub(crate) fn parse_frame_size(
     frame_height_bits: u32,
     default_dims: Option<(u32, u32)>,
 ) -> Result<Option<FrameSize>> {
-    if frame_size_override_flag {
-        let frame_width_minus_1 = reader.read_bits(frame_width_bits)?;
-        let frame_height_minus_1 = reader.read_bits(frame_height_bits)?;
-        Ok(Some(FrameSize::new(
-            frame_width_minus_1.saturating_add(1),
-            frame_height_minus_1.saturating_add(1),
-        )))
-    } else {
-        Ok(default_dims.map(|(width, height)| FrameSize::new(width, height)))
-    }
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_frame_size_with_reader(
+        &mut sr,
+        frame_size_override_flag,
+        frame_width_bits,
+        frame_height_bits,
+        default_dims,
+    )
+}
+
+pub(crate) fn parse_frame_size_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    frame_size_override_flag: bool,
+    frame_width_bits: u32,
+    frame_height_bits: u32,
+    default_dims: Option<(u32, u32)>,
+) -> Result<Option<FrameSize>> {
+    sr.in_struct("frame_size", Some("5.18.4.1"), |sr| {
+        if frame_size_override_flag {
+            let frame_width_minus_1 = sr.read_bits("frame_width_minus_1", frame_width_bits)?;
+            let frame_height_minus_1 = sr.read_bits("frame_height_minus_1", frame_height_bits)?;
+            Ok(Some(FrameSize::new(
+                frame_width_minus_1.saturating_add(1),
+                frame_height_minus_1.saturating_add(1),
+            )))
+        } else {
+            if let Some((w, h)) = default_dims {
+                sr.inferred_u64(
+                    "frame_width_minus_1",
+                    "!frame_size_override_flag",
+                    u64::from(w.saturating_sub(1)),
+                );
+                sr.inferred_u64(
+                    "frame_height_minus_1",
+                    "!frame_size_override_flag",
+                    u64::from(h.saturating_sub(1)),
+                );
+            } else {
+                sr.absent("frame_width_minus_1", "!frame_size_override_flag");
+                sr.absent("frame_height_minus_1", "!frame_size_override_flag");
+            }
+            Ok(default_dims.map(|(width, height)| FrameSize::new(width, height)))
+        }
+    })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;
@@ -97,6 +144,15 @@ mod tests {
         assert_eq!(ceil_log2(4), 2);
         assert_eq!(ceil_log2(8), 3);
         assert_eq!(ceil_log2(16), 4);
+    }
+
+    #[test]
+    fn floor_log2_matches_spec_definition() {
+        assert_eq!(floor_log2(0), 0);
+        assert_eq!(floor_log2(1), 0);
+        assert_eq!(floor_log2(2), 1);
+        assert_eq!(floor_log2(4096), 12);
+        assert_eq!(floor_log2(4095), 11);
     }
 
     #[test]

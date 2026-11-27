@@ -9,6 +9,7 @@
 //! writer does not write inter headers, so the returned header keeps the exact
 //! bits, and [`encode_inter_frame_obu`] copies them into the tile group.
 
+use super::RESTRICTED_ORDER_HINT;
 use crate::bitio::BitReader;
 use crate::headers::content_interpretation::ContentInterpretation;
 use crate::headers::film_grain::{
@@ -237,7 +238,7 @@ pub fn build_inter_frame_header(
         let position = ref_frame_idx
             .iter()
             .zip(inter.order_hints.iter())
-            .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
+            .position(|(&index, &hint)| index == slot && hint != RESTRICTED_ORDER_HINT)?;
         u32::try_from(position).ok()
     });
     if position.is_none()
@@ -1161,11 +1162,7 @@ pub fn encode_film_grain_obu(
     chroma: ChromaFormatIdc,
     model: &FilmGrainModel,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
-    let (sub_x, sub_y) = match chroma {
-        ChromaFormatIdc::Yuv444 => (false, false),
-        ChromaFormatIdc::Yuv422 => (true, false),
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
-    };
+    let (sub_x, sub_y) = chroma.subsampling();
     let obu = FilmGrainObu {
         update_flags: 1,
         chroma_idc: chroma.get().into(),

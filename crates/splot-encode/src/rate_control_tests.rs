@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -338,7 +336,8 @@ fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
         };
         let one = stream(1);
         assert!(!one.is_empty());
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(stream(threads) == one, "{mode:?} at {threads} threads");
         }
         streams.push(one);

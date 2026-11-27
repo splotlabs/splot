@@ -513,7 +513,6 @@ pub(crate) fn dc_midpoint(bit_depth: BitDepth) -> u16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
@@ -56,8 +54,9 @@ fn decode_intra_fixture_with_core(
     mutate(&mut core);
     let mut products =
         crate::prediction::inter::FrameProductWriters::fresh().expect("fresh product writers");
-    let walk = {
-        crate::pipeline::frame_engine::walk_frame::<u8>(
+    let walk = crate::test_support::with_auto_backend!(backend => {
+        crate::pipeline::frame_engine::walk_frame::<_, u8>(
+            backend,
             &mut crate::prediction::inter::InterDecodeScratch::default(),
             &candidate,
             Q80_FIXTURE.into(),
@@ -69,7 +68,7 @@ fn decode_intra_fixture_with_core(
             BitDepth::Eight,
             &mut products,
         )
-    }?;
+    })?;
     let WalkStage::Pending(walked) = walk.stage else {
         panic!("an intra frame always owes its filter phase");
     };
