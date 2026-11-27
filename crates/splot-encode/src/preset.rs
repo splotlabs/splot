@@ -529,7 +529,7 @@ pub struct PresetParams {
     /// off disables `allow_screen_content_tools`. Off in every row: it pays
     /// only on screen content, whose preset rows turn it on.
     pub palette: bool,
-    /// Key frames code `allow_intrabc`, and each leaf of at most 64x64
+    /// Key and `intra_only` frames code `allow_intrabc`, and each leaf of at most 64x64
     /// (other than 64x64) gets an RD trial of the closest earlier copy of
     /// its luma that the block hashes find. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
