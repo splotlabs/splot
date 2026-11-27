@@ -1010,8 +1010,8 @@ impl PresetParams {
     /// Switches off every search that a lossless frame forbids (§ 5.18.2
     /// `CodedLossless`: TCQ, parity hiding, delta-q, the loop filters) or that
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
-    /// the tools whose lossless forms are a later search (FSC, IDTX, IST,
-    /// CCTX, DDT, transform types and partitions, palette, IntraBC).
+    /// the tools whose lossless forms are a later search (IST, CCTX, DDT,
+    /// palette, IntraBC) or need a lossless field (FSC, IDTX, transform types).
     #[cfg(test)]
     pub(crate) fn set_lossless(&mut self) {
         self.set_lossless_with(|_| {});
