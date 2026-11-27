@@ -22647,3 +22647,35 @@ tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::cropping_
 commands = ["cargo test -p splot-core cropping_window --locked", "cargo test -p splot-encode crop --locked", "cargo test -p splot-cli --test encode_decode_roundtrip cropped --locked"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "ENC-RESTRICTION-SWITCHES"
+name = "Encoder restriction switches of the sequence and frame headers"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.3", "5.4.8", "5.4.10", "5.18.2", "5.20.3.2", "5.20.6.3", "5.20.7.29", "5.20.8.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/preset.rs"
+change_id = "enc-restriction-switches"
+owner = "encoder"
+risk = "low"
+notes = "Off-by-default preset fields (2026-11-27, off in every row by design: each removes tools; not measured): max_pb_aspect_ratio 2 or 4 codes reduce_pb_aspect_ratio with that MaxPbAspectRatio, chroma_dct_only codes enable_chroma_dctonly, reduced_tx_part_set codes reduced_tx_part_set, ccso_unit_sb and gdf_unit_sb code ccso_unit_matches_sb_size and gdf_unit_matches_sb_size, and reduced_tx_set 0..=3 overrides the frame reduced_tx_set that 4 derives from tx_type_depth. The search takes its partitions, transform partitions and types and filter units from the shared syntax of the parsed headers, so no block uses a restricted tool. PresetParams::validate refuses an aspect ratio other than 0, 2 or 4, ccso_unit_sb without CCSO, and gdf_unit_sb without GDF or with superblocks above 64x64."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::restriction_switches_follow_their_syntax_conditions", "crates/splot-encode/src/intra_frame_restriction_tests.rs::max_pb_aspect_ratio_limits_every_coded_block", "crates/splot-encode/src/intra_frame_restriction_tests.rs::chroma_dct_only_codes_dct_chroma_transforms", "crates/splot-encode/src/intra_frame_restriction_tests.rs::reduced_tx_part_set_codes_no_four_way_one_axis_split", "crates/splot-encode/src/intra_frame_restriction_tests.rs::reduced_tx_set_limits_the_luma_types", "crates/splot-encode/src/intra_frame_restriction_tests.rs::unit_size_switches_reach_the_sequence_header", "crates/splot-encode/src/intra_frame_restriction_tests.rs::restriction_switches_refuse_forms_the_syntax_cannot_carry"]
+commands = ["cargo test -p splot-core restriction_switches --locked", "cargo test -p splot-encode restriction --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_restricted -- --ignored"]
+fixtures = []
+diagnostics = []

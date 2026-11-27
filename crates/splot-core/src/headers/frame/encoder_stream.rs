@@ -87,6 +87,14 @@ pub struct EncoderToolFlags {
     pub ccso: bool,
     /// `enable_gdf`.
     pub gdf: bool,
+    /// With `gdf` and 64x64 superblocks, `gdf_unit_matches_sb_size` (§ 5.4.10).
+    pub gdf_unit_matches_sb_size: bool,
+    /// With `ccso`, `ccso_unit_matches_sb_size` (§ 5.4.10).
+    pub ccso_unit_matches_sb_size: bool,
+    /// `enable_chroma_dctonly` (§ 5.4.8), not coded for monochrome.
+    pub chroma_dct_only: bool,
+    /// `reduced_tx_part_set` (§ 5.4.8).
+    pub reduced_tx_part_set: bool,
     /// `enable_sdp`.
     pub sdp: bool,
     /// `enable_extended_sdp` (needs `sdp`).
@@ -95,6 +103,9 @@ pub struct EncoderToolFlags {
     pub ext_partitions: bool,
     /// `enable_uneven_4way_partitions` (needs `ext_partitions`).
     pub uneven_4way_partitions: bool,
+    /// `reduce_pb_aspect_ratio` (§ 5.4.3): `Some(false)` codes
+    /// `MaxPbAspectRatio = 2`, `Some(true)` 4; `None` keeps 8.
+    pub reduce_pb_aspect_ratio: Option<bool>,
     /// `enable_cfl_intra`.
     pub cfl: bool,
     /// `enable_mhccp`.
@@ -691,7 +702,10 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     if tools.ext_partitions {
         w.write_flag(tools.uneven_4way_partitions)?;
     }
-    w.write_flag(false)?; // reduce_pb_aspect_ratio
+    w.write_flag(tools.reduce_pb_aspect_ratio.is_some())?;
+    if let Some(four) = tools.reduce_pb_aspect_ratio {
+        w.write_flag(four)?; // max_pb_aspect_ratio_log2_minus_1
+    }
 
     w.write_flag(false)?; // enable_ext_seg
     w.write_flag(false)?; // seq_seg_info_present_flag
@@ -721,7 +735,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(tools.cdef)?;
     w.write_flag(tools.gdf)?;
     if tools.gdf && params.sb_size == SuperblockSize::Block64x64 {
-        w.write_flag(false)?; // gdf_unit_matches_sb_size
+        w.write_flag(tools.gdf_unit_matches_sb_size)?;
     }
     w.write_flag(tools.loop_restoration)?;
     if tools.loop_restoration {
@@ -731,7 +745,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(tools.ccso)?;
     if tools.ccso {
-        w.write_flag(false)?; // ccso_unit_matches_sb_size
+        w.write_flag(tools.ccso_unit_matches_sb_size)?;
     }
     w.write_flag(false)?; // cdef_on_skip_txfm_always_on
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
@@ -858,10 +872,10 @@ fn write_transform_quant_entropy_config(
     w.write_flag(tools.intra_ist)?;
     w.write_flag(tools.inter_ist)?;
     if !monochrome {
-        w.write_flag(false)?; // enable_chroma_dctonly
+        w.write_flag(tools.chroma_dct_only)?;
     }
     w.write_flag(tools.inter_ddt)?;
-    w.write_flag(false)?; // reduced_tx_part_set
+    w.write_flag(tools.reduced_tx_part_set)?;
     if !monochrome {
         w.write_flag(tools.cctx)?;
     }

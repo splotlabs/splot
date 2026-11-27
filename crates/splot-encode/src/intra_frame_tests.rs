@@ -2277,6 +2277,8 @@ mod qm;
 mod refine;
 #[path = "intra_frame_repeat_tests.rs"]
 mod repeat;
+#[path = "intra_frame_restriction_tests.rs"]
+mod restriction;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
 #[path = "intra_frame_switch_tests.rs"]
