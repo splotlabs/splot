@@ -112,9 +112,11 @@ impl GeneralIntraReconCommand {
         arena: &crate::residual::pipeline::ResidualPlaneArena,
         evidence: crate::block_evidence::BlockEvidenceTile<'_>,
         frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+        context: &crate::block_evidence::TransformCoefficientContext<'_>,
     ) {
-        self.residual
-            .visit_transform_units(arena, |unit| evidence.record_transform(frontier, &unit));
+        self.residual.visit_transform_units(arena, |unit| {
+            evidence.record_transform(frontier, &unit, context);
+        });
     }
 }
 

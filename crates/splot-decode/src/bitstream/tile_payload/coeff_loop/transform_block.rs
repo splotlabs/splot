@@ -273,6 +273,12 @@ pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) lossless: bool,
 }
 
+pub(crate) struct OrdinaryTransformCoefficients {
+    pub(crate) quant_end: usize,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) dc_parity_hidden: bool,
+}
+
 /// Writes decoded coefficients into the zeroed output slice in raster or
 /// scan order and returns one past its last written nonzero coefficient.
 pub(crate) fn decode_ordinary_transform_block(
@@ -281,7 +287,7 @@ pub(crate) fn decode_ordinary_transform_block(
     symbols: &mut SymbolDecoder<'_>,
     mut input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryBranchError> {
+) -> Result<OrdinaryTransformCoefficients, CoeffOrdinaryBranchError> {
     use TransformClass::{Horizontal, TwoD, Vertical};
 
     input.parity_hiding &= !input.lossless;
@@ -373,7 +379,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     symbols: &mut SymbolDecoder<'_>,
     input: &CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError> {
+) -> Result<OrdinaryTransformCoefficients, CoeffOrdinaryPassError> {
     let tx = input.start.tx();
     let width_log2 = u32::from(tx.width_log2);
     let tx_class = [
@@ -451,7 +457,11 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         summary.state.cul_level(),
         summary.state.dc_category(),
     );
-    Ok(summary.quant_end)
+    Ok(OrdinaryTransformCoefficients {
+        quant_end: summary.quant_end,
+        #[cfg(feature = "block-evidence")]
+        dc_parity_hidden: facts.is_hidden,
+    })
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).

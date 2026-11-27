@@ -1296,8 +1296,18 @@ impl InterResidual {
         arena: &[InterResidualBlock],
         evidence: crate::block_evidence::BlockEvidenceTile<'_>,
         frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+        context: &crate::block_evidence::TransformCoefficientContext<'_>,
     ) {
-        for unit in &arena[self.block_range.start as usize..self.block_range.end as usize] {
+        let blocks = &arena[self.block_range.start as usize..self.block_range.end as usize];
+        for (index, unit) in blocks.iter().enumerate() {
+            let cctx_u = if unit.cctx_pair_delta < 0 {
+                index
+                    .checked_add_signed(isize::from(unit.cctx_pair_delta))
+                    .and_then(|u| blocks.get(u))
+                    .map(|u| &u.coeffs)
+            } else {
+                (unit.plane == ReconPlaneId::U).then_some(&unit.coeffs)
+            };
             evidence.record_transform(
                 frontier,
                 &crate::block_evidence::DecodedTransformUnit {
@@ -1306,7 +1316,9 @@ impl InterResidual {
                     y: usize::from(unit.y),
                     tx_size: unit.tx_size,
                     coeffs: &unit.coeffs,
+                    cctx_u,
                 },
+                context,
             );
         }
     }

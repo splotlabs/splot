@@ -465,6 +465,8 @@ fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> Luma
     LumaCoeffBlock {
         eob: eob as u16,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,

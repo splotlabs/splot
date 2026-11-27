@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{BlockDecodeContext, DecodeBlockFrontier, EntryState, LeafSlot};
-use crate::block_evidence::{BlockEvidenceTile, BlockPrediction};
+use crate::block_evidence::{BlockEvidenceTile, BlockPrediction, TransformCoefficientContext};
 
 #[cold]
 pub(super) fn observe_leaf(
@@ -16,7 +16,17 @@ pub(super) fn observe_leaf(
     if let EntryState::Intra(command) = &entry.state
         && evidence.wants_transforms()
     {
-        command.record_transforms(context.arena, evidence, frontier);
+        command.record_transforms(
+            context.arena,
+            evidence,
+            frontier,
+            &TransformCoefficientContext {
+                arena: context.sink.residual_arena,
+                qindex: command.qindex(),
+                segment_id: command.segment_id(),
+                bit_depth: context.sink.params.bit_depth,
+            },
+        );
     }
     let residual = match entry.slot(context.sink.slots) {
         Some(LeafSlot::PendingInter(command)) => {
@@ -29,7 +39,12 @@ pub(super) fn observe_leaf(
                     command.prediction(context.sink.core, &context.sink.params.ref_facts),
                 );
             }
-            command.placed.block.residual.as_ref()
+            command
+                .placed
+                .block
+                .residual
+                .as_ref()
+                .map(|residual| (residual, command.qindex, command.segment_id))
         }
         Some(LeafSlot::PendingIntrabc(command)) => {
             if evidence.wants_blocks() {
@@ -41,13 +56,26 @@ pub(super) fn observe_leaf(
                     BlockPrediction::IntraBlockCopy,
                 );
             }
-            command.residual.as_ref()
+            command
+                .residual
+                .as_ref()
+                .map(|residual| (residual, command.qindex, command.segment_id))
         }
         _ => None,
     };
     if evidence.wants_transforms()
-        && let Some(residual) = residual
+        && let Some((residual, qindex, segment_id)) = residual
     {
-        residual.record_transforms(context.sink.residual_blocks, evidence, frontier);
+        residual.record_transforms(
+            context.sink.residual_blocks,
+            evidence,
+            frontier,
+            &TransformCoefficientContext {
+                arena: context.sink.residual_arena,
+                qindex,
+                segment_id,
+                bit_depth: context.sink.params.bit_depth,
+            },
+        );
     }
 }
