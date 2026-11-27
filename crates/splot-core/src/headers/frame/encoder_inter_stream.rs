@@ -305,39 +305,36 @@ fn build_switch_frame_header(
     if params.leading {
         return Err(unsupported("a leading switch frame"));
     }
-    let map: Vec<u32> = match switch.ras_long_term_id {
-        Some(id) => {
-            let bits = seq.long_term_frame_id_bits;
-            if bits == 0 || id >= (1 << bits) - 1 {
-                return Err(unsupported("ref_long_term_id"));
-            }
-            let (valid, ids) = (refs.ref_valid.unwrap_or(&[]), refs.ref_long_term_id);
-            (0..seq.num_ref_frames)
-                .filter(|&slot| {
-                    valid.get(slot as usize) == Some(&true)
-                        && ids.and_then(|ids| ids.get(slot as usize)) == Some(&Some(id))
-                })
-                .collect()
+    let map: Vec<u32> = if let Some(id) = switch.ras_long_term_id {
+        let bits = seq.long_term_frame_id_bits;
+        if bits == 0 || id >= (1 << bits) - 1 {
+            return Err(unsupported("ref_long_term_id"));
         }
-        None => {
-            let default = build_inter_frame_header(
-                seq,
-                refs,
-                &InterFrameParams {
-                    switch: None,
-                    explicit_refs: None,
-                    ..*params
-                },
-            )?;
-            let inter = default.core.inter.ok_or(EncoderHeaderError::Incomplete)?;
-            let count = inter.num_total_refs.unwrap_or(0) as usize;
-            inter
-                .ref_frame_idx
-                .into_iter()
-                .take(count)
-                .copied()
-                .collect()
-        }
+        let (valid, ids) = (refs.ref_valid.unwrap_or(&[]), refs.ref_long_term_id);
+        (0..seq.num_ref_frames)
+            .filter(|&slot| {
+                valid.get(slot as usize) == Some(&true)
+                    && ids.and_then(|ids| ids.get(slot as usize)) == Some(&Some(id))
+            })
+            .collect()
+    } else {
+        let default = build_inter_frame_header(
+            seq,
+            refs,
+            &InterFrameParams {
+                switch: None,
+                explicit_refs: None,
+                ..*params
+            },
+        )?;
+        let inter = default.core.inter.ok_or(EncoderHeaderError::Incomplete)?;
+        let count = inter.num_total_refs.unwrap_or(0) as usize;
+        inter
+            .ref_frame_idx
+            .into_iter()
+            .take(count)
+            .copied()
+            .collect()
     };
     if map.is_empty() || map.len() > REFS_PER_FRAME {
         return Err(unsupported("a switch frame reference map"));

@@ -176,10 +176,18 @@ type PlannedFrame = (crate::gop::GopFrame, FrameHeaderCore, Vec<bool>);
 /// 26 panning frames of `switch_type` through the planner and the frame
 /// coder at preset 6 with a key frame every 24 frames: the units, the recon
 /// in display order and every coded frame.
-fn planned_switch_stream(switch_type: u8) -> (Vec<u8>, Vec<u8>, Vec<PlannedFrame>) {
+fn planned_switch_stream(
+    switch_type: u8,
+    extra: &[(&str, &str)],
+) -> (Vec<u8>, Vec<u8>, Vec<PlannedFrame>) {
     let mut config = config(72, 40, BitDepth::Eight, 6, 150);
     config.keyint = core::num::NonZeroU32::new(24).unwrap();
     config.preset_overrides = switch_overrides(switch_type);
+    for &(name, value) in extra {
+        config
+            .preset_overrides
+            .push((name.to_owned(), value.to_owned()));
+    }
     let preset = config.override_preset(config.preset.params()).unwrap();
     let mut coder = IntraFrameCoder::with_preset(&config, &preset).unwrap();
     let mut planner = GopPlanner::new(config.keyint, preset.mini_gop_size)
@@ -209,13 +217,37 @@ fn planned_switch_stream(switch_type: u8) -> (Vec<u8>, Vec<u8>, Vec<PlannedFrame
     (units, recons.into_values().flatten().collect(), frames)
 }
 
+/// A switch frame after a frame with optical flow, DMVR and BAWP codes none
+/// of them (§ 5.20, `opfl_allowed_for_refs`, `is_refinemv_allowed_reference`,
+/// `use_bawp`), and the stream decodes to the encoder recon.
+#[test]
+fn switch_frames_after_refined_frames_decode_to_the_encoder_recon() {
+    let tools = [("refinemv", "true"), ("bawp_search", "2")];
+    for switch_type in [0, 1] {
+        let (units, expected, frames) = planned_switch_stream(switch_type, &tools);
+        assert_same_samples(&decode(&units), &expected, "refined");
+        let at = frames
+            .iter()
+            .position(|(plan, ..)| plan.switch.is_some())
+            .unwrap();
+        assert_eq!(
+            frames[at].1.frame_type,
+            Some(splot_core::headers::frame::FrameType::Switch)
+        );
+        let before = &frames[at - 1].1;
+        let inter = before.inter.as_ref().unwrap();
+        assert!(inter.opfl_refine_type.is_some_and(|refine| refine > 0));
+        assert!(before.inter_tail.as_ref().unwrap().allow_bawp);
+    }
+}
+
 /// After a RAS frame the decoder's buffer holds only the RAS frame and the
 /// key frame (§ 7.23), the RAS frame lists the key frame's long-term id, and
 /// the frames up to the next key frame reference only the key frame, the RAS
 /// frame and the frames coded after it.
 #[test]
 fn frames_after_a_ras_frame_reference_only_it_and_the_key_frame() {
-    let (units, expected, frames) = planned_switch_stream(1);
+    let (units, expected, frames) = planned_switch_stream(1, &[]);
     assert_same_samples(&decode(&units), &expected, "ras");
     let ras: Vec<usize> = (0..frames.len())
         .filter(|&at| frames[at].0.switch == Some(SwitchKind::Ras))
@@ -269,7 +301,7 @@ fn frames_after_a_ras_frame_reference_only_it_and_the_key_frame() {
 /// `ref_is_intra_frame`. The stream decodes to the encoder recon.
 #[test]
 fn frames_before_a_switch_frame_code_tip() {
-    let (units, expected, frames) = planned_switch_stream(0);
+    let (units, expected, frames) = planned_switch_stream(0, &[]);
     assert_same_samples(&decode(&units), &expected, "switch");
     let switch = frames
         .iter()

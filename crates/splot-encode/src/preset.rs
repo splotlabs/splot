@@ -340,8 +340,10 @@ pub struct PresetParams {
     /// `0` codes `OBU_SWITCH` over the default references; `1` codes
     /// `OBU_RAS_FRAME` (§ 7.4.5) that references only the last closed-loop
     /// key frame by its long-term id, which no frame evicts. `1` needs
-    /// `long_term_id_bits > 0` and a keyint of at most 256. Needs
-    /// `switch_frames > 0`. `0` in every row.
+    /// `long_term_id_bits > 0` and a keyint of at most 256. Random access at
+    /// a RAS frame needs that key frame from external means (§ 7.3.9.1); the
+    /// encoder does not write the copy. Needs `switch_frames > 0`. `0` in
+    /// every row.
     pub switch_type: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
@@ -1658,7 +1660,7 @@ preset_table! {
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Code the layer-0 frame of every nth mini-GOP as a switch frame. Zero disables switch frames." [0, 255]
         switch_frames:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        "Select the switch frame type: 0 codes OBU_SWITCH, 1 codes OBU_RAS_FRAME. Requires switch_frames above zero; 1 requires long_term_id_bits above zero." [0, 1]
+        "Select the switch frame type: 0 codes OBU_SWITCH, 1 codes OBU_RAS_FRAME. Requires switch_frames above zero; 1 requires long_term_id_bits above zero and a keyint of at most 256. Random access at a RAS frame needs the key frame from external means; the encoder does not write that copy." [0, 1]
         switch_type:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
