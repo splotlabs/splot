@@ -152,7 +152,7 @@ impl TrialCoder<'_, '_> {
         ee.resize(s.len(), 0);
         let [dd, sde, see] = kernels().compound_terms(s, (p0, p1), de, ee);
         let closed = blend_cost(dd, 32 * sde, 1024 * see);
-        let visible = self.coder.source.visible_luma();
+        let visible = self.coder.source.visible_luma()?;
         let average = match &refined {
             Some(blocks) => decoded_average_cost((s, p0, p1), rect, visible, blocks)?,
             None => closed,

@@ -1347,10 +1347,11 @@ impl PaddedSource {
     }
 
     /// The visible luma width and height.
-    pub(crate) fn visible_luma(&self) -> (usize, usize) {
+    pub(crate) fn visible_luma(&self) -> core::result::Result<(usize, usize), TileWriterError> {
         self.visible
             .first()
-            .map_or((0, 0), |size| (size.width(), size.height()))
+            .map(|size| (size.width(), size.height()))
+            .ok_or(TileWriterError::Unsupported("plane index"))
     }
 
     /// SATD between the source and the row-major `prediction` of `tx`.
