@@ -996,8 +996,10 @@ impl FrameCoder for Recording {
         slot: u32,
         order_hint: Option<u32>,
         leading: bool,
+        display_index: u64,
     ) -> Result<Vec<u8>> {
-        self.coder.show_existing_frame(slot, order_hint, leading)
+        self.coder
+            .show_existing_frame(slot, order_hint, leading, display_index)
     }
 
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
@@ -1119,9 +1121,13 @@ fn order_hints_wrap_and_decode_to_the_encoder_recon() {
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     coded.temporal_unit
                 }
-                crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    coder.show_existing_frame(slot, None, false).unwrap()
-                }
+                crate::gop::GopStep::ShowExisting {
+                    slot,
+                    display_index,
+                    ..
+                } => coder
+                    .show_existing_frame(slot, None, false, display_index)
+                    .unwrap(),
             };
             units.push(unit);
         }
