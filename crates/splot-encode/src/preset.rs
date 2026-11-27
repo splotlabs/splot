@@ -542,14 +542,15 @@ pub struct PresetParams {
     /// off disables `allow_screen_content_tools`. Off in every row: it pays
     /// only on screen content, whose preset rows turn it on.
     pub palette: bool,
-    /// Key frames code `allow_intrabc`, and each leaf of at most 64x64
-    /// (other than 64x64) gets an RD trial of the closest earlier copy of
-    /// its luma that the block hashes find. Off in every row: it pays only
-    /// on screen content, whose preset rows turn it on.
+    /// Key and `intra_only` frames code `allow_intrabc`, and each leaf of
+    /// at most 64x64 (other than 64x64) gets an RD trial of the closest
+    /// earlier copy of its luma that the block hashes find. Off in every
+    /// row: it pays only on screen content, whose preset rows turn it on.
     pub intrabc: bool,
-    /// With `intrabc`, key frames also code `allow_local_intrabc = 1`, and
-    /// the copy may come from the local area (§ 6.19.7.12). Off in every
-    /// row, the screen-content rows too: not measured.
+    /// With `intrabc`, key and `intra_only` frames also code
+    /// `allow_local_intrabc = 1`, and the copy may come from the local area
+    /// (§ 6.19.7.12). Off in every row, the screen-content rows too: not
+    /// measured.
     pub intrabc_local: bool,
     /// Inter frames code `allow_intrabc = 1` with the local area only
     /// (§ 5.18.3.4), and their intra leaves get an IntraBC RD trial, also
