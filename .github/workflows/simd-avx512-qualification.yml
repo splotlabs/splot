@@ -14,6 +14,10 @@ on:
         description: Measured pairs per stream and thread count
         type: number
         default: 8
+      streams:
+        description: With timing, also time whole-stream decodes
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -56,6 +60,7 @@ jobs:
             cdef_filter::segment::wide_luma::tests::measure_wide_luma_blocks -- --ignored --exact --nocapture
 
       - name: Fetch and verify the frozen EwoutH streams
+        if: ${{ !inputs.timing || inputs.streams }}
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
 
       - name: Compare forced and automatic streaming decode against AVM
@@ -66,7 +71,7 @@ jobs:
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
 
       - name: Time alternating forced streaming decodes with discarded output
-        if: ${{ inputs.timing }}
+        if: ${{ inputs.timing && inputs.streams }}
         env:
           SPLOT_TIMING_PAIRS: ${{ inputs.pairs }}
         run: |
