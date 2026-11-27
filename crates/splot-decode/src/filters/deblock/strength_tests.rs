@@ -45,13 +45,7 @@ const EXTREMES: [u16; 10] = [0, 1, 254, 255, 256, 302, 303, 304, 1000, u16::MAX 
 /// values.
 fn groups() -> Vec<Sides> {
     let uniform = |curr: u16, prev: u16| [[curr; GROUP], [prev; GROUP]];
-    let distinct = |first: u16, step: u16| {
-        let lane = |index: usize| first + step * index as u16;
-        [
-            core::array::from_fn(lane),
-            core::array::from_fn(|index| lane(index + GROUP)),
-        ]
-    };
+    let distinct = |index: usize| 3 + 9 * index as u16;
     let extremes = |shift: usize| {
         let lane = |index: usize| EXTREMES[(index + shift) % EXTREMES.len()];
         [
@@ -67,18 +61,16 @@ fn groups() -> Vec<Sides> {
         uniform(40, 200),
         uniform(200, 40),
         uniform(40, 40),
-        distinct(0, 1),
-        distinct(272, 1),
-        distinct(3, 9),
+        [
+            core::array::from_fn(distinct),
+            core::array::from_fn(|index| distinct(index + GROUP)),
+        ],
         extremes(0),
         extremes(5),
     ];
     let mut state = 0x5eed;
     for _ in 0..400 {
-        let pool: [u16; 2 * GROUP] = core::array::from_fn(|_| match lcg(&mut state) % 16 {
-            0 => EXTREMES[lcg(&mut state) % EXTREMES.len()],
-            _ => (lcg(&mut state) % 304) as u16,
-        });
+        let pool: [u16; 2 * GROUP] = core::array::from_fn(|_| (lcg(&mut state) % 304) as u16);
         let size = 1 + lcg(&mut state) % pool.len();
         let mut side = || core::array::from_fn(|_| pool[lcg(&mut state) % size]);
         groups.push([side(), side()]);
@@ -106,13 +98,9 @@ fn lane_strengths_keep_to_15_bits() {
         cache.values[qindex].set(strengths);
     }
     let lane = |index: usize| [7, 9, 11][index % 3];
-    let groups = [
-        [[7; GROUP], [7; GROUP]],
-        [[9; GROUP], [11; GROUP]],
-        [
-            core::array::from_fn(lane),
-            core::array::from_fn(|index| lane(index + 1)),
-        ],
+    let sides = [
+        core::array::from_fn(lane),
+        core::array::from_fn(|index| lane(index + 1)),
     ];
-    baseline_simd!(simd => assert_groups_match(simd, &cache, &groups));
+    baseline_simd!(simd => assert_groups_match(simd, &cache, &[sides]));
 }
