@@ -5,6 +5,7 @@
 //! frame as a content interpretation OBU (§ 5.15) and metadata OBUs
 //! (§ 5.17).
 
+use md5::{Digest, Md5};
 use splot_core::bitio::BitReader;
 use splot_core::headers::content_interpretation::{
     AspectRatioInfo, ChromaSamplePosition as CodedChromaSamplePosition, ColorDescription,
@@ -13,14 +14,14 @@ use splot_core::headers::content_interpretation::{
 use splot_core::headers::frame::{encode_content_interpretation_obu, encode_metadata_obu};
 pub use splot_core::headers::metadata::MetadataHdrCll as ContentLightLevel;
 use splot_core::headers::metadata::{
-    MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataScanType,
-    MetadataTemporalPointInfo, MetadataTimecode, MetadataType, MetadataUserDataUnregistered,
-    parse_metadata_banding_hints,
+    MetadataDecodedFrameHash, MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35,
+    MetadataPayload, MetadataScanType, MetadataTemporalPointInfo, MetadataTimecode, MetadataType,
+    MetadataUserDataUnregistered, parse_metadata_banding_hints,
 };
 use splot_core::headers::sequence::TimingInfo;
 use splot_core::span::ByteOffset;
 use splot_core::types::TemporalLayerId;
-use splot_recon::PixelFormat;
+use splot_recon::{BitDepth, PixelFormat, for_each_sample_byte_chunk};
 
 use crate::error::{Error, Result};
 
@@ -244,6 +245,7 @@ impl ContentDescription {
                 payload,
                 &[],
                 (0, TemporalLayerId::BASE),
+                false,
             );
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
@@ -254,6 +256,7 @@ impl ContentDescription {
                 payload,
                 &[],
                 (0, TemporalLayerId::BASE),
+                false,
             );
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
         }
@@ -314,6 +317,7 @@ impl KeyFrameMetadata {
                 payload,
                 passthrough,
                 (0, TemporalLayerId::BASE),
+                false,
             );
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
@@ -356,8 +360,9 @@ impl KeyFrameMetadata {
     }
 }
 
-/// Metadata that the encoder writes in front of every output frame, in a
-/// prefix metadata OBU with `NO_PERSISTENCE` (§ 6.16.3, § 7.3.3). None by
+/// Metadata that the encoder writes with every output frame, in metadata
+/// OBUs with `NO_PERSISTENCE` (§ 6.16.3, § 7.3.3): prefix ones in front of
+/// the frame and the decoded frame hash as a suffix one after it. None by
 /// default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -375,6 +380,18 @@ pub struct FrameMetadata {
     /// The bytes of `metadata_banding_hints()` (§ 5.17.8), written as given;
     /// the encoder does not detect banding.
     pub banding_hints: Option<Vec<u8>>,
+    /// The MD5 decoded frame hash (§ 6.16.13) of the output samples before
+    /// film grain.
+    pub decoded_frame_hash: Option<FrameHash>,
+}
+
+/// What a decoded frame hash covers (`per_plane`, § 6.16.13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameHash {
+    /// One hash over the Y, U and V samples.
+    Frame,
+    /// One hash per plane.
+    PerPlane,
 }
 
 impl FrameMetadata {
@@ -408,7 +425,7 @@ impl FrameMetadata {
     ) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, &[], (2, tlayer));
+            let obu = encode_metadata_obu(metadata_type, payload, &[], (2, tlayer), false);
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };
@@ -457,6 +474,54 @@ impl FrameMetadata {
             push(MetadataType::BandingHints, payload, "banding hints")?;
         }
         Ok(obus)
+    }
+}
+
+impl FrameHash {
+    /// The suffix `metadata_decoded_frame_hash()` OBU (§ 5.17.12) of the
+    /// visible output `planes` at `bit_depth`, `hash_type` 0 (MD5) over the
+    /// § 6.16.13 sample bytes, in the frame's temporal layer `tlayer`; a
+    /// `monochrome` frame hashes only Y.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn obu(
+        self,
+        planes: &[Vec<u16>; 3],
+        bit_depth: BitDepth,
+        monochrome: bool,
+        tlayer: TemporalLayerId,
+    ) -> Result<Vec<u8>> {
+        let planes = &planes[..if monochrome { 1 } else { 3 }];
+        let mut frame = Md5::new();
+        let mut plane_hashes = Vec::new();
+        for plane in planes {
+            let mut hasher = Md5::new();
+            let target = match self {
+                Self::Frame => &mut frame,
+                Self::PerPlane => &mut hasher,
+            };
+            for_each_sample_byte_chunk(bit_depth, plane, |bytes| target.update(bytes));
+            if self == Self::PerPlane {
+                plane_hashes.push(hasher.finalize().into());
+            }
+        }
+        let payload = MetadataPayload::DecodedFrameHash(MetadataDecodedFrameHash {
+            hash_type: 0,
+            per_plane: self == Self::PerPlane,
+            has_grain: false,
+            is_monochrome: monochrome,
+            reserved: 0,
+            frame_hash: (self == Self::Frame).then(|| frame.finalize().into()),
+            plane_hashes,
+        });
+        encode_metadata_obu(
+            MetadataType::DecodedFrameHash,
+            payload,
+            &[],
+            (2, tlayer),
+            true,
+        )
+        .map_err(crate::intra_frame::coding("decoded frame hash"))
     }
 }
 

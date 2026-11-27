@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::content::{
-    ChromaSamplePosition, ContentDescription, ContentLightLevel, MasteringDisplay,
+    ChromaSamplePosition, ContentDescription, ContentLightLevel, FrameHash, MasteringDisplay,
 };
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
@@ -664,4 +664,185 @@ fn rejects_frame_metadata_the_stream_cannot_carry() {
     assert!(refused(|config| {
         config.frame_metadata.banding_hints = Some(vec![0xA8, 0xA6, 0]);
     }));
+}
+
+/// `(display index, per_plane, plane hashes or the frame hash)` of every
+/// decoded frame hash in `units`, sorted by the display index of the
+/// timecode in front of its frame OBU; the hash is the last OBU of its unit.
+fn frame_hashes(units: &[Vec<u8>]) -> Vec<(u16, bool, Vec<[u8; 16]>)> {
+    let mut hashes = Vec::new();
+    for unit in units {
+        let parsed = parse_annex_b_obus_partial(unit);
+        let mut display = None;
+        for (index, obu) in parsed.obus.iter().enumerate() {
+            if obu.header.obu_type != ObuType::MetadataShort {
+                continue;
+            }
+            let mut reader = BitReader::new(obu.payload, ByteOffset::new(0));
+            let short = parse_metadata_short(&mut reader, obu.payload.len()).unwrap();
+            let hash = match short.unit.map(|unit| unit.payload) {
+                Some(MetadataPayload::Timecode(timecode)) => {
+                    display = Some(timecode.n_frames);
+                    continue;
+                }
+                Some(MetadataPayload::DecodedFrameHash(hash)) => hash,
+                _ => continue,
+            };
+            assert!(short.metadata_is_suffix && short.muh_persistence_idc == 2);
+            assert_eq!((hash.hash_type, hash.has_grain), (0, false));
+            assert!(index > 0 && parsed.obus[index + 1..].is_empty());
+            let frame = &parsed.obus[index - 1].header;
+            assert_eq!(obu.header.temporal_layer_id, frame.temporal_layer_id);
+            let digests = match hash.frame_hash {
+                Some(frame) => vec![frame],
+                None => hash.plane_hashes,
+            };
+            hashes.push((display.take().unwrap(), hash.per_plane, digests));
+        }
+    }
+    hashes.sort_unstable_by_key(|hash| hash.0);
+    hashes
+}
+
+/// The MD5 hashes of each frame of the raw `decoded` output, as
+/// [`frame_hashes`] reads them; a frame is `frames`-th of the output and
+/// its luma plane is `luma` bytes.
+fn md5_of_output(
+    decoded: &[u8],
+    frames: usize,
+    luma: usize,
+    per_plane: bool,
+) -> Vec<Vec<[u8; 16]>> {
+    use md5::{Digest, Md5};
+    decoded
+        .chunks(decoded.len() / frames)
+        .map(|frame| {
+            let (y, chroma) = frame.split_at(luma);
+            let planes = if chroma.is_empty() {
+                vec![y]
+            } else {
+                let (u, v) = chroma.split_at(chroma.len() / 2);
+                vec![y, u, v]
+            };
+            if per_plane {
+                planes
+                    .iter()
+                    .map(|plane| Md5::digest(plane).into())
+                    .collect()
+            } else {
+                vec![Md5::digest(planes.concat()).into()]
+            }
+        })
+        .collect()
+}
+
+/// Every output frame, coded, implicit or shown again, carries a suffix
+/// decoded frame hash after its frame OBU, and the hash is the MD5 of the
+/// samples that `splot decode` (and AVM, when set) outputs for it, before
+/// film grain; one changed sample changes it; the stream is the same on 1, 2
+/// and 8 threads.
+#[test]
+fn output_frames_carry_their_decoded_frame_hash() {
+    let avmdec = avm_decoder();
+    let cases = [
+        (
+            PixelFormat::Yuv420,
+            BitDepth::Eight,
+            FrameHash::Frame,
+            "sef_repeat",
+            false,
+        ),
+        (
+            PixelFormat::Yuv420,
+            BitDepth::Ten,
+            FrameHash::PerPlane,
+            "implicit_output",
+            true,
+        ),
+        (
+            PixelFormat::Yuv444,
+            BitDepth::Ten,
+            FrameHash::Frame,
+            "open_loop_key",
+            false,
+        ),
+        (
+            PixelFormat::Yuv420,
+            BitDepth::Eight,
+            FrameHash::PerPlane,
+            "max_tlayer_id",
+            false,
+        ),
+        (
+            PixelFormat::Monochrome,
+            BitDepth::Eight,
+            FrameHash::PerPlane,
+            "sef_repeat",
+            false,
+        ),
+    ];
+    for (chroma, bit_depth, hash, field, film_grain) in cases {
+        let value = match field {
+            "open_loop_key" => "1",
+            "max_tlayer_id" => "3",
+            _ => "true",
+        };
+        let mut overrides = vec![(field, value)];
+        if field == "max_tlayer_id" {
+            overrides.push(("implicit_output", "true"));
+        }
+        let mut config = with_frame_metadata(&overrides, false);
+        (config.chroma, config.bit_depth, config.film_grain) = (chroma, bit_depth, film_grain);
+        config.frame_metadata.decoded_frame_hash = Some(hash);
+        config.frame_metadata.timecode = true;
+        let repeats = field == "sef_repeat";
+        let units = encoded_units(&config, 12, repeats);
+        for threads in [2, 8] {
+            let mut threaded = config.clone();
+            threaded.threads = splot_parallel::ThreadCount::from(threads);
+            assert!(
+                encoded_units(&threaded, 12, repeats) == units,
+                "{threads} threads"
+            );
+        }
+        let coded = frame_hashes(&units);
+        let displays: Vec<u16> = coded.iter().map(|hash| hash.0).collect();
+        assert_eq!(displays, (0..12).collect::<Vec<_>>(), "{chroma:?} {field}");
+        let per_plane = hash == FrameHash::PerPlane;
+        let planes = if per_plane && chroma != PixelFormat::Monochrome {
+            3
+        } else {
+            1
+        };
+        assert!(
+            coded
+                .iter()
+                .all(|(_, flag, digests)| *flag == per_plane && digests.len() == planes)
+        );
+        let coded: Vec<_> = coded.into_iter().map(|(_, _, digests)| digests).collect();
+        let luma = 72 * 40 * if bit_depth == BitDepth::Eight { 1 } else { 2 };
+        let ctx = splot_decode::DecodeContext::new(splot_decode::DecodeRuntimeConfig::new(
+            splot_parallel::ThreadCount::from(1),
+        ))
+        .unwrap();
+        let mut decoded = Vec::new();
+        let options = splot_decode::DecodeOptions::default().with_skip_film_grain(true);
+        ctx.decode_raw_bytes(&units.concat(), options, &mut decoded)
+            .unwrap();
+        assert_eq!(
+            md5_of_output(&decoded, 12, luma, per_plane),
+            coded,
+            "{chroma:?} {field}"
+        );
+        if let Some(avmdec) = &avmdec {
+            let size = (72, 40);
+            let avm = avm_decode(avmdec, &units, size, bit_depth, "frame-hash");
+            assert!(
+                avm == decode(&units.concat()),
+                "AVM output differs: {chroma:?} {field}"
+            );
+        }
+        decoded[luma / 2] ^= 1;
+        assert_ne!(md5_of_output(&decoded, 12, luma, per_plane), coded);
+    }
 }

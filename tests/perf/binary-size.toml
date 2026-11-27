@@ -9,7 +9,7 @@
 # PR that shrinks the artifacts.
 
 [budget]
-x86_64-linux = 12554000
+x86_64-linux = 12570000
 
 [capi_budget]
 x86_64-linux = 8586000

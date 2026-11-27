@@ -318,3 +318,13 @@ authorised by the maintainer.
   `core::arch` intrinsics without `unsafe` in splot code.
 - **License:** `Apache-2.0 OR MIT` (permissive; on `deny.toml`'s allow list). Not
   vendored or relicensed.
+
+## 13. Approved dependency: `md-5`
+
+- **Material:** the `md-5` crate from crates.io (workspace dependency
+  `md-5 = "0.11"`, default features off), used by `splot-encode` only to
+  compute the MD5 decoded frame hash metadata of AV2 § 6.16.13, which the
+  specification defines by RFC 1321. The maintainer approved it on 2026-11-22 for
+  the frame hash metadata only.
+- **License:** `MIT OR Apache-2.0` (permissive; on `deny.toml`'s allow list). Not
+  vendored or relicensed.

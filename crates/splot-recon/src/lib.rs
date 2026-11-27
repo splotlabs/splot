@@ -168,7 +168,8 @@ pub use frame::{
 };
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
 pub use hash_input::{
-    DecodedFrameHash, DecodedFrameHashInput, visible_byte_len, write_visible_plane,
+    DecodedFrameHash, DecodedFrameHashInput, for_each_sample_byte_chunk, visible_byte_len,
+    write_visible_plane,
 };
 pub use intra::{
     IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
