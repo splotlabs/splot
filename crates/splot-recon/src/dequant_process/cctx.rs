@@ -65,6 +65,8 @@ pub fn dequantize_cctx_pair_with<B: SimdBackend>(
 /// eight coefficients a group. A group past the end of a `quant` is zero, and
 /// one that it ends in loads zero-padded. Whole rows of 4, 8, 16 or 32 end on
 /// a group or on half of one, which stores its low four lanes.
+/// `Round2Signed` rounds the magnitude: a negative sum takes one less before
+/// the arithmetic shift.
 #[inline]
 fn pair_groups<S: Simd>(
     simd: S,
@@ -90,7 +92,6 @@ fn pair_groups<S: Simd>(
         let lanes = i32x8::load_array(simd, lanes);
         Ok(dequant_lanes(simd, lanes, q2, denom_shift, bound))
     };
-    // `Round2Signed(sum, CCTX_PREC_BITS)`: a negative sum rounds its magnitude.
     let round = |sum: i32x8<S>| {
         (sum + (sum >> (i32::BITS - 1)) + (1 << (CCTX_PREC_BITS - 1))) >> CCTX_PREC_BITS
     };

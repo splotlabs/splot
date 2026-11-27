@@ -310,7 +310,8 @@ mod tests {
         })
     }
 
-    /// Which coefficients reach the kernel; its arithmetic has its oracle
+    /// Which coefficients reach the kernel: a block without an end of block
+    /// codes none, whatever its span holds. The arithmetic has its oracle
     /// test in `splot-recon`.
     #[test]
     fn cctx_pair_rotates_the_coded_rows_of_both_blocks() {
@@ -318,7 +319,6 @@ mod tests {
         let setups = setups(BitDepth::Eight);
         let params = [&setups[0].params, &setups[1].params];
         for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
-            // A block without an end of block codes nothing, whatever its span holds.
             for (u_eob, v_eob) in [(1, 1), (0, 1), (1, 0)] {
                 let [u_block, v_block] = [block(u_eob, u_len), block(v_eob, v_len)];
                 let coded = [(u_eob, u_len), (v_eob, v_len)]
