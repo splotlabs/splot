@@ -335,6 +335,7 @@ fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
     stride_samples: usize,
 ) {
     let (width, height) = (size.width(), size.height());
+    debug_assert!(width <= 64);
     let top_left = i16x32::splat(simd, top_left as i16);
     let mut columns = [(top_left, top_left); 2];
     for (column, above) in columns.iter_mut().zip(above.as_chunks::<32>().0) {
