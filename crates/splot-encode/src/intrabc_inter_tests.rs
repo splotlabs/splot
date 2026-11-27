@@ -2,19 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! IntraBC in inter frames (§ 5.18.3.4: the local area only; § 5.20.7.3
-//! `use_intrabc` after `is_inter = 0`), behind the test hook
-//! [`crate::gop::INTER_INTRABC`].
+//! `use_intrabc` after `is_inter = 0`), with [`PresetParams::intrabc_inter`].
 
 use super::intra_tools::tiled_text;
 use super::*;
 use crate::preset::PresetParams;
 use splot_core::headers::frame::FrameHeaderCore;
 
-/// Preset 9 with the IntraBC local area and SDP off, and IntraBC off in key
+/// Preset 9 with IntraBC in inter frames and SDP off, and IntraBC off in key
 /// frames: each IntraBC leaf lies in an inter frame.
 fn inter_intrabc_preset() -> &'static PresetParams {
     let mut preset = *Preset::new(9).unwrap().params();
-    (preset.intrabc, preset.intrabc_local, preset.sdp) = (false, true, false);
+    for (field, value) in [("intrabc_local", "1"), ("intrabc_inter", "1"), ("sdp", "0")] {
+        preset.set(field, value).unwrap();
+    }
+    preset.validate().unwrap();
     Box::leak(Box::new(preset))
 }
 
@@ -29,11 +31,9 @@ pub(super) fn inter_intrabc_stream(
     config.chroma = chroma;
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, inter_intrabc_preset()).unwrap();
-    crate::gop::INTER_INTRABC.set(true);
     crate::mode_decision::FORCE_INTRABC.set(forced);
     crate::tile_writer::CODED_INTRABC.set(0);
     let (units, recon, cores, _) = super::carry::planned_stream_of(&config, coder, tiled_text, 120);
-    crate::gop::INTER_INTRABC.set(false);
     crate::mode_decision::FORCE_INTRABC.set(false);
     (units, recon, cores, crate::tile_writer::CODED_INTRABC.get())
 }
@@ -41,8 +41,9 @@ pub(super) fn inter_intrabc_stream(
 /// The inter frames code `allow_intrabc = 1`, the forced streams code
 /// IntraBC leaves in them, a later frame codes `use_ref_frame_mvs = 1`, and
 /// the streams decode to the encoder recon in 4:2:0 8-bit and 4:4:4 10-bit.
-/// Without the forcing, 1, 2 and 8 threads write the same bytes (the hooks
-/// are thread-local: this test sets them on its own thread).
+/// Without the forcing, the RD search codes IntraBC leaves in them too, and
+/// 1, 2 and 8 threads write the same bytes (the forcing hook is
+/// thread-local: this test sets it on its own thread).
 #[test]
 fn inter_frames_code_intrabc_leaves_that_decode_to_the_recon() {
     for case in [
@@ -68,10 +69,10 @@ fn inter_frames_code_intrabc_leaves_that_decode_to_the_recon() {
         assert_same_samples(&decode(&units), &recon, &format!("{case:?}"));
     }
     let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
-    let (one, recon, ..) = inter_intrabc_stream(case(1), false);
+    let (one, recon, _, coded) = inter_intrabc_stream(case(1), false);
+    assert!(coded > 0, "unforced");
     assert_same_samples(&decode(&one), &recon, "unforced");
-    {
-        let threads = 2;
+    for threads in [2, 8] {
         assert!(
             inter_intrabc_stream(case(threads), false).0 == one,
             "{threads} threads"
