@@ -1950,6 +1950,8 @@ impl TrialCoder<'_, '_> {
 
 #[path = "compound_search.rs"]
 mod compound_search;
+#[cfg(test)]
+pub(crate) use compound_search::{TYPED_DROPPED, TYPED_REFINED, TYPED_UNITS};
 #[path = "interintra_search.rs"]
 mod interintra_search;
 #[path = "tip_search.rs"]
