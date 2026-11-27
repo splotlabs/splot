@@ -287,3 +287,124 @@ fn annex_a_accepts_valid_ops_seq_profile_idc() {
         "ops_seq_profile_idc 0 is a defined profile; report was: {report}"
     );
 }
+
+#[test]
+fn frame_allocations_follow_the_whole_temporal_unit_and_descriptor_order() {
+    use splot_core::annexb::parse_annex_b_obus;
+    use splot_core::types::ObuType;
+
+    let source = include_bytes!(
+        "../../../../../tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu"
+    );
+    let mut units = splot_core::stream_reader::TemporalUnitReader::new(&source[..]);
+    let first = units.next_temporal_unit().unwrap().unwrap().bytes.to_vec();
+    let second = units.next_temporal_unit().unwrap().unwrap().bytes;
+    let records = |data: &[u8]| {
+        let mut start = 0;
+        parse_annex_b_obus(data)
+            .unwrap()
+            .into_iter()
+            .map(|obu| {
+                let end = (obu.offset.get() + u64::from(obu.size)) as usize;
+                let bytes = data[start..end].to_vec();
+                start = end;
+                (obu.header, bytes)
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = records(&first);
+    let second = records(second);
+    let (_, regular_bytes) = second
+        .iter()
+        .find(|(h, _)| h.obu_type == ObuType::RegularTileGroup && h.extended_layer_id.get() == 3)
+        .unwrap();
+    let (_, later_key) = first
+        .iter()
+        .find(|(h, _)| h.obu_type == ObuType::ClosedLoopKey && h.extended_layer_id.get() == 7)
+        .unwrap();
+    let descriptor = msdo_with_allocation(0, true, &[(3, 0, 0, 0), (7, 0, 0, 0)], Some(1), 0);
+    for (initial, before, after, late_rap, expected) in [
+        (false, true, false, true, true),
+        (false, true, false, false, false),
+        (true, false, false, true, false),
+        (true, false, false, false, true),
+        (false, false, true, true, false),
+        (true, false, true, true, true),
+    ] {
+        let mut data = Vec::new();
+        for (header, bytes) in &first {
+            if header.obu_type != ObuType::Msdo {
+                data.extend(bytes);
+            } else if initial {
+                data.extend(&descriptor);
+            }
+        }
+        data.extend(temporal_delimiter_obu());
+        if before {
+            data.extend(&descriptor);
+        }
+        let target = data.len() as u64 + parse_annex_b_obus(regular_bytes).unwrap()[0].offset.get();
+        data.extend(regular_bytes);
+        if after {
+            data.extend(&descriptor);
+        }
+        if late_rap {
+            data.extend(later_key);
+        }
+        let validator = Validator::new(false);
+        for report in [
+            validator.validate_bytes(&data),
+            validator.validate_reader(&data[..]).unwrap(),
+        ] {
+            let found = report.errors().any(|d| {
+                d.rule_id == "annex-a/tile-count-exceeds-level"
+                    && d.byte_offset.is_some_and(|offset| offset.get() == target)
+            });
+            assert_eq!(
+                found, expected,
+                "initial={initial} before={before} after={after} late_rap={late_rap}: {report}"
+            );
+        }
+    }
+}
+
+#[test]
+fn even_allocation_limits_width_and_reference_slots() {
+    let header = annex_a_seq_obu(AnnexASeq {
+        level_idx: 4,
+        frame_dim_bits_minus_1: 9,
+        max_frame_width_minus_1: 999,
+        max_frame_height_minus_1: 599,
+        ..AnnexASeq::base()
+    });
+    for (width, with_msdo, expected_width, expected_refs) in [
+        (576, true, false, true),
+        (577, true, true, true),
+        (577, false, false, false),
+    ] {
+        let mut data = temporal_delimiter_obu();
+        if with_msdo {
+            data.extend(msdo_obu_configured(0, true, &[(0, 0, 4, 0), (1, 0, 4, 0)]));
+        }
+        data.extend(&header);
+        let (col, row) = annex_a_single_tile_increments(width, 16);
+        data.extend(annex_a_frame_obu(0, width, 16, 10, col, row));
+        let report = Validator::new(false).validate_bytes(&data);
+        assert_eq!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/frame-size-exceeds-level"
+                    && d.message.contains("MaxHSize 576")),
+            expected_width,
+            "{report}"
+        );
+        assert_eq!(
+            report
+                .errors()
+                .any(|d| d.rule_id == "annex-a/reference-count-exceeds-level"
+                    && d.message.contains("MaxLevelRefFrames 7")),
+            expected_refs,
+            "{report}"
+        );
+    }
+}

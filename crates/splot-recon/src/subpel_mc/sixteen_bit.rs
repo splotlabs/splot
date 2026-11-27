@@ -9,23 +9,44 @@
 //! ones on AArch64 and the portable ones elsewhere; full-sample blocks and
 //! blocks no kernel takes decline to the portable kernels.
 
-use super::ReferencePlaneView;
 use super::block::{Block, Sink, Window, is_cell};
 use super::cell::{Cell, Plane, Written};
+use super::{ReferencePlaneView, SubpelRunner};
 use crate::format::ReconSample;
 
-#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
-use generic as kernel;
 #[cfg(target_arch = "x86_64")]
 mod avx2;
-#[cfg(target_arch = "x86_64")]
-use avx2 as kernel;
 #[cfg(target_arch = "aarch64")]
 mod neon;
-#[cfg(target_arch = "aarch64")]
-use neon as kernel;
 #[cfg(test)]
 mod tests;
+
+#[cfg(target_arch = "x86_64")]
+macro_rules! kernel_dispatch {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?)) => {
+        match $runner.avx2_token() {
+            Some(t) => avx2::$f(t, $($arg),*),
+            None => generic::$f($runner, $($arg),*),
+        }
+    };
+}
+
+#[cfg(target_arch = "aarch64")]
+macro_rules! kernel_dispatch {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?)) => {
+        match $runner.neon_token() {
+            Some(t) => neon::$f(t, $($arg),*),
+            None => generic::$f($runner, $($arg),*),
+        }
+    };
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+macro_rules! kernel_dispatch {
+    ($runner:expr, $f:ident($($arg:expr),* $(,)?)) => {
+        generic::$f($runner, $($arg),*)
+    };
+}
 
 /// Whether the word-lane kernels cover `block`: 4 columns in pairs of rows,
 /// or strips of 8 columns, the last overlapping the one before it.
@@ -36,11 +57,15 @@ fn fits<T>(block: &Block<'_, T>) -> bool {
 /// Predicts a filtered 16-bit block and returns `true`, or returns `false`
 /// without writing for a full-sample block, a block the kernels do not
 /// cover or an eight-bit compound sink.
-pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>) -> bool {
+pub(super) fn predict<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+) -> bool {
     let filtered = block.horizontal.is_some() || block.vertical.is_some();
     match T::u16_slice(block.source) {
         Some(source) if filtered && fits(block) && !sink.is_narrow() => {
-            kernel::predict(&block.with_source(source), sink);
+            kernel_dispatch!(runner, predict(&block.with_source(source), sink));
             true
         }
         _ => false,
@@ -50,7 +75,8 @@ pub(super) fn predict<T: ReconSample>(block: &Block<'_, T>, sink: &mut Sink<'_>)
 /// Predicts both blocks of a 4x4 or 8x8 [`is_cell`] compound pair in
 /// registers and stores their COMPOUND_AVERAGE, clipped to `clip.1`, into
 /// `output`, or returns `false` without writing for any other pair.
-pub(super) fn compound(
+pub(super) fn compound<R: SubpelRunner>(
+    runner: R,
     blocks: [&Block<'_, u16>; 2],
     clip: (i32, u16),
     output: &mut [u16],
@@ -61,7 +87,7 @@ pub(super) fn compound(
         block.w == w && block.h == h && is_cell(w, h, block.horizontal, block.vertical)
     };
     cell(blocks[0]) && cell(blocks[1]) && {
-        kernel::compound_cell(blocks, clip, output, stride);
+        kernel_dispatch!(runner, compound_cell(blocks, clip, output, stride));
         true
     }
 }
@@ -70,7 +96,8 @@ pub(super) fn compound(
 /// [`is_cell`] cell of `windows` within `bounds` read from `views`, in place
 /// or by clamped rows and columns, or returns `false` without writing when
 /// the cell kernel does not cover it.
-pub(super) fn compound_windows(
+pub(super) fn compound_windows<R: SubpelRunner>(
+    runner: R,
     views: [&ReferencePlaneView<'_, u16>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -78,36 +105,40 @@ pub(super) fn compound_windows(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
-    kernel::compound_windows(views, windows, bounds, clip, output, stride)
+    kernel_dispatch!(
+        runner,
+        compound_windows(views, windows, bounds, clip, output, stride)
+    )
 }
 
 /// Runs the cells of a program of `size`-square cells that the program
 /// kernel covers into `planes`, and returns their bits.
-pub(super) fn program(
+pub(super) fn program<R: SubpelRunner>(
+    runner: R,
     planes: &mut [Option<Plane<'_, '_, u16>>; 2],
     shape: (usize, usize),
     cells: &[Cell],
     clip: (i32, u16),
 ) -> Written {
-    kernel::program(planes, shape, cells, clip)
+    kernel_dispatch!(runner, program(planes, shape, cells, clip))
 }
 
 /// The kernels of this module on targets without [`neon`], and those
 /// [`avx2`] declines to: the portable kernels on a stage.
-#[cfg(not(target_arch = "aarch64"))]
 mod generic {
-    use super::super::ReferencePlaneView;
     use super::super::block::{self, Block, Sink, Window};
     use super::super::cell::{self, Cell, Plane, Written};
+    use super::super::{ReferencePlaneView, SubpelRunner};
 
-    pub(super) fn predict(block: &Block<'_, u16>, sink: &mut Sink<'_>) {
+    pub(super) fn predict<R: SubpelRunner>(runner: R, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
         let len = block::stage_needed(block);
         block::with_stage(len, None, |stage| {
-            super::super::portable::predict(block, sink, stage);
+            super::super::portable::predict(runner, block, sink, stage);
         });
     }
 
-    pub(super) fn compound_cell(
+    pub(super) fn compound_cell<R: SubpelRunner>(
+        runner: R,
         blocks: [&Block<'_, u16>; 2],
         (forward, max): (i32, u16),
         output: &mut [u16],
@@ -115,11 +146,14 @@ mod generic {
     ) {
         let len = blocks.map(block::stage_needed);
         block::with_stage(len[0].max(len[1]), None, |stage| {
-            super::super::portable::compound_u16(blocks, forward, max, stage, output, stride);
+            super::super::portable::compound_u16(
+                runner, blocks, forward, max, stage, output, stride,
+            );
         });
     }
 
-    pub(super) fn compound_windows(
+    pub(super) fn compound_windows<R: SubpelRunner>(
+        runner: R,
         views: [&ReferencePlaneView<'_, u16>; 2],
         windows: &[Window; 2],
         bounds: [[i32; 4]; 2],
@@ -127,15 +161,16 @@ mod generic {
         output: &mut [u16],
         stride: usize,
     ) -> bool {
-        block::copied(views, windows, bounds, clip, output, stride)
+        block::copied(runner, views, windows, bounds, clip, output, stride)
     }
 
-    pub(super) fn program(
+    pub(super) fn program<R: SubpelRunner>(
+        runner: R,
         planes: &mut [Option<Plane<'_, '_, u16>>; 2],
         shape: (usize, usize),
         cells: &[Cell],
         clip: (i32, u16),
     ) -> Written {
-        cell::cell_by_cell(planes, shape, cells, clip, [[0; 4]; 2])
+        cell::cell_by_cell(runner, planes, shape, cells, clip, [[0; 4]; 2])
     }
 }

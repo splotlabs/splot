@@ -3,10 +3,11 @@
 
 //! One-sided IBP dual-direction blend entry.
 
+use splot_core::simd::SimdBackend;
 use splot_recon::{
     CurrentFrameWorkspace, IntraDirectionalAngle, IntraDirectionalAngleIdifEdges,
     IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
-    apply_ibp_dr_blend_rect, predict_intra_directional_angle_rect_one_sided_idif_into,
+    apply_ibp_dr_blend_rect_with, predict_intra_directional_angle_rect_one_sided_idif_into_with,
 };
 
 use super::one_sided::{
@@ -25,8 +26,12 @@ pub(crate) struct IbpSecondary {
     pub num4_far: usize,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<
+    B: SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -56,6 +61,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         (second_edge, primary_edge)
     };
     let above_idif = build_one_sided_above_idif_edge(
+        backend,
         workspace,
         PlaneId::Y,
         x,
@@ -70,6 +76,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         above_filter,
     )?;
     let left_idif = build_one_sided_left_idif_edge(
+        backend,
         workspace,
         PlaneId::Y,
         x,
@@ -92,7 +99,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         PlaneId::Y,
         width * height,
     )?;
-    predict_intra_directional_angle_rect_one_sided_idif_into(
+    predict_intra_directional_angle_rect_one_sided_idif_into_with(
+        backend,
         bit_depth,
         block_size,
         IntraDirectionalAngle::try_from_p_angle(p_angle)?,
@@ -105,7 +113,8 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         PlaneId::Y,
         width * height,
     )?;
-    predict_intra_directional_angle_rect_one_sided_idif_into(
+    predict_intra_directional_angle_rect_one_sided_idif_into_with(
+        backend,
         bit_depth,
         block_size,
         IntraDirectionalAngle::try_from_p_angle(secondary.second_angle)?,
@@ -113,9 +122,10 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         &mut second,
         width,
     )?;
-    apply_ibp_dr_blend_rect(block_size, p_angle, &mut primary, &second)?;
+    apply_ibp_dr_blend_rect_with(backend, block_size, p_angle, &mut primary, &second)?;
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, second);
     write_intra_prediction_block(
+        backend,
         workspace,
         block,
         primary,

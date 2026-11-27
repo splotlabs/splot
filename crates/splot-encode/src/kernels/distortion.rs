@@ -505,7 +505,6 @@ fn column_hadamard<S: Simd, V: SimdBase<S, Element = i32, Array = [i32; N]>, con
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use proptest::prelude::*;
 

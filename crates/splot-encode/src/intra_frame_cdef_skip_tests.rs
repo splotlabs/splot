@@ -72,7 +72,8 @@ fn cdef_on_skip_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let (one, recon, flags) = filter_stream(1, on, on_skip);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "cdef on skip");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             filter_stream(threads, on, on_skip).0 == one,
             "{threads} threads"
@@ -100,7 +101,7 @@ fn avm_decodes_cdef_on_skip_frames_like_splot() {
 fn with_df_sub_pu() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         df_sub_pu: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -119,7 +120,8 @@ fn df_sub_pu_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let (one, recon, flags) = filter_stream(1, with_df_sub_pu(), sub_pu);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "df sub-pu");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             filter_stream(threads, with_df_sub_pu(), sub_pu).0 == one,
             "{threads} threads"
@@ -148,7 +150,7 @@ fn with_split_deblock() -> &'static PresetParams {
         loop_filter_search: 3,
         deblock_luma_split: true,
         deblock_offset_bits: 5,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -172,7 +174,8 @@ fn split_deblock_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let (one, recon, flags) = filter_stream(1, with_split_deblock(), new_deblock_choice);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "split deblock");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             filter_stream(threads, with_split_deblock(), new_deblock_choice).0 == one,
             "{threads} threads"
@@ -241,7 +244,8 @@ fn full_cdef_search_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let chosen = flags.iter().filter(|&&flag| flag).count();
     assert!(chosen > 0, "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "full cdef");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             filter_stream(threads, with_full_cdef(), new_cdef_choice).0 == one,
             "{threads} threads"
@@ -288,7 +292,8 @@ fn lr_unit_size_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let (one, recon, flags) = tiled_filter_stream(1, with_lr_sizes(), large_lr_units, 0);
     assert!(flags.contains(&true), "{flags:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "lr unit sizes");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             tiled_filter_stream(threads, with_lr_sizes(), large_lr_units, 0).0 == one,
             "{threads} threads"

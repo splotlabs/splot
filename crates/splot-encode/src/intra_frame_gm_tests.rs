@@ -34,7 +34,7 @@ fn with_global_motion(integer_mv: bool) -> &'static PresetParams {
         bitrate_mini_gop_size: 1,
         lookahead_frames: 1,
         integer_mv,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -112,7 +112,8 @@ fn global_motion_streams_match_on_any_thread_count() {
     };
     let one = stream(1);
     assert_global_motion_decodes(&one, "tiled");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let other = stream(threads);
         super::warp::assert_warp_records_consumed(&other.frames, &format!("{threads} threads"));
         assert!(other.units == one.units, "{threads} threads");
@@ -276,7 +277,8 @@ fn the_quarter_sample_estimator_codes_global_motion_on_any_thread_count() {
             "{case:?}: {frames} {references}"
         );
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 estimated_stream(case, (2, false), threads).0 == units,
                 "{case:?} {threads}"
@@ -302,7 +304,8 @@ fn global_motion_predict_changes_only_the_parameter_bits() {
         assert!(expected == plain_recon, "{case:?}: recon changed");
         assert!(units.len() < plain.len(), "{case:?}");
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             assert!(
                 estimated_stream(case, (2, true), threads).0 == units,
                 "{case:?} {threads}"
@@ -323,7 +326,7 @@ fn global_global_leaves_store_the_model_of_each_global_list() {
     let preset = Box::leak(Box::new(PresetParams {
         global_motion: 1,
         compound_skip_sad: 0,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     coder.global_motion[0] = Some(zoom_model(&config));

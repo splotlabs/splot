@@ -3,7 +3,6 @@
 
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::headers::frame::parse_tile_info;

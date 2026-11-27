@@ -11,8 +11,7 @@
 //! the decoder-model cascade, and the two dependency maps. The top-level
 //! `write_sequence_header` composes these helpers in §5.4.1 read order.
 //!
-//! This module is additive: it depends on the model/parser read-only and serializes a
-//! parsed [`SequenceHeaderGeneral`] back to bits via [`BitWriter`]. The universal
+//! Serializes a parsed [`SequenceHeaderGeneral`] back to bits via [`BitWriter`]. The universal
 //! contract is semantic `read(write(x)) == x` for every model the parser can produce:
 //! `parse_sequence_header_general(write_sequence_header_general(g)) == g`.
 //!
@@ -507,7 +506,7 @@ fn check_dependency_maps_encodable(general: &SequenceHeaderGeneral) -> WriteResu
     Ok(())
 }
 
-/// Ensures every mlayer entry the parser does NOT signal (row 0, rows `> max_mlayer`, and
+/// Ensures every mlayer entry the parser does not signal (row 0, rows `> max_mlayer`, and
 /// the strict upper triangle `refLayer > currLayer`) equals the §5.4.1 default fill — those
 /// entries keep their default after a `present == 1` parse, so a divergent stored value
 /// would not round-trip.
@@ -597,7 +596,6 @@ fn check_tlayer_canonical_when_present(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -1153,7 +1151,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::bitio::BitReader;
@@ -1165,7 +1162,7 @@ mod proptests {
     /// Builds a parser-reachable general-header byte fixture from primitive choices,
     /// honoring every §5.4.1 gate so the parser accepts it (and so the writer never
     /// rejects the parsed model).
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn build_general_fixture(
         single_picture: bool,
         seq_header_id: u32,

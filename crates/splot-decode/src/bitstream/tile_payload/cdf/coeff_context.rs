@@ -16,25 +16,14 @@ pub(crate) const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF
 
 pub(crate) const MAX_BASE_BR_RANGE: u32 = 6;
 
-pub(crate) const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
-    [[0, 1], [1, 0], [1, 1]], // TX_CLASS_2D
-    [[0, 1], [1, 0], [0, 2]], // TX_CLASS_HORIZ
-    [[0, 1], [1, 0], [2, 0]], // TX_CLASS_VERT
-];
-
 pub(crate) const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
 pub(crate) const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
 pub(crate) const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
 
 /// Every neighbour offset `[row, col]` the `coeff_base` and `coeff_br`
 /// contexts of class index `tx_class` read.
-pub(crate) fn context_offsets(tx_class: usize) -> [[usize; 2]; 8] {
-    let class = tx_class_idx(tx_class);
-    let sig = SIG_OFFSETS[class].map(|[r, c]| [r as usize, c as usize]);
-    let mag = MAG_REF_OFFSET_WITH_TX_CLASS[class];
-    [
-        sig[0], sig[1], sig[2], sig[3], sig[4], mag[0], mag[1], mag[2],
-    ]
+pub(crate) fn context_offsets(tx_class: usize) -> [[usize; 2]; SIG_REF_DIFF_OFFSET_NUM] {
+    SIG_OFFSETS[tx_class_idx(tx_class)].map(|[r, c]| [r as usize, c as usize])
 }
 
 const fn tx_class_idx(tx_class: usize) -> usize {
@@ -105,7 +94,7 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: plain inline leaves two out-of-line calls in the level loop"
     )]
@@ -130,14 +119,21 @@ impl CoeffBrContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
-        let at = |[dr, dc]: [usize; 2]| {
-            level_near(level, base, self.stride, dr, dc, MAX_BASE_BR_RANGE - 1)
+        let at = |[dr, dc]: [i32; 2]| {
+            level_near(
+                level,
+                base,
+                self.stride,
+                dr as usize,
+                dc as usize,
+                MAX_BASE_BR_RANGE - 1,
+            )
         };
-        let offsets = MAG_REF_OFFSET_WITH_TX_CLASS[CLASS];
+        let offsets = SIG_OFFSETS[CLASS];
         let mag = at(offsets[0]) + at(offsets[1]);
         if CLASS != 0 && self.plane > 0 {
             mag
@@ -192,7 +188,7 @@ pub(crate) struct CoeffBaseContext {
 }
 
 impl CoeffBaseContext {
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
     )]
@@ -257,7 +253,7 @@ impl CoeffBaseContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
@@ -281,7 +277,7 @@ impl CoeffBaseContext {
 
 /// The `dc_sign` context (§ 8.3.2) from the above and left context lines
 /// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
-#[allow(clippy::inline_always, reason = "measured: once per coded DC")]
+#[expect(clippy::inline_always, reason = "measured: once per coded DC")]
 #[inline(always)]
 pub(crate) fn dc_sign_ctx(
     above: &[u8],
@@ -310,7 +306,7 @@ const fn dc_votes(word: u64) -> i32 {
 
 /// Net sign of the DC categories of the `len` context-line bytes from
 /// `start`, clamped to the line.
-#[allow(clippy::inline_always, reason = "measured: twice per coded DC")]
+#[expect(clippy::inline_always, reason = "measured: twice per coded DC")]
 #[inline(always)]
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
     let run = line.get(start..).unwrap_or_default();

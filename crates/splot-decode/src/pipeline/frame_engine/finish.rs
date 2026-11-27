@@ -48,7 +48,7 @@ pub(crate) struct FrameWalk<T: ReconSample> {
 /// How far one frame's samples got during its walk.
 ///
 /// Held inline: the stage moves once per frame, which costs less than boxing it.
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum WalkStage<T: ReconSample> {
     /// The filter stages are still owed; [`WalkedFrame::into_frontier`] starts them.
     Pending(WalkedFrame<T>),
@@ -111,6 +111,8 @@ impl FilterSinkSetup {
         mut sink: WienerNsLrReconSink<T>,
         filter_inputs: InterFilterInputs,
     ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
+        #[cfg(feature = "block-evidence")]
+        sink.set_stage_capture(filter_inputs.stage_capture);
         sink.set_gdf_reference_context(self.gdf_reference);
         sink.set_filter_records(filter_inputs.records);
         sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
@@ -268,12 +270,15 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
     } = walked;
-    let (frame, filter_records) = sink.into_filtered_frame(
-        core,
-        disable_loopfilters_across_tiles,
-        deblock_quant_deltas,
-        None,
-    )?;
+    let (frame, filter_records) = crate::test_support::with_auto_backend!(backend => {
+        sink.into_filtered_frame(
+            backend,
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            None,
+        )
+    })?;
     writer.complete(frame.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?);
     Ok(filter_records)
 }

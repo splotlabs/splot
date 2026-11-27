@@ -2226,7 +2226,7 @@ fn frame_header_core_inter_shared_tail_segmentation_on_stops_unmodeled() {
     let mut bits = Bits::default();
     minimal_inter_control_prefix(&mut bits);
     bits.f(90, 8); // base_q_idx
-    bits.bit(1); // segmentation_enabled = 1 -> honest stop right after this bit
+    bits.bit(1); // segmentation_enabled = 1 -> stop right after this bit
     bits.f(0, 8); // padding (never read)
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = one_valid_ref_64();
@@ -2450,51 +2450,41 @@ fn frame_header_core_olk_reads_long_term_ids_then_intra_tail() {
 
 #[test]
 fn display_order_hint_extends_past_the_coded_lsb_window() {
-    let valid = [true];
-    let hints = [118];
-    let lsbs = [118];
-    let implicit = [false];
-    let immediate = [true];
-    let widths = [64];
-    let heights = [64];
-    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+    let mut seq = base_seq();
+    seq.order_hint_bits = 7;
+    let (valid, hints, lsbs, implicit, immediate, widths, heights) =
+        ([true], [118], [118], [false], [true], [64], [64]);
+    let rs = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
         .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate);
-
-    assert_eq!(
-        get_disp_order_hint(
-            ObuType::RegularTileGroup,
-            Some(FrameType::Inter),
-            None,
-            8,
-            7,
-            &reference_state,
-        ),
-        Some(136)
+    let oh = get_disp_order_hint(
+        ObuType::RegularTileGroup,
+        Some(FrameType::Inter),
+        None,
+        8,
+        &seq,
+        &rs,
+        FrameLayerIds::BASE,
     );
+    assert_eq!(oh, Some(136));
 }
 
 #[test]
 fn display_order_hint_ignores_non_showable_references() {
-    let valid = [true];
-    let hints = [118];
-    let lsbs = [118];
-    let output = [false];
-    let widths = [64];
-    let heights = [64];
-    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+    let mut seq = base_seq();
+    seq.order_hint_bits = 7;
+    let (valid, hints, lsbs, output, widths, heights) = ([true], [118], [118], [false], [64], [64]);
+    let rs = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
         .with_single_layer_order_hint_state(&lsbs, &output, &output);
-
-    assert_eq!(
-        get_disp_order_hint(
-            ObuType::RegularTileGroup,
-            Some(FrameType::Inter),
-            None,
-            8,
-            7,
-            &reference_state,
-        ),
-        Some(8)
+    let oh = get_disp_order_hint(
+        ObuType::RegularTileGroup,
+        Some(FrameType::Inter),
+        None,
+        8,
+        &seq,
+        &rs,
+        FrameLayerIds::BASE,
     );
+    assert_eq!(oh, Some(8));
 }
 
 mod tail;

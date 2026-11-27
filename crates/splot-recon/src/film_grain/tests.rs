@@ -276,6 +276,284 @@ fn edge_dimensions_overlap_and_extreme_grain_values_match_reference() {
     }
 }
 
+/// Check the complete batch plus its unchanged short-row tail against the
+/// scalar rule in AV2 § 7.21.7.5, including lane-order and signed products.
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn wide_noise_matches_scalar_at_both_depths() {
+    use super::{NoiseParams, add_noise_row};
+    use fearless_simd::{Level, Simd};
+
+    fn check<S: Simd>(simd: S) {
+        let mut rng = TestRng(0xc4e2_5871_3b70_d609);
+        for depth in [8, 10] {
+            let limit = 1_i16 << (depth - 1);
+            let max_sample = (1_u16 << depth) - 1;
+            for width in [1, 15, 31, 32, 33, 63, 64, 97] {
+                for shift in 8..=11 {
+                    let params = NoiseParams {
+                        shift,
+                        min: 16 << (depth - 8),
+                        max: 235 << (depth - 8),
+                        narrow: depth == 8,
+                    };
+                    let scale: Vec<i16> = (0..width)
+                        .map(|lane| {
+                            if lane % 3 == 0 {
+                                255
+                            } else {
+                                (rng.next() % 256) as i16
+                            }
+                        })
+                        .collect();
+                    let noise: Vec<i16> = (0..width)
+                        .map(|lane| match lane % 4 {
+                            0 => -limit,
+                            1 => limit - 1,
+                            _ => (rng.next() % (2 * limit) as u32) as i16 - limit,
+                        })
+                        .collect();
+                    let samples: Vec<u16> = (0..width)
+                        .map(|lane| match lane % 4 {
+                            0 => 0,
+                            1 => max_sample,
+                            _ => (rng.next() & u32::from(max_sample)) as u16,
+                        })
+                        .collect();
+                    let expected: Vec<u16> = samples
+                        .iter()
+                        .zip(&scale)
+                        .zip(&noise)
+                        .map(|((&sample, &scale), &noise)| {
+                            let delta = round2(i32::from(scale) * i32::from(noise), shift);
+                            (i32::from(sample) + delta).clamp(params.min, params.max) as u16
+                        })
+                        .collect();
+                    if depth == 8 {
+                        let mut actual: Vec<u8> =
+                            samples.iter().map(|&sample| sample as u8).collect();
+                        add_noise_row::<_, _, true>(simd, &mut actual, &scale, &noise, params)
+                            .unwrap();
+                        assert!(
+                            actual.iter().copied().map(u16::from).eq(expected),
+                            "width {width}, shift {shift}, byte"
+                        );
+                    } else {
+                        let mut actual = samples;
+                        add_noise_row::<_, _, true>(simd, &mut actual, &scale, &noise, params)
+                            .unwrap();
+                        assert_eq!(actual, expected, "width {width}, shift {shift}, word");
+                    }
+                }
+            }
+        }
+    }
+
+    let level = Level::new();
+    if let Some(avx2) = level.as_avx2() {
+        check(avx2);
+    }
+    if let Some(avx512) = level.as_avx512() {
+        avx512.vectorize(|| check(avx512));
+    }
+}
+
+/// Run on one pinned core of an AVX-512 host. Each sample includes the
+/// scoped row call, but excludes allocation, LUT lookup and grain synthesis.
+#[cfg(target_arch = "x86_64")]
+#[test]
+#[ignore = "native AVX-512 timing"]
+fn measure_wide_grain_noise_rows() {
+    use super::{NoiseParams, add_noise_row};
+    use fearless_simd::{Avx2, Avx512, Level, Simd};
+    use std::{hint::black_box, time::Instant};
+
+    const ITERATIONS: u32 = 16_384;
+    fn measure<T: ReconSample>(
+        initial: &[T],
+        scale: &[i16],
+        noise: &[i16],
+        run: impl Fn(&mut [T], &[i16], &[i16]),
+    ) -> f64 {
+        let mut row = initial.to_vec(); // splot-copy-ok: each timed sample starts from the same pixels
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            run(black_box(&mut row), black_box(scale), black_box(noise));
+        }
+        black_box(row);
+        start.elapsed().as_secs_f64() * 1.0e9 / f64::from(ITERATIONS)
+    }
+
+    fn bench<T: ReconSample>(depth: u8, avx2: Avx2, avx512: Avx512) {
+        let max = (1_i32 << depth) - 1;
+        let params = NoiseParams {
+            shift: 8,
+            min: 0,
+            max,
+            narrow: depth == 8,
+        };
+        let mut rng = TestRng(0x78db_cde2_44bf_12f5);
+        let row: Vec<T> = (0..1920)
+            .map(|_| T::try_from_u16((rng.next() & max as u32) as u16).unwrap())
+            .collect();
+        let scale: Vec<i16> = (0..row.len()).map(|_| (rng.next() % 256) as i16).collect();
+        let noise: Vec<i16> = (0..row.len())
+            .map(|_| (rng.next() & max as u32) as i16 - (1 << (depth - 1)))
+            .collect();
+        let narrow = || {
+            measure(&row, &scale, &noise, |row, scale, noise| {
+                add_noise_row::<_, _, false>(avx2, row, scale, noise, params).unwrap();
+            })
+        };
+        let wide = || {
+            measure(&row, &scale, &noise, |row, scale, noise| {
+                avx512
+                    .vectorize(
+                        #[inline(always)]
+                        || add_noise_row::<_, _, true>(avx512, row, scale, noise, params),
+                    )
+                    .unwrap();
+            })
+        };
+        let _ = (narrow(), wide());
+        println!("depth,width,round,avx2_ns_per_row,avx512_ns_per_row");
+        for round in 0..12 {
+            let (avx2, avx512) = if round % 2 == 0 {
+                (narrow(), wide())
+            } else {
+                let avx512 = wide();
+                (narrow(), avx512)
+            };
+            println!("{depth},{},{},{avx2:.2},{avx512:.2}", row.len(), round + 1);
+        }
+    }
+
+    let level = Level::new();
+    let avx2 = level.as_avx2().expect("AVX2 required");
+    let avx512 = level.as_avx512().expect("AVX-512 required");
+    bench::<u8>(8, avx2, avx512);
+    bench::<u16>(10, avx2, avx512);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn wide_luma_lookup_matches_the_exact_table() {
+    use super::{NoiseParams, add_luma_noise, noisy_row_scalar};
+    use fearless_simd::{Level, Simd};
+
+    let Some(simd) = Level::new().as_avx512() else {
+        assert!(std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
+        return;
+    };
+    let mut rng = TestRng(0x69c7_1941_9f31_5afa);
+    let table: [u8; 256] = core::array::from_fn(|i| match i % 8 {
+        0 => 0,
+        1 => 255,
+        _ => rng.next() as u8,
+    });
+    let coarse = core::array::from_fn(|i| i32::from(table[i.min(255)]));
+    let lut = super::ScaleLut::new(&coarse, 8);
+    for width in [1, 31, 32, 63, 64, 65, 127, 128, 255, 256, 257, 1920] {
+        let initial: Vec<u8> = (0..width).map(|i| i as u8).collect();
+        let noise: Vec<i16> = (0..width)
+            .map(|i| match i % 4 {
+                0 => -128,
+                1 => 127,
+                _ => i16::from(rng.next() as u8) - 128,
+            })
+            .collect();
+        for (min, max) in [(0, 255), (16, 235)] {
+            for shift in 8..=11 {
+                let params = NoiseParams {
+                    shift,
+                    min,
+                    max,
+                    narrow: true,
+                };
+                let mut expected = initial.clone();
+                noisy_row_scalar(
+                    &mut expected,
+                    &noise,
+                    &mut |_, sample| i32::from(sample),
+                    &lut,
+                    params,
+                )
+                .unwrap();
+                let mut actual = initial.clone();
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(simd, &mut actual, &table, &noise, params),
+                );
+                assert_eq!(
+                    actual, expected,
+                    "width {width}, shift {shift}, range {min}..{max}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+#[ignore = "native AVX-512 timing"]
+fn measure_luma_grain_with_lookup() {
+    use super::{NoiseParams, add_luma_noise, add_noise_row, luma_scale_row};
+    use fearless_simd::{Level, Simd};
+    use std::{hint::black_box, time::Instant};
+
+    const WIDTH: usize = 1920;
+    const ROWS: u32 = 16_384;
+    let simd = Level::new().as_avx512().expect("AVX-512 required");
+    let params = NoiseParams {
+        shift: 8,
+        min: 0,
+        max: 255,
+        narrow: true,
+    };
+    let mut rng = TestRng(0x69c7_1941_9f31_5afa);
+    let initial: [u8; WIDTH] = core::array::from_fn(|_| rng.next() as u8);
+    let table: [u8; 256] = core::array::from_fn(|_| rng.next() as u8);
+    let exact = core::array::from_fn(|i| i16::from(table[i.min(255)]));
+    let noise: [i16; WIDTH] = core::array::from_fn(|_| i16::from(rng.next() as u8) - 128);
+    let measure = |fused: bool| {
+        let mut row = initial;
+        let mut scale = [0; WIDTH];
+        let start = Instant::now();
+        for _ in 0..ROWS {
+            let row = black_box(&mut row);
+            let noise = black_box(&noise);
+            if fused {
+                let table = black_box(&table);
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(simd, row, table, noise, params),
+                );
+            } else {
+                luma_scale_row(&mut scale, row, black_box(&exact));
+                let scale = black_box(&scale);
+                simd.vectorize(
+                    #[inline(always)]
+                    || add_noise_row::<_, _, true>(simd, row, scale, noise, params),
+                )
+                .unwrap();
+            }
+        }
+        black_box(row);
+        start.elapsed().as_secs_f64() * 1.0e9 / f64::from(ROWS)
+    };
+    let _ = (measure(false), measure(true));
+    println!("width,round,existing_ns_per_row,fused_ns_per_row");
+    for round in 0..24 {
+        let (base, fused) = if round % 2 == 0 {
+            (measure(false), measure(true))
+        } else {
+            let fused = measure(true);
+            (measure(false), fused)
+        };
+        println!("{WIDTH},{},{base:.2},{fused:.2}", round + 1);
+    }
+}
+
 fn destination_allocation_is_retained<T: ReconSample + std::fmt::Debug + PartialEq>(
     samples: &[T],
 ) -> Vec<T> {

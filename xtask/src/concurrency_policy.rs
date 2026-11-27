@@ -504,7 +504,7 @@ pub(crate) fn check_concurrency_policy(root: &Path) -> Result<()> {
 /// renames AND `x.workspace = true` entries whose rename lives in the root
 /// `[workspace.dependencies]` map — so a banned crate cannot hide behind a workspace
 /// alias (e.g. root `rt = { package = "tokio" }` + member `rt.workspace = true`).
-fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
+pub(crate) fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
     let root_manifest = crate::read_manifest(&root.join("Cargo.toml"))?;
     let workspace_deps = crate::workspace_dep_names(&root_manifest);
     let mut crates = Vec::new();
@@ -569,56 +569,30 @@ fn collect_dependency_names(
 
 /// Walks every `.rs` file under `crates/` (never `xtask/`, `fuzz/`, `target/`, or
 /// `.git/`) and returns each line tagged with whether it is test code.
-fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
+pub(crate) fn collect_source_lines(root: &Path) -> Result<Vec<SourceLine>> {
     let crates_dir = root.join("crates");
     let mut sources = Vec::new();
     if !crates_dir.is_dir() {
         return Ok(sources);
     }
-    let mut stack = vec![crates_dir];
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read directory {}", dir.display()))?;
-        for entry in entries {
-            let entry =
-                entry.with_context(|| format!("failed to read an entry in {}", dir.display()))?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", path.display()))?;
-            if file_type.is_dir() {
-                if !is_skipped_source_dir(&path) {
-                    stack.push(path);
-                }
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-                let display = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                let file_in_tests = is_test_source_file(&display);
-                let contents = std::fs::read_to_string(&path)
-                    .with_context(|| format!("failed to read {}", path.display()))?;
-                scan_source_text(&display, &contents, file_in_tests, &mut sources);
-            }
-        }
+    for path in crate::feature_status::collect_files(&crates_dir, &["rs"])? {
+        let display = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let file_in_tests = is_test_source_file(&display);
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        scan_source_text(&display, &contents, file_in_tests, &mut sources);
     }
     sources.sort_by(|a, b| (a.path.as_str(), a.line_no).cmp(&(b.path.as_str(), b.line_no)));
     Ok(sources)
 }
 
-/// Directories never scanned for source: build output and VCS metadata. `crates/` is
-/// the only scan root, so `xtask/` and `fuzz/` are already excluded by construction.
-fn is_skipped_source_dir(path: &Path) -> bool {
-    matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("target" | ".git")
-    )
-}
-
 /// Returns whether a source path is test-only by repository layout convention.
 fn is_test_source_file(display: &str) -> bool {
-    display.contains("/tests/") || display.ends_with("/tests.rs")
+    display.contains("/tests/") || display.ends_with("/tests.rs") || display.ends_with("_tests.rs")
 }
 
 /// Splits `contents` into [`SourceLine`]s, marking lines as test code and skipping
@@ -693,13 +667,19 @@ fn scan_source_lines(contents: &str, file_in_tests: bool) -> Vec<ScannedLine> {
             continue;
         }
 
-        if trimmed.starts_with("#[cfg(test)]") {
+        let cfg_test_prefix = trimmed.starts_with("#[cfg(test)]")
+            || (trimmed.starts_with("#[cfg(all(test,") && trimmed.contains("))]"));
+        if cfg_test_prefix {
             pending_cfg_test = true;
         }
         if pending_cfg_test {
-            let item = trimmed
-                .strip_prefix("#[cfg(test)]")
-                .map_or(trimmed, str::trim_start);
+            let item = if cfg_test_prefix {
+                trimmed
+                    .split_once(']')
+                    .map_or(trimmed, |(_, rest)| rest.trim_start())
+            } else {
+                trimmed
+            };
             if item.contains('{') {
                 pending_cfg_test = false;
                 depth = brace_delta(&line);
@@ -747,7 +727,6 @@ fn paren_delta(line: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 

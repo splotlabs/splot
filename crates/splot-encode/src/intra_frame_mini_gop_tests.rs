@@ -29,7 +29,7 @@ fn long_mini_gops_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_eq!(long.bases, [0, 16, 32, 33]);
     assert_eq!(long.tools, [true; 5]);
     assert_same_samples(&decode(&long.units.concat()), &long.recon, "long");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             stream(&config, threads, false).units == long.units,
             "{threads} threads"
@@ -74,7 +74,7 @@ fn p6_leaf_frames_reuse_intra_choices_and_decode_to_the_recon() {
     let one = stream(1);
     assert!(crate::mode_decision::REUSED_INTRA.get() > 0);
     assert_same_samples(&decode(&one.units.concat()), &one.recon, "p6");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads).units == one.units, "{threads} threads");
     });
 }

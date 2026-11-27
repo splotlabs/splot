@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::SymbolEncoder;
@@ -83,12 +81,12 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
     assert_eq!(
         syntax,
         CompoundBlockSyntax {
-            y_mode: CompoundYMode::NearNear,
+            y_mode: CompoundMode::NearNear,
             use_optflow: false,
             ref_frame0: 0,
             ref_frame1: 1,
-            mv0: Mv::ZERO,
-            mv1: Mv::ZERO,
+            mv0: MotionVector::ZERO,
+            mv1: MotionVector::ZERO,
         }
     );
     symbols.exit_symbol().unwrap();
@@ -106,9 +104,9 @@ fn compound_average_syntax_roundtrips_through_symbol_encoder() {
 #[test]
 fn non_joint_new_mv_modes_roundtrip_through_symbol_encoder() {
     for (mode, y_mode) in [
-        (COMPOUND_MODE_NEAR_NEWMV, CompoundYMode::NearNew),
-        (COMPOUND_MODE_NEW_NEARMV, CompoundYMode::NewNear),
-        (COMPOUND_MODE_NEW_NEWMV, CompoundYMode::NewNew),
+        (COMPOUND_MODE_NEAR_NEWMV, CompoundMode::NearNew),
+        (COMPOUND_MODE_NEW_NEARMV, CompoundMode::NewNear),
+        (COMPOUND_MODE_NEW_NEWMV, CompoundMode::NewNew),
     ] {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
@@ -138,27 +136,27 @@ fn non_joint_new_mv_modes_roundtrip_through_symbol_encoder() {
 
 #[test]
 fn compound_opfl_modes_use_opfl_amvd_contexts() {
-    assert_eq!(CompoundYMode::NearNew.use_amvd_index(false), Some(0));
-    assert_eq!(CompoundYMode::NearNew.use_amvd_index(true), Some(2));
-    assert_eq!(CompoundYMode::NewNear.use_amvd_index(false), Some(1));
-    assert_eq!(CompoundYMode::NewNear.use_amvd_index(true), Some(3));
-    assert_eq!(CompoundYMode::JointNew.use_amvd_index(false), Some(5));
-    assert_eq!(CompoundYMode::JointNew.use_amvd_index(true), Some(6));
-    assert_eq!(CompoundYMode::NewNew.use_amvd_index(false), Some(7));
-    assert_eq!(CompoundYMode::NewNew.use_amvd_index(true), Some(8));
-    assert_eq!(CompoundYMode::NearNear.use_amvd_index(true), None);
-    assert_eq!(CompoundYMode::GlobalGlobal.use_amvd_index(true), None);
+    assert_eq!(CompoundMode::NearNew.use_amvd_index(false), Some(0));
+    assert_eq!(CompoundMode::NearNew.use_amvd_index(true), Some(2));
+    assert_eq!(CompoundMode::NewNear.use_amvd_index(false), Some(1));
+    assert_eq!(CompoundMode::NewNear.use_amvd_index(true), Some(3));
+    assert_eq!(CompoundMode::JointNew.use_amvd_index(false), Some(5));
+    assert_eq!(CompoundMode::JointNew.use_amvd_index(true), Some(6));
+    assert_eq!(CompoundMode::NewNew.use_amvd_index(false), Some(7));
+    assert_eq!(CompoundMode::NewNew.use_amvd_index(true), Some(8));
+    assert_eq!(CompoundMode::NearNear.use_amvd_index(true), None);
+    assert_eq!(CompoundMode::GlobalGlobal.use_amvd_index(true), None);
 }
 
 #[test]
 fn compound_mode_predicates_keep_per_list_roles() {
     let cases = [
-        (CompoundYMode::NearNear, true, false, false),
-        (CompoundYMode::NearNew, true, false, true),
-        (CompoundYMode::NewNear, false, true, false),
-        (CompoundYMode::GlobalGlobal, false, false, false),
-        (CompoundYMode::JointNew, false, true, false),
-        (CompoundYMode::NewNew, false, true, true),
+        (CompoundMode::NearNear, true, false, false),
+        (CompoundMode::NearNew, true, false, true),
+        (CompoundMode::NewNear, false, true, false),
+        (CompoundMode::GlobalGlobal, false, false, false),
+        (CompoundMode::JointNew, false, true, false),
+        (CompoundMode::NewNew, false, true, true),
     ];
 
     for (mode, second_drl, list0_newmv, list1_newmv) in cases {
@@ -191,7 +189,7 @@ fn compound_average_reads_is_joint_context_zero() {
     let mut symbols = symbol_decoder(&bytes);
     let syntax = read_compound_average_syntax(&mut dec_tile, &mut symbols, input, 0).unwrap();
 
-    assert_eq!(syntax.y_mode, CompoundYMode::NearNear);
+    assert_eq!(syntax.y_mode, CompoundMode::NearNear);
     symbols.exit_symbol().unwrap();
     for selector in [
         TileCdfSelector::IsJoint { ctx: 0 },
@@ -344,13 +342,13 @@ fn compound_average_reads_same_reference_mode_symbol() {
 #[test]
 fn same_reference_compound_mode_mapping_is_complete() {
     for (symbol, expected) in [
-        (COMPOUND_MODE_NEAR_NEARMV, CompoundYMode::NearNear),
-        (COMPOUND_MODE_NEAR_NEWMV, CompoundYMode::NearNew),
+        (COMPOUND_MODE_NEAR_NEARMV, CompoundMode::NearNear),
+        (COMPOUND_MODE_NEAR_NEWMV, CompoundMode::NearNew),
         (
             COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV,
-            CompoundYMode::GlobalGlobal,
+            CompoundMode::GlobalGlobal,
         ),
-        (3, CompoundYMode::NewNew),
+        (3, CompoundMode::NewNew),
     ] {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
@@ -368,7 +366,7 @@ fn same_reference_compound_mode_mapping_is_complete() {
 
         assert_eq!(syntax.y_mode, expected, "symbol {symbol}");
         assert_eq!([syntax.ref_frame0, syntax.ref_frame1], [0, 0]);
-        assert_eq!([syntax.mv0, syntax.mv1], [Mv::ZERO; 2]);
+        assert_eq!([syntax.mv0, syntax.mv1], [MotionVector::ZERO; 2]);
         assert!(!syntax.use_optflow);
         symbols.exit_symbol().unwrap();
         assert_eq!(
@@ -401,7 +399,7 @@ fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
     let syntax =
         read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
-    assert_eq!(syntax.y_mode, CompoundYMode::JointNew);
+    assert_eq!(syntax.y_mode, CompoundMode::JointNew);
     assert_eq!(syntax.ref_frame0, 0);
     assert_eq!(syntax.ref_frame1, 1);
     symbols.exit_symbol().unwrap();
@@ -430,8 +428,8 @@ fn compound_average_reads_global_global_mode() {
     let syntax =
         read_compound_average_syntax(&mut dec_tile, &mut symbols, default_input(), 1).unwrap();
 
-    assert_eq!(syntax.y_mode, CompoundYMode::GlobalGlobal);
-    assert_eq!([syntax.mv0, syntax.mv1], [Mv::ZERO; 2]);
+    assert_eq!(syntax.y_mode, CompoundMode::GlobalGlobal);
+    assert_eq!([syntax.mv0, syntax.mv1], [MotionVector::ZERO; 2]);
     symbols.exit_symbol().unwrap();
 }
 

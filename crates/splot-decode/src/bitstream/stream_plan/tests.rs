@@ -80,7 +80,7 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
     let obus: Vec<_> = plan.obus().collect();
 
     assert_eq!(plan.format(), BitstreamFormat::AnnexB);
-    assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
+    assert_eq!(plan.selected_layer(), DecodeLayerSelection::default());
     assert_eq!(plan.input_len_bytes(), bytes.len() as u64);
     assert_eq!(plan.obu_count(), 4);
     assert_eq!(plan.frame_candidate_count(), 1);
@@ -100,20 +100,31 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
 }
 
 #[test]
-fn non_base_temporal_obus_are_retained_but_not_selected() {
+fn non_base_temporal_obus_are_retained_but_not_selected_for_base_only() {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER | 0x01).as_slice(),
         obu(OBU_CLOSED_LOOP_KEY).as_slice(),
         obu(OBU_REGULAR_TILE_GROUP | 0x01).as_slice(),
-        obu(OBU_MSDO | 0x01).as_slice(),
+        obu(OBU_METADATA_SHORT | 0x01).as_slice(),
     ]
     .concat();
 
-    let parsed_plan = plan(&bytes);
-    let byte_plan = plan_bytes(&bytes);
+    let base_options =
+        DecodeOptions::default().with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY);
+    let parsed = parse_bitstream_partial(&bytes);
+    let parsed_plan = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        base_options,
+    )
+    .unwrap();
+    let byte_plan = DecodeContext::plan_bytes(&bytes, base_options).unwrap();
     let obus: Vec<_> = parsed_plan.obus().collect();
 
     assert_eq!(byte_plan, parsed_plan);
+    assert_eq!(
+        parsed_plan.selected_layer(),
+        DecodeLayerSelection::default().with_temporal_selection(TemporalLayerSelection::BASE_ONLY)
+    );
     assert_eq!(parsed_plan.obu_count(), 4);
     assert_eq!(parsed_plan.frame_candidate_count(), 1);
     assert_eq!(parsed_plan.frame_candidates_all().count(), 1);
@@ -139,7 +150,8 @@ fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
         DecodeLimits::unlimited()
             .with_max_obus(DecodeLimitThreshold::Max(2))
             .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
-    );
+    )
+    .with_temporal_layer_selection(TemporalLayerSelection::BASE_ONLY);
 
     let byte_plan = DecodeContext::plan_bytes(&bytes, frame_options).unwrap();
     let parsed = parse_bitstream_partial(&bytes);
@@ -151,6 +163,17 @@ fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
     for plan in [byte_plan, parsed_plan] {
         assert_eq!(plan.frame_candidate_count(), 1);
     }
+
+    let all_options = DecodeOptions::new(
+        DecodeLimits::unlimited()
+            .with_max_obus(DecodeLimitThreshold::Max(2))
+            .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+    );
+    let all_error = DecodeContext::plan_bytes(&bytes, all_options).unwrap_err();
+    assert!(matches!(
+        all_error,
+        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxFramesToDecode
+    ));
 
     let error = DecodeContext::plan_bytes(
         &bytes,
@@ -607,7 +630,7 @@ fn malformed_ivf_container_and_frame_payload_are_transactional() {
 
 #[test]
 fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_MSDO);
+    let unsupported = extended_obu(OBU_MSDO | 0x80, 0x03);
     let malformed = [0x05, OBU_CLOSED_LOOP_KEY];
     let bytes = ivf_with_payloads(&[&unsupported, &malformed]);
 
@@ -683,7 +706,7 @@ fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
 
 #[test]
 fn byte_ivf_record_limit_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_MSDO);
+    let unsupported = extended_obu(OBU_MSDO | 0x80, 0x03);
     let second = obu(OBU_TEMPORAL_DELIMITER);
     let bytes = ivf_with_payloads(&[&unsupported, &second]);
 
@@ -857,32 +880,12 @@ fn a_stream_on_one_nonzero_extended_layer_is_planned() {
 fn unsupported_layers_and_obu_types_are_typed() {
     let cases = [
         (
-            obu(OBU_MSDO).to_vec(),
-            DecodeUnsupportedReason::MultistreamSelection,
+            obu(OBU_MSDO | 0x01).to_vec(),
+            DecodeUnsupportedReason::InvalidLayerScope,
         ),
         (
-            extended_obu(0x90, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-        ),
-        (
-            [
-                obu(OBU_SEQUENCE_HEADER).as_slice(),
-                extended_obu(0x90, 0x01).as_slice(),
-            ]
-            .concat(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
-        ),
-        (
-            extended_obu(0x91, 0x20).to_vec(),
-            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
-        ),
-        (
-            [
-                obu(OBU_SEQUENCE_HEADER).as_slice(),
-                extended_obu(0x91, 0x01).as_slice(),
-            ]
-            .concat(),
-            DecodeUnsupportedReason::NonBaseExtendedLayer,
+            extended_obu(OBU_MSDO | 0x80, 0x03).to_vec(),
+            DecodeUnsupportedReason::InvalidLayerScope,
         ),
         (
             extended_obu(0x88, 0x00).to_vec(),
@@ -917,6 +920,18 @@ fn unsupported_layers_and_obu_types_are_typed() {
                     && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
             ));
         }
+    }
+
+    for accepted_msdo in [
+        obu(OBU_MSDO).to_vec(),
+        extended_obu(OBU_MSDO | 0x80, 0x1F).to_vec(),
+    ] {
+        let plan = DecodeContext::plan_bytes(&accepted_msdo, DecodeOptions::default()).unwrap();
+        assert_eq!(plan.obu_count(), 1);
+        assert_eq!(
+            plan.obus().next().unwrap().role(),
+            DecodePlannedObuRole::Global
+        );
     }
 }
 
@@ -984,5 +999,137 @@ fn the_decode_pass_replans_the_planned_candidates_and_continuations() {
                 .iter()
                 .eq(plan.obus().filter(|obu| obu.role().is_frame_continuation()))
         );
+    }
+}
+
+#[test]
+fn non_base_embedded_obus_are_planned_and_filtered_with_continuations() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x00, 0x80],
+        &[0x03, OBU_REGULAR_TILE_GROUP | 0x80, 0x20, 0x80],
+        &[0x03, OBU_REGULAR_TILE_GROUP | 0x80, 0x20, 0x00],
+    ]
+    .concat();
+
+    let all_plan = plan(&bytes);
+    assert_eq!(all_plan.frame_candidate_count(), 2);
+    let conts: Vec<_> =
+        tile_group_continuations(bytes.as_slice().into(), all_plan.obus().nth(3).unwrap())
+            .collect();
+    assert_eq!(conts.len(), 1);
+    assert_eq!(conts[0].header().embedded_layer_id.get(), 1);
+
+    let base_options =
+        DecodeOptions::default().with_embedded_layer_selection(EmbeddedLayerSelection::BASE_ONLY);
+    let base_plan = DecodeContext::plan_bytes(&bytes, base_options).unwrap();
+    let roles: Vec<_> = base_plan.obus().map(DecodePlannedObu::role).collect();
+    assert_eq!(
+        roles,
+        [
+            DecodePlannedObuRole::Global,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+            DecodePlannedObuRole::UnselectedLayer,
+            DecodePlannedObuRole::UnselectedLayer,
+        ]
+    );
+
+    let filter = ActiveLayerFilter::new(
+        TemporalLayerSelection::Target(TemporalLayerId::from_bits(1)),
+        EmbeddedLayerSelection::Target(EmbeddedLayerId::from_bits(1)),
+    );
+    assert!(filter.is_layer_selected(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
+    assert!(!filter.is_layer_output(EmbeddedLayerId::from_bits(0), TemporalLayerId::from_bits(0)));
+    assert!(filter.is_layer_output(EmbeddedLayerId::from_bits(1), TemporalLayerId::from_bits(1)));
+}
+
+#[test]
+fn multiple_extended_layers_plan_and_filter_independently() {
+    let bytes = [
+        &[0x01, 0x08][..],
+        &[0x02, 0x84, 0x03][..],
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x03, 0x80][..],
+        &[0x02, 0x84, 0x07][..],
+        &[0x03, OBU_CLOSED_LOOP_KEY | 0x80, 0x07, 0x80][..],
+    ]
+    .concat();
+
+    let all_plan = plan(&bytes);
+    assert_eq!(all_plan.frame_candidate_count(), 2);
+    assert_eq!(all_plan.selected_layer().extended_layer_id().get(), 3);
+
+    let roles: Vec<_> = all_plan.obus().map(DecodePlannedObu::role).collect();
+    assert_eq!(
+        roles,
+        [
+            DecodePlannedObuRole::Global,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+            DecodePlannedObuRole::SelectedLayerState,
+            DecodePlannedObuRole::FrameCandidate,
+        ]
+    );
+    let hdr_td = all_plan.obus().next().unwrap().header();
+    assert_eq!(
+        hdr_td.extended_layer_id,
+        splot_core::types::GLOBAL_XLAYER_ID
+    );
+    assert_eq!(
+        all_plan
+            .obus()
+            .nth(1)
+            .unwrap()
+            .header()
+            .extended_layer_id
+            .get(),
+        3
+    );
+    assert_eq!(
+        all_plan
+            .obus()
+            .nth(3)
+            .unwrap()
+            .header()
+            .extended_layer_id
+            .get(),
+        7
+    );
+
+    let only_7 = DecodeContext::plan_bytes(
+        &bytes,
+        DecodeOptions::default().with_extended_layer_selection(ExtendedLayerSelection::Target(
+            ExtendedLayerId::from_bits(7),
+        )),
+    )
+    .unwrap();
+    assert_eq!(only_7.frame_candidate_count(), 1);
+    assert_eq!(only_7.selected_layer().extended_layer_id().get(), 7);
+    assert_eq!(
+        only_7.obus().nth(1).unwrap().role(),
+        DecodePlannedObuRole::UnselectedLayer
+    );
+    assert_eq!(
+        only_7.obus().nth(2).unwrap().role(),
+        DecodePlannedObuRole::UnselectedLayer
+    );
+    assert_eq!(
+        only_7.obus().nth(4).unwrap().role(),
+        DecodePlannedObuRole::FrameCandidate
+    );
+
+    for bad in [
+        ExtendedLayerSelection::Target(ExtendedLayerId::from_bits(31)),
+        ExtendedLayerSelection::OutputMask(0),
+        ExtendedLayerSelection::OutputMask(1u32 << 31),
+    ] {
+        assert!(matches!(
+            DecodeContext::plan_bytes(
+                &bytes,
+                DecodeOptions::default().with_extended_layer_selection(bad),
+            ),
+            Err(DecodeError::InvalidExtendedSelection { .. })
+        ));
     }
 }

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::optflow::LumaReference;
 use super::super::tests::{frame_for, workspace_for};
 use super::*;
@@ -13,8 +11,63 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 48;
 
-fn mv(row: i32, col: i32) -> Mv {
-    Mv { row, col }
+#[test]
+fn tip_sad_matches_scalar_random_extreme_and_masked_inputs() {
+    fn sample_index(x: i32, y: i32) -> usize {
+        (y * 16 + x) as usize
+    }
+
+    fn scalar_sad(a: &[u16; 256], b: &[u16; 256], dx: i32, dy: i32) -> u32 {
+        let mut sad = 0;
+        for y in (2..14).step_by(2) {
+            for x in 2..14 {
+                sad += u32::from(
+                    a[sample_index(x + dx, y + dy)].abs_diff(b[sample_index(x - dx, y - dy)]),
+                );
+            }
+        }
+        sad
+    }
+
+    crate::test_support::with_auto_backend!(backend => {
+        let mut seed = 0xd1b5_4a32u32;
+        for max in [255u16, 1023] {
+            let mut sample = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 16) as u16 & max
+            };
+            let check = |a: &[u16; 256], b: &[u16; 256], dx, dy| {
+                let actual = splot_core::with_simd!(backend, simd => tip_refinemv_sad(simd, a, b, dx, dy));
+                assert_eq!(actual, scalar_sad(a, b, dx, dy), "max={max}, dx={dx}, dy={dy}");
+            };
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    check(&[0; 256], &[max; 256], dx, dy);
+                    check(&[max; 256], &[0; 256], dx, dy);
+
+                    let mut a = [0; 256];
+                    let mut b = [max; 256];
+                    for y in (2..14).step_by(2) {
+                        for x in 2..14 {
+                            let value = sample();
+                            a[sample_index(x + dx, y + dy)] = value;
+                            b[sample_index(x - dx, y - dy)] = value;
+                        }
+                    }
+                    check(&a, &b, dx, dy);
+                    for _ in 0..16 {
+                        let a = core::array::from_fn(|_| sample());
+                        let b = core::array::from_fn(|_| sample());
+                        check(&a, &b, dx, dy);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn mv(row: i32, col: i32) -> MotionVector {
+    MotionVector { row, col }
 }
 
 /// A reference whose luma is a textured base plus `edits` of `(x, y, delta)`.
@@ -55,7 +108,7 @@ fn frame<T: ReconSample>(bit_depth: BitDepth, luma: Vec<u16>) -> DecodedFrame<T>
 #[derive(Clone, Copy)]
 struct Case {
     x: usize,
-    mv: Mv,
+    mv: MotionVector,
     search: bool,
     refine: bool,
     threshold: Option<u32>,
@@ -75,35 +128,40 @@ fn check<T: ReconSample>(references: &[DecodedFrame<T>; 2], case: Case) {
 fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, case: Case) {
     let bit_depth = references[0].info().bit_depth();
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let rect = McBlockRect::from_luma_rect(case.x, y, 8, 8);
     let mvs = [case.mv; 2];
     let block = unit_block(references, rect, mvs, case);
-    let fast = TipFullpelViews::new(&sink, &block, (rect, mvs), offset)
-        .expect("views")
-        .motion_cell(&sink, &block, (rect, mvs))
-        .expect("fast cell");
-    let mut luma = LumaReference::pair(sink.info(), &block, offset);
-    let full = if block.search_refinemv && search_range_allowed(mvs) {
-        tip_refinemv_optflow_motion_cell(
-            &block,
-            (block.rect, [block.mv0, block.mv1]),
-            &mut TipSearchScratch::default(),
-            &mut luma,
-            &mut Default::default(),
-        )
-        .expect("refined cell")
-        .expect("searched unit")
-    } else {
-        super::super::optflow::tip_unit_motion_cell(
-            &sink,
-            &block,
-            (block.rect, [block.mv0, block.mv1]),
-            &mut luma,
-        )
-        .expect("unit cell")
-    };
+    let (fast, full) = crate::test_support::with_auto_backend!(backend => {
+        let fast = TipFullpelViews::new(&sink, &block, (rect, mvs), offset)
+            .expect("views")
+            .motion_cell(backend, &sink, &block, (rect, mvs))
+            .expect("fast cell");
+        let mut luma = LumaReference::pair(sink.info(), &block, offset);
+        let full = if block.search_refinemv && search_range_allowed(mvs) {
+            tip_refinemv_optflow_motion_cell(
+                backend,
+                &block,
+                (block.rect, [block.mv0, block.mv1]),
+                &mut TipSearchScratch::default(),
+                &mut luma,
+                &mut Default::default(),
+            )
+            .expect("refined cell")
+            .expect("searched unit")
+        } else {
+            super::super::optflow::tip_unit_motion_cell(
+                backend,
+                &sink,
+                &block,
+                (block.rect, [block.mv0, block.mv1]),
+                &mut luma,
+            )
+            .expect("unit cell")
+        };
+        (fast, full)
+    });
     assert_eq!(
         fast.is_some(),
         case.fast,
@@ -119,7 +177,7 @@ fn check_at<T: ReconSample>(references: [ReferenceSamples<'_, T>; 2], y: usize, 
 fn unit_block<T: ReconSample>(
     references: [ReferenceSamples<'_, T>; 2],
     rect: McBlockRect,
-    mvs: [Mv; 2],
+    mvs: [MotionVector; 2],
     case: Case,
 ) -> CompoundMcBlock<'_, T> {
     InterBlockParams::compound_average(
@@ -314,7 +372,7 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     check_at(references, 8, case(mv(0, 0), true, true));
     check_at(references, 8, case(mv(0, 0), false, true));
     let mut workspace = workspace_for::<u8>(BitDepth::Eight, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let first = McBlockRect::from_luma_rect(16, 8, 8, 8);
     let past = McBlockRect::from_luma_rect(16, 16, 8, 8);
     let still = [mv(0, 0); 2];
@@ -322,7 +380,9 @@ fn tip_fullpel_cells_read_only_the_published_prefix() {
     let views =
         TipFullpelViews::new(&sink, &block, (first, still), ByteOffset::new(0)).expect("views");
     for mvs in [[mv(8, 0); 2], [mv(0, 0), mv(8, 0)]] {
-        let fast = views.motion_cell(&sink, &block, (past, mvs));
+        let fast = crate::test_support::with_auto_backend!(backend => {
+            views.motion_cell(backend, &sink, &block, (past, mvs))
+        });
         assert_eq!(fast.expect("fast cell"), None, "{mvs:?}");
     }
 }
@@ -340,15 +400,18 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
     let predict = |luma: &mut LumaReference<'_, u8>, y: usize| {
         let rect = McBlockRect::from_luma_rect(16, y, 8, 8);
         let mut output = [0u16; 64];
-        super::super::optflow::initial_luma_prediction::<_, 0>(
-            luma,
-            rect,
-            mv(3, 5),
-            InterpolationFilter::Bilinear,
-            None,
-            None,
-            &mut output,
-        )
+        crate::test_support::with_auto_backend!(backend => {
+            super::super::optflow::initial_luma_prediction::<_, _, 0>(
+                backend,
+                luma,
+                rect,
+                mv(3, 5),
+                InterpolationFilter::Bilinear,
+                None,
+                None,
+                &mut output,
+            )
+        })
         .map(|()| output)
     };
     let mut cached = LumaReference::new(info, reference, offset);
@@ -365,7 +428,7 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
 fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitDepth) {
     let references = [reference::<T>(bit_depth, &[]), ramp::<T>(bit_depth, 3)];
     let mut workspace = workspace_for::<T>(bit_depth, PixelFormat::Yuv420, WIDTH, HEIGHT);
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     for reference in &references {
         let reference = ReferenceSamples::settled(reference);
@@ -381,19 +444,24 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
             let filter = InterpolationFilter::Bilinear;
             let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
             let mut luma = LumaReference::new(sink.info(), reference, offset);
-            super::super::optflow::initial_luma_prediction::<_, 0>(
-                &mut luma, rect, mv, filter, area, None, &mut whole,
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                super::super::optflow::initial_luma_prediction::<_, _, 0>(
+                    backend, &mut luma, rect, mv, filter, area, None, &mut whole,
+                )
+            })
             .expect("whole prediction");
-            super::super::optflow::initial_luma_prediction::<_, 2>(
-                &mut luma,
-                rect,
-                mv,
-                filter,
-                area,
-                None,
-                &mut centre,
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                super::super::optflow::initial_luma_prediction::<_, _, 2>(
+                    backend,
+                    &mut luma,
+                    rect,
+                    mv,
+                    filter,
+                    area,
+                    None,
+                    &mut centre,
+                )
+            })
             .expect("centre prediction");
             for (index, (&whole, &centre)) in whole.iter().zip(&centre).enumerate() {
                 let inside = [index / 24, index % 24].iter().all(|v| (2..22).contains(v));
@@ -434,28 +502,38 @@ fn search_window_matches_the_general_bilinear_prediction() {
             bit_depth,
         };
         let edge = (width as i32 - 1 - inner, height as i32 - 1 - inner);
-        for (x0, y0) in [(-1, -1), (5, 3), edge] {
-            for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
-                let params = params(x0, y0, h, v);
-                let mut want = vec![0u16; size * size];
-                splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, size)
+        crate::test_support::with_auto_backend!(backend => {
+            for (x0, y0) in [(-1, -1), (5, 3), edge] {
+                for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+                    let params = params(x0, y0, h, v);
+                    let mut want = vec![0u16; size * size];
+                    splot_recon::subpel_predict_block_strided_into_with(
+                        backend, &view, &params, &mut want, size,
+                    )
                     .expect("general prediction");
-                let mut got = vec![0x5a5au16; size * size];
-                assert!(bilinear_search_window(&view, &params, &mut got));
-                assert_eq!(got, want, "{size}: {x0},{y0} phases {h},{v}");
+                    let mut got = vec![0x5a5au16; size * size];
+                    assert!(bilinear_search_window(backend, &view, &params, &mut got));
+                    assert_eq!(got, want, "{size}: {x0},{y0} phases {h},{v}");
+                }
             }
-        }
-        let mut output = vec![0u16; size * size];
-        let mut wide = params(5, 3, 3, 5);
-        wide.last_x += 1;
-        assert!(!bilinear_search_window(&view, &wide, &mut output));
-        let outside = params(edge.0 + 1, edge.1, 3, 5);
-        assert!(!bilinear_search_window(&view, &outside, &mut output));
-        assert!(!bilinear_search_window(
-            &view,
-            &params(-2, 3, 3, 5),
-            &mut output
-        ));
+            let mut output = vec![0u16; size * size];
+            let mut wide = params(5, 3, 3, 5);
+            wide.last_x += 1;
+            assert!(!bilinear_search_window(backend, &view, &wide, &mut output));
+            let outside = params(edge.0 + 1, edge.1, 3, 5);
+            assert!(!bilinear_search_window(
+                backend,
+                &view,
+                &outside,
+                &mut output
+            ));
+            assert!(!bilinear_search_window(
+                backend,
+                &view,
+                &params(-2, 3, 3, 5),
+                &mut output
+            ));
+        });
     }
     let wide: Vec<u16> = (0..40 * 36)
         .map(|index| ((index * 7919 + index / 40 * 104_729) % 1024) as u16)
@@ -490,29 +568,35 @@ fn unclamped_8x8_matches_the_general_bilinear_prediction() {
         last_y: y0 + 11,
         bit_depth: BitDepth::Ten,
     };
-    for (x0, y0) in [(0, 0), (9, 4), (31, 27)] {
-        for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
-            let params = params(x0, y0, h, v);
-            let mut want = [0u16; 64];
-            splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, 8)
+    crate::test_support::with_auto_backend!(backend => {
+        for (x0, y0) in [(0, 0), (9, 4), (31, 27)] {
+            for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+                let params = params(x0, y0, h, v);
+                let mut want = [0u16; 64];
+                splot_recon::subpel_predict_block_strided_into_with(
+                    backend, &view, &params, &mut want, 8,
+                )
                 .expect("general prediction");
-            let mut got = [0x5a5au16; 64];
-            assert!(bilinear_search_window(&view, &params, &mut got));
-            assert_eq!(got, want, "{x0},{y0} phases {h},{v}");
+                let mut got = [0x5a5au16; 64];
+                assert!(bilinear_search_window(backend, &view, &params, &mut got));
+                assert_eq!(got, want, "{x0},{y0} phases {h},{v}");
+            }
         }
-    }
-    let mut output = [0u16; 64];
-    let mut tight = params(9, 4, 3, 5);
-    tight.last_x = 9 + 7;
-    assert!(!bilinear_search_window(&view, &tight, &mut output));
-    assert!(!bilinear_search_window(
-        &view,
-        &params(32, 4, 3, 5),
-        &mut output
-    ));
-    assert!(!bilinear_search_window(
-        &view,
-        &params(-1, 4, 3, 5),
-        &mut output
-    ));
+        let mut output = [0u16; 64];
+        let mut tight = params(9, 4, 3, 5);
+        tight.last_x = 9 + 7;
+        assert!(!bilinear_search_window(backend, &view, &tight, &mut output));
+        assert!(!bilinear_search_window(
+            backend,
+            &view,
+            &params(32, 4, 3, 5),
+            &mut output
+        ));
+        assert!(!bilinear_search_window(
+            backend,
+            &view,
+            &params(-1, 4, 3, 5),
+            &mut output
+        ));
+    });
 }

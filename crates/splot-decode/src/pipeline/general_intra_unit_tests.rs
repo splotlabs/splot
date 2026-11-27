@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::*;
 use crate::bitstream::tile_payload::{
     CflMultiDirection, CflParams, CoeffOrdinaryBranchError, CoeffOrdinaryPassError,
@@ -1027,17 +1025,17 @@ fn classifies_smooth_luma_plans() {
         (
             "smooth vertical",
             IntraYMode::SmoothVertical,
-            crate::bitstream::tile_payload::SupportedNonDcLumaMode::SmoothVertical,
+            splot_recon::IntraSmoothMode::SmoothVertical,
         ),
         (
             "smooth",
             IntraYMode::Smooth,
-            crate::bitstream::tile_payload::SupportedNonDcLumaMode::Smooth,
+            splot_recon::IntraSmoothMode::Smooth,
         ),
         (
             "smooth horizontal",
             IntraYMode::SmoothHorizontal,
-            crate::bitstream::tile_payload::SupportedNonDcLumaMode::SmoothHorizontal,
+            splot_recon::IntraSmoothMode::SmoothHorizontal,
         ),
     ] {
         assert_rect_luma_plan_for_parts(

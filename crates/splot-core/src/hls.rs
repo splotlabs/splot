@@ -12,8 +12,9 @@
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::{MAX_SEQ_NUM, ProfileIdc, SequenceHeaderId};
-use crate::segment::{SegmentInfo, parse_seg_info};
+use crate::segment::{SegmentInfo, parse_seg_info_with_reader};
 use crate::span::ByteOffset;
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 use crate::types::{EmbeddedLayerId, TemporalLayerId};
 
 /// `MAX_MFH_NUM` (AV2 v1.0.0 § 3): maximum number of multi-frame headers.
@@ -181,40 +182,72 @@ impl MultistreamDecoderOperation {
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
 /// payload ends mid-field.
 pub fn parse_msdo(reader: &mut BitReader<'_>) -> Result<MultistreamDecoderOperation> {
-    let num_streams_minus_2 = reader.read_bits_u8(3)?;
-    let multistream_profile_idc = ProfileIdc::from_bits(reader.read_bits_u8(5)?);
-    let multistream_level_idx = reader.read_bits_u8(5)?;
-    let multistream_tier = reader.read_bits_u8(1)?;
-    let multistream_even_allocation_flag = reader.read_flag()?;
-    let multistream_large_picture_idc = if multistream_even_allocation_flag {
-        None
-    } else {
-        Some(reader.read_bits_u8(3)?)
-    };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_msdo_with_reader(&mut sr)
+}
 
-    let mut sub_streams = [SubStreamConfig::ZERO; MAX_SUB_STREAMS];
-    let count = usize::from(num_streams_minus_2) + 2;
-    for entry in sub_streams.iter_mut().take(count) {
-        *entry = SubStreamConfig {
-            sub_xlayer_id: reader.read_bits_u8(5)?,
-            sub_stream_max_profile: reader.read_bits_u8(5)?,
-            sub_stream_max_level: reader.read_bits_u8(5)?,
-            sub_stream_max_tier: reader.read_bits_u8(1)?,
+/// Parses `multistream_decoder_operation_obu()` (AV2 § 5.6) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the
+/// payload ends mid-field.
+pub fn parse_msdo_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<MultistreamDecoderOperation> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_msdo_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_msdo_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<MultistreamDecoderOperation> {
+    sr.in_struct("multistream_decoder_operation_obu", Some("5.6"), |sr| {
+        let num_streams_minus_2 = sr.read_bits_u8("num_streams_minus_2", 3)?;
+        let multistream_profile_idc =
+            ProfileIdc::from_bits(sr.read_bits_u8("multistream_profile_idc", 5)?);
+        let multistream_level_idx = sr.read_bits_u8("multistream_level_idx", 5)?;
+        let multistream_tier = sr.read_bits_u8("multistream_tier", 1)?;
+        let multistream_even_allocation_flag = sr.read_flag("multistream_even_allocation_flag")?;
+        let multistream_large_picture_idc = if multistream_even_allocation_flag {
+            sr.absent(
+                "multistream_large_picture_idc",
+                "multistream_even_allocation_flag",
+            );
+            None
+        } else {
+            Some(sr.read_bits_u8("multistream_large_picture_idc", 3)?)
         };
-    }
 
-    let multistream_doh_constraint_flag = reader.read_flag()?;
+        let mut sub_streams = [SubStreamConfig::ZERO; MAX_SUB_STREAMS];
+        let count = usize::from(num_streams_minus_2) + 2;
+        for (i, entry) in sub_streams.iter_mut().take(count).enumerate() {
+            *entry = sr.in_loop_item("i", i, |sr| {
+                Ok(SubStreamConfig {
+                    sub_xlayer_id: sr.read_bits_u8("sub_xlayer_id", 5)?,
+                    sub_stream_max_profile: sr.read_bits_u8("sub_stream_max_profile", 5)?,
+                    sub_stream_max_level: sr.read_bits_u8("sub_stream_max_level", 5)?,
+                    sub_stream_max_tier: sr.read_bits_u8("sub_stream_max_tier", 1)?,
+                })
+            })?;
+        }
 
-    Ok(MultistreamDecoderOperation {
-        num_streams_minus_2,
-        multistream_profile_idc,
-        multistream_level_idx,
-        multistream_tier,
-        multistream_even_allocation_flag,
-        multistream_large_picture_idc,
-        sub_stream_count: count as u8,
-        sub_streams,
-        multistream_doh_constraint_flag,
+        let multistream_doh_constraint_flag = sr.read_flag("multistream_doh_constraint_flag")?;
+
+        Ok(MultistreamDecoderOperation {
+            num_streams_minus_2,
+            multistream_profile_idc,
+            multistream_level_idx,
+            multistream_tier,
+            multistream_even_allocation_flag,
+            multistream_large_picture_idc,
+            sub_stream_count: count as u8,
+            sub_streams,
+            multistream_doh_constraint_flag,
+        })
     })
 }
 
@@ -287,58 +320,109 @@ impl MultiFrameHeader {
 /// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
 /// mid-field.
 pub fn parse_multi_frame_header(reader: &mut BitReader<'_>) -> Result<MultiFrameHeader> {
-    let mfh_seq_header_id = reader.read_uvlc()?;
-    let mfh_id_minus_1 = reader.read_uvlc()?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_multi_frame_header_with_reader(&mut sr)
+}
 
-    let mfh_frame_size_present_flag = reader.read_flag()?;
-    let mfh_frame_size = if mfh_frame_size_present_flag {
-        let width_bits = reader.read_bits_u8(4)? + 1;
-        let height_bits = reader.read_bits_u8(4)? + 1;
-        let width_minus_1 = reader.read_bits(u32::from(width_bits))?;
-        let height_minus_1 = reader.read_bits(u32::from(height_bits))?;
-        Some(MfhFrameSize {
-            width_bits,
-            height_bits,
-            width_minus_1,
-            height_minus_1,
-        })
-    } else {
-        None
-    };
+/// Parses `multi_frame_header_obu()` (AV2 § 5.7) while reporting syntax fields
+/// and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors or
+/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
+/// mid-field.
+pub fn parse_multi_frame_header_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<MultiFrameHeader> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_multi_frame_header_with_reader(&mut sr)
+}
 
-    let mfh_deblocking_filter_update = reader.read_flag()?;
-    let mut mfh_apply_deblocking_filter = [false; 4];
-    if mfh_deblocking_filter_update {
-        for flag in &mut mfh_apply_deblocking_filter {
-            *flag = reader.read_flag()?;
+pub(crate) fn parse_multi_frame_header_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<MultiFrameHeader> {
+    sr.in_struct("multi_frame_header_obu", Some("5.7"), |sr| {
+        let mfh_seq_header_id = sr.read_uvlc("mfh_seq_header_id")?;
+        let mfh_id_minus_1 = sr.read_uvlc("mfh_id_minus_1")?;
+
+        let mfh_frame_size_present_flag = sr.read_flag("mfh_frame_size_present_flag")?;
+        let mfh_frame_size = if mfh_frame_size_present_flag {
+            let width_bits = sr.read_bits_u8("mfh_frame_width_bits_minus_1", 4)? + 1;
+            let height_bits = sr.read_bits_u8("mfh_frame_height_bits_minus_1", 4)? + 1;
+            let width_minus_1 = sr.read_bits("mfh_frame_width_minus_1", u32::from(width_bits))?;
+            let height_minus_1 =
+                sr.read_bits("mfh_frame_height_minus_1", u32::from(height_bits))?;
+            Some(MfhFrameSize {
+                width_bits,
+                height_bits,
+                width_minus_1,
+                height_minus_1,
+            })
+        } else {
+            sr.absent(
+                "mfh_frame_width_bits_minus_1",
+                "!mfh_frame_size_present_flag",
+            );
+            sr.absent(
+                "mfh_frame_height_bits_minus_1",
+                "!mfh_frame_size_present_flag",
+            );
+            sr.absent("mfh_frame_width_minus_1", "!mfh_frame_size_present_flag");
+            sr.absent("mfh_frame_height_minus_1", "!mfh_frame_size_present_flag");
+            None
+        };
+
+        let mfh_deblocking_filter_update = sr.read_flag("mfh_deblocking_filter_update")?;
+        let mut mfh_apply_deblocking_filter = [false; 4];
+        if mfh_deblocking_filter_update {
+            for (i, flag) in mfh_apply_deblocking_filter.iter_mut().enumerate() {
+                *flag =
+                    sr.in_loop_item("i", i, |sr| sr.read_flag("mfh_apply_deblocking_filter"))?;
+            }
+        } else {
+            for i in 0..4 {
+                let _ = sr.in_loop_item("i", i, |sr| {
+                    sr.inferred_bool(
+                        "mfh_apply_deblocking_filter",
+                        "!mfh_deblocking_filter_update",
+                        false,
+                    );
+                    Ok(())
+                });
+            }
         }
-    }
 
-    let mfh_seg_info_present_flag = reader.read_flag()?;
-    let (mfh_ext_seg_flag, mfh_allow_seg_info_change, segment_info) = if mfh_seg_info_present_flag {
-        let ext_seg = reader.read_flag()?;
-        let allow_change = reader.read_flag()?;
-        let info = parse_seg_info(reader, if ext_seg { 16 } else { 8 })?;
-        (Some(ext_seg), Some(allow_change), Some(info))
-    } else {
-        (None, None, None)
-    };
+        let mfh_seg_info_present_flag = sr.read_flag("mfh_seg_info_present_flag")?;
+        let (mfh_ext_seg_flag, mfh_allow_seg_info_change, segment_info) =
+            if mfh_seg_info_present_flag {
+                let ext_seg = sr.read_flag("mfh_ext_seg_flag")?;
+                let allow_change = sr.read_flag("mfh_allow_seg_info_change")?;
+                let info = parse_seg_info_with_reader(sr, if ext_seg { 16 } else { 8 })?;
+                (Some(ext_seg), Some(allow_change), Some(info))
+            } else {
+                sr.absent("mfh_ext_seg_flag", "!mfh_seg_info_present_flag");
+                sr.absent("mfh_allow_seg_info_change", "!mfh_seg_info_present_flag");
+                (None, None, None)
+            };
 
-    Ok(MultiFrameHeader {
-        mfh_seq_header_id,
-        mfh_id_minus_1,
-        mfh_frame_size,
-        mfh_deblocking_filter_update,
-        mfh_apply_deblocking_filter,
-        mfh_seg_info_present_flag,
-        mfh_ext_seg_flag,
-        mfh_allow_seg_info_change,
-        segment_info,
+        Ok(MultiFrameHeader {
+            mfh_seq_header_id,
+            mfh_id_minus_1,
+            mfh_frame_size,
+            mfh_deblocking_filter_update,
+            mfh_apply_deblocking_filter,
+            mfh_seg_info_present_flag,
+            mfh_ext_seg_flag,
+            mfh_allow_seg_info_change,
+            segment_info,
+        })
     })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;
@@ -361,6 +445,73 @@ mod tests {
         }
         bits.bit(0); // multistream_doh_constraint_flag
         bits
+    }
+
+    #[test]
+    fn msdo_allocation_combines_native_and_aggregate_levels_by_xlayer() {
+        use crate::types::ExtendedLayerId;
+
+        let bytes = msdo_bits(0).into_bytes();
+        let mut msdo = parse_msdo(&mut BitReader::new(&bytes, ByteOffset::new(0))).unwrap();
+        let large = ExtendedLayerId::from_bits(11);
+        let small = ExtendedLayerId::from_bits(3);
+        msdo.sub_streams[0].sub_xlayer_id = small.get();
+        msdo.sub_streams[1].sub_xlayer_id = large.get();
+
+        for level in 0..=4 {
+            msdo.multistream_level_idx = level;
+            let even = msdo.frame_level_limits(21, small).unwrap();
+            assert_eq!(
+                (
+                    even.max_width,
+                    even.max_height,
+                    even.max_tile_cols,
+                    even.max_header_rate
+                ),
+                (576, 960, 4, 132)
+            );
+            assert_eq!(even.max_pic_size, 552_960);
+            assert_eq!(even.max_tiles, [2, 2, 4, 4, 8][usize::from(level)]);
+        }
+        msdo.multistream_even_allocation_flag = false;
+        msdo.multistream_large_picture_idc = Some(1);
+        let full = msdo.frame_level_limits(21, large).unwrap();
+        assert_eq!(
+            (
+                full.max_width,
+                full.max_height,
+                full.max_tiles,
+                full.max_tile_cols
+            ),
+            (896, 1600, 21, 7)
+        );
+        let reduced = msdo.frame_level_limits(21, small).unwrap();
+        assert_eq!(
+            (
+                reduced.max_width,
+                reduced.max_height,
+                reduced.max_tiles,
+                reduced.max_tile_cols
+            ),
+            (384, 640, 3, 3)
+        );
+        let native = msdo.frame_level_limits(0, large).unwrap();
+        assert_eq!(
+            (
+                native.max_pic_size,
+                native.max_width,
+                native.max_height,
+                native.max_tiles
+            ),
+            (147_456, 640, 640, 8)
+        );
+        assert!(msdo.frame_level_limits(31, large).is_none());
+
+        msdo.multistream_level_idx = 31;
+        assert_eq!(
+            msdo.frame_level_limits(4, large),
+            crate::level::level_limits(4)
+        );
     }
 
     #[test]

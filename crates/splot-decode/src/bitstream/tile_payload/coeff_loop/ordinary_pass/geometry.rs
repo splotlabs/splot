@@ -18,17 +18,8 @@ const D67_PRED: usize = 8;
 const TX_TYPES: usize = 16;
 const ANGLE_STEP: i32 = 3;
 
-const TX_TYPE_IN_SET_INTRA: [[u8; 16]; 7] = [
-    [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-    [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-    [1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0],
-    [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 1, 0, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-    [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-];
-
-const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
+/// Sets 0 through 5 are common to intra and inter. Intra set 6 repeats set 5.
+const TX_TYPE_IN_SET: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
     [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
@@ -130,11 +121,12 @@ pub(crate) fn resolve_mode_to_txfm_plane_tx_type(
             value: tx_type,
         }
     })?;
-    let Some(set) = TX_TYPE_IN_SET_INTRA.get(config.tx_set) else {
+    if config.tx_set > 6 {
         return Err(CoeffOrdinaryBranchError::InvalidIntraTransformSet {
             tx_set: config.tx_set,
         });
-    };
+    }
+    let set = &TX_TYPE_IN_SET[config.tx_set.min(5)];
     let Some(&in_set) = set.get(tx_type) else {
         return Err(CoeffOrdinaryBranchError::InvalidModeToTxfmTableValue {
             uv_mode,
@@ -160,13 +152,10 @@ fn chroma_inter_tx_type(tx_set: usize, tx_type: usize) -> Result<usize, CoeffOrd
     if tx_type >= TX_TYPES {
         return Err(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type });
     }
-    let Some(set) = TX_TYPE_IN_SET_INTER.get(tx_set) else {
+    let Some(set) = TX_TYPE_IN_SET.get(tx_set) else {
         return Err(CoeffOrdinaryBranchError::InvalidInterTransformSet { tx_set });
     };
-    let Some(&in_set) = set.get(tx_type) else {
-        return Err(CoeffOrdinaryBranchError::InvalidChromaInterTxType { tx_type });
-    };
-    if in_set != 0 {
+    if set[tx_type] != 0 {
         Ok(tx_type)
     } else {
         Ok(DCT_DCT)

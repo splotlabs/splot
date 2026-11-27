@@ -12,9 +12,10 @@ and `.github/copilot-instructions.md` point here.
 2. Fit the solution to the problem. Use the simplest solution for simple
    problems and better designs only when the problem justifies them. Do not add
    flexibility that is not needed yet.
-3. Keep the diff scoped. Do not touch unrelated code. If you discover bad code
-   or design smells outside the task, surface them separately instead of fixing
-   them opportunistically.
+3. Fix codec defects within the task's scope during the session. Keep unrelated
+   fixes in separate changes. For a deferred fix, open or update an issue in
+   the owning repository before handover. Follow the
+   [shared issue procedure](https://github.com/splotlabs/.github/blob/main/AGENTS.md#defects-found-during-work).
 4. Flag uncertainty explicitly. If a small, local, low-risk experiment would
    clarify the issue, run it and bring the hypothesis and result back for
    discussion. Do not present confidence as certainty.
@@ -141,18 +142,35 @@ Generated status markdown is not committed; render it on demand.
 
 ## Coding Standards
 
-- Library-first, thin CLI. Codec and validation logic live in libraries.
+- Put codec and validation fixes in the library that owns the behavior.
+  Keep the CLI thin. When a consumer reveals a defect, test the same public API the consumer calls.
+  Keep independent test oracles separate from the production implementation.
 - Library errors are typed with `thiserror`; `anyhow` is allowed only in
   `splot-cli` and `xtask`.
 - No reachable library `unwrap`, `expect`, `panic!`, `todo!`, or
   `unimplemented!`.
-- Use strong types at public boundaries.
+- Do not satisfy the panic lints with a silent fallback. `unwrap_or`,
+  `unwrap_or_default`, `.ok()` or `else { return }` on a value that came from
+  the bitstream returns a typed error; a fallback that cannot fire is deleted.
+- Use strong types at public boundaries: an enum for a closed set, a struct
+  for values that travel together, `Option` for absence. No string, tuple or
+  sentinel stands in for them.
+- One type and one function per concept. Reuse the type or spec derivation of
+  the lowest crate that owns it; do not mirror it and convert.
+- An item that only tests call is `#[cfg(test)]`, not `pub`.
 - Public items and crates have docs.
 - Every `.rs` file starts with the PolyForm SPDX header.
 - Rust source files target <=1000 physical lines; hard cap is 2500.
 - `unsafe_code = "forbid"` workspace-wide, except the reviewed blocks in
   `splot-decode`, the `splot-recon` plane allocator and the `splot-capi` C ABI
   (`deny` plus module `allow`).
+- Waive a lint with `#[expect(lint, reason = "...")]` on the smallest item;
+  delete an expectation that is no longer fulfilled. `#[allow]` is only for a
+  waiver that cannot hold in every build: target- or cfg-gated code, macro
+  bodies, generated files and the `unsafe_code` module boundaries.
+- Test code needs no waiver for `unwrap`, `expect` or `panic!`: `clippy.toml`
+  covers `#[test]` functions and items under `#[cfg(test)]`. Helpers in
+  `crates/*/tests/` and items under `cfg(all(test, ...))` still need one.
 
 ## Rust and C Decoder API
 
@@ -186,6 +204,9 @@ inspiration only; AV2 behavior comes from the AV2 spec and AVM.
 Testing priority is parser unit tests, property/fuzz no-panic coverage,
 `inspect` snapshots, conformance vectors, then AVM differential testing. Parser
 changes need positive, negative, and EOF cases. See `docs/TESTING.md`.
+
+When a shared default changes, check which presets or callers inherit it.
+Test the affected configurations through their normal entry points.
 
 ## Performance and SIMD
 
@@ -240,7 +261,9 @@ adding a third-party dependency, changing crate dependency graph, adding an
 
 ## Comment and Documentation Policy
 
-Source comments are rare and high-signal. New codec support extends generic
+Source comments are rare and high-signal. A comment states what is true of the
+code now: no history, ticket ids, milestones or "now"/"previously" wording. A
+`TODO(spec: FEATURE-ID)` is one complete sentence. New codec support extends generic
 models, tables, dispatchers, or capability gates rather than one-off branches.
 `cargo xtask check-ai-slop`, `cargo xtask check-comment-density`, and
 `cargo xtask check-doc-budget` enforce the budget.

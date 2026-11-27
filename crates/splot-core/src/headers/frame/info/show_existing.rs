@@ -10,22 +10,22 @@
 //! on the shared [`FrameHeaderCore`](super::FrameHeaderCore) /
 //! [`CoreSeqView`](super::CoreSeqView).
 
-use crate::bitio::BitReader;
 use crate::error::{Error, Result, TrailingBitsErrorKind};
 use crate::headers::frame::size::ceil_log2;
-use crate::headers::frame::tail::{FrameTailInput, parse_film_grain_config};
-use crate::obu::parse_trailing_bits;
+use crate::headers::frame::tail::{FrameTailInput, parse_film_grain_config_with_reader};
+use crate::obu::parse_trailing_bits_with_reader;
+use crate::syntax::{SyntaxObserver, SyntaxReader};
 
 use super::{
-    CoreSeqView, FRAME_HEADER_INFO_FEATURE, FrameHeaderCore, FrameHeaderParseStatus,
+    CoreSeqView, FRAME_HEADER_INFO_FEATURE, FrameHeaderCore, FrameHeaderParseStatus, FrameLayerIds,
     FrameReferenceStateView, SefTrailingBits, get_disp_order_hint,
 };
 
-/// Validates `trailing_bits( remainingPayloadBits )` over the rest of `reader`'s payload
-/// for a show-existing-frame OBU (AV2 § 5.2.1 / § 5.2.3), classifying the outcome without
-/// failing the parse so the already-parsed SEF facts survive.
-fn classify_sef_trailing_bits(reader: &mut BitReader<'_>) -> SefTrailingBits {
-    match parse_trailing_bits(reader, reader.remaining_bits()) {
+fn classify_sef_trailing_bits<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> SefTrailingBits {
+    let remaining = sr.remaining_bits();
+    match parse_trailing_bits_with_reader(sr, remaining) {
         Ok(()) => SefTrailingBits::Valid,
         Err(Error::InvalidTrailingBits { kind, .. }) => match kind {
             TrailingBitsErrorKind::Empty => SefTrailingBits::Empty,
@@ -36,28 +36,31 @@ fn classify_sef_trailing_bits(reader: &mut BitReader<'_>) -> SefTrailingBits {
     }
 }
 
-/// Parses show-existing fields and film grain, then classifies the trailing bits (§ 5.18.2).
-pub(super) fn parse_show_existing_frame(
-    reader: &mut BitReader<'_>,
+pub(super) fn parse_show_existing_frame<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     reference_state: &FrameReferenceStateView<'_>,
+    layer_ids: FrameLayerIds,
 ) -> Result<()> {
-    let frame_to_show_map_idx = reader.read_bits(ceil_log2(seq.num_ref_frames))?;
+    let frame_to_show_map_idx =
+        sr.read_bits("frame_to_show_map_idx", ceil_log2(seq.num_ref_frames))?;
     core.frame_to_show_map_idx = Some(frame_to_show_map_idx);
-    let derive_sef_order_hint = reader.read_flag()?;
+    let derive_sef_order_hint = sr.read_flag("derive_sef_order_hint")?;
     core.derive_sef_order_hint = Some(derive_sef_order_hint);
     if !derive_sef_order_hint {
-        core.order_hint_lsb = Some(reader.read_bits(seq.order_hint_bits)?);
+        core.order_hint_lsb = Some(sr.read_bits("order_hint_lsb", seq.order_hint_bits)?);
         core.order_hint = get_disp_order_hint(
             core.obu_type,
             core.frame_type,
             core.restricted_prediction_switch,
             core.order_hint_lsb.unwrap_or(0),
-            seq.order_hint_bits,
+            seq,
             reference_state,
+            layer_ids,
         );
     } else if let Ok(index) = usize::try_from(frame_to_show_map_idx) {
+        sr.absent("order_hint_lsb", "derive_sef_order_hint");
         core.order_hint = reference_state
             .ref_order_hint
             .and_then(|hints| hints.get(index))
@@ -80,10 +83,10 @@ pub(super) fn parse_show_existing_frame(
         immediate_output_frame: true,
         implicit_output_frame: false,
     };
-    match parse_film_grain_config(reader, &input) {
+    match parse_film_grain_config_with_reader(sr, input) {
         Ok(film_grain) => {
             core.sef_film_grain = Some(film_grain);
-            core.sef_trailing_bits = Some(classify_sef_trailing_bits(reader));
+            core.sef_trailing_bits = Some(classify_sef_trailing_bits(sr));
             core.status = FrameHeaderParseStatus::ShowExistingFrameComplete;
             Ok(())
         }

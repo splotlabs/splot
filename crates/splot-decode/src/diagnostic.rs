@@ -44,7 +44,12 @@ impl DecodeDiagnosticReport {
             | DecodeError::Reconstruction { .. }
             | DecodeError::ReferenceState { .. }
             | DecodeError::Input { .. }
-            | DecodeError::State { .. } => None,
+            | DecodeError::State { .. }
+            | DecodeError::UnsupportedBackend { .. }
+            | DecodeError::InvalidTemporalSelection { .. }
+            | DecodeError::InvalidEmbeddedSelection { .. }
+            | DecodeError::InvalidExtendedSelection { .. }
+            | DecodeError::InvalidOperatingPointSelection { .. } => None,
             DecodeError::Limit { source } => Some(Self::resource_limit(*source)),
             DecodeError::MalformedSource { issue } => Some(Self::malformed_source(issue)),
             DecodeError::UnsupportedStructure { unsupported } => {

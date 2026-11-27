@@ -8,6 +8,7 @@
 use std::io::Write;
 
 use splot_core::ivf::IvfHeader;
+use splot_core::simd::SimdBackend;
 use splot_recon::{BitDepth, DecodedFrame, ReconSample, Y4mError, Y4mFrameRate, Y4mWriter};
 
 use crate::DecodeOptions;
@@ -17,6 +18,7 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_y4m_stream_to_writer(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -25,30 +27,33 @@ pub(crate) fn write_y4m_stream_to_writer(
     let mut target = Some(output);
     let mut writer = None;
     let mut sample_bit_depth = None;
+    let mut seen_xlayer = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
+        backend.narrow(),
         source,
         options,
         session,
         |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
-            let (numerator, denominator) =
-                (output.frame_rate_numerator, output.frame_rate_denominator);
+            super::track_flat_output_xlayer(&mut seen_xlayer, output.extended_layer_id)?;
+            let rate = output.frame_rate;
             let frame_rate = || {
-                frame_rate_override.map_or_else(|| Y4mFrameRate::new(numerator, denominator), Ok)
+                frame_rate_override
+                    .map_or_else(|| Y4mFrameRate::new(rate.numerator, rate.denominator), Ok)
             };
             let grain = output.output_grain(options);
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
-                    write_display(frame.get(), grain, &mut spare.eight, |display| {
+                    write_display(backend, frame.get(), grain, &mut spare.eight, |display| {
                         write_y4m_frame(&mut writer, &mut target, display, frame_rate)
                     })
                 }
                 PipelineDecodedFrame::Ten(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Ten)?;
-                    write_display(frame.get(), grain, &mut spare.ten, |display| {
+                    write_display(backend, frame.get(), grain, &mut spare.ten, |display| {
                         write_y4m_frame(&mut writer, &mut target, display, frame_rate)
                     })
                 }

@@ -21,10 +21,9 @@ pub(crate) fn step_range(
 ///
 /// Runs are block widths in 4x4 units, at most 32. Two overlapping fixed-size
 /// stores cover every length from the store width to twice it.
-#[allow(clippy::inline_always, reason = "measured: per-block grid write")]
 #[inline(always)]
 pub(crate) fn fill_mi_run<T: Copy>(run: &mut [T], value: T) {
-    #[allow(clippy::inline_always, reason = "measured: per-row grid write")]
+    #[expect(clippy::inline_always, reason = "measured: per-row grid write")]
     #[inline(always)]
     fn ends<T: Copy, const N: usize>(run: &mut [T], value: T) {
         let len = run.len();
@@ -47,7 +46,6 @@ pub(crate) fn fill_mi_run<T: Copy>(run: &mut [T], value: T) {
 
 /// The OR of one short per-block run of a mode-info grid, as overlapping
 /// word loads (the OR does not mind bytes read twice).
-#[allow(clippy::inline_always, reason = "measured: per-block context read")]
 #[inline(always)]
 pub(crate) fn or_mi_run(run: &[u8]) -> u8 {
     fn word<const N: usize>(bytes: Option<&[u8; N]>) -> u64 {

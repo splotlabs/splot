@@ -3,9 +3,11 @@
 
 //! AV2 § 5.20.10.6 frame-level Wiener non-separable filter syntax.
 
+#[cfg(test)]
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::decode_signed_subexp_with_ref;
+use crate::syntax::{SyntaxDescriptor, SyntaxObserver, SyntaxReader, SyntaxValue};
 use crate::tables::loop_restoration::PC_WIENER_FILTERS;
 use crate::write::bit_writer::BitWriter;
 use crate::write::error::{WriteError, WriteResult};
@@ -112,7 +114,8 @@ pub struct WienerNsFrameFilterClass {
 /// temporal-copied rather than locally parsed, so a match that selects it
 /// fails closed. An absent entry (a counts-only caller supplies no taps)
 /// keeps the bit-exact index parse with the unresolved value's zero seed.
-pub(super) fn parse_frame_wiener_ns_filter(
+#[cfg(test)]
+fn parse_frame_wiener_ns_filter_for_test(
     reader: &mut BitReader<'_>,
     plane: usize,
     num_filter_classes: u8,
@@ -120,104 +123,140 @@ pub(super) fn parse_frame_wiener_ns_filter(
     ref_taps: &[Option<&[i16]>],
     view: CoreSeqRestorationView,
 ) -> Result<WienerNsFrameFilterBank> {
-    let plane_is_chroma = plane > 0;
-    let plane_index = usize::from(plane_is_chroma);
-    let num_classes = if plane_is_chroma {
-        1
-    } else {
-        usize::from(num_filter_classes.max(1))
-    };
-    let n_coeffs = if plane_is_chroma {
-        WIENER_NS_CHROMA_COEFFS
-    } else {
-        WIENER_NS_LUMA_COEFFS
-    };
-    let nopcw = view.lr_pc_wiener_disabled;
+    SyntaxReader::with_noop(reader, |sr| {
+        parse_frame_wiener_ns_filter(
+            sr,
+            plane,
+            num_filter_classes,
+            num_ref_filters,
+            ref_taps,
+            view,
+        )
+    })
+}
 
-    let match_indices = read_match_indices(reader, plane, num_classes, num_ref_filters, nopcw)?;
-    let capped_ref = capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw);
-    let ref_taps = ref_taps
-        .get(..capped_ref.min(ref_taps.len()))
-        .unwrap_or(&[]);
-    for &match_index in &match_indices {
-        if (num_classes..num_classes + capped_ref).contains(&match_index)
-            && matches!(ref_taps.get(match_index - num_classes), Some(None))
-        {
-            return Err(crate::error::Error::Unimplemented {
-                feature: "lr_temporal_reference_filter_match",
-            });
-        }
-    }
-    let merged = read_merged_flags(reader, num_classes)?;
-    let mut classes = crate::tile::InlineVec::default();
-    for c in 0..num_classes {
-        let mut subset = None;
-        let mut wiener_ns_uv_sym = false;
-        if !merged[c] {
-            let read_subset = read_wiener_ns_subset(reader, plane_is_chroma)?;
-            if plane_is_chroma && read_subset > 0 {
-                wiener_ns_uv_sym = reader.read_flag()?;
-            }
-            subset = Some(read_subset);
-        }
+pub(super) fn parse_frame_wiener_ns_filter<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    plane: usize,
+    num_filter_classes: u8,
+    num_ref_filters: usize,
+    ref_taps: &[Option<&[i16]>],
+    view: CoreSeqRestorationView,
+) -> Result<WienerNsFrameFilterBank> {
+    sr.in_struct("read_wienerns_filter", Some("5.20.10.6"), |sr| {
+        let plane_is_chroma = plane > 0;
+        let plane_index = usize::from(plane_is_chroma);
+        let num_classes = if plane_is_chroma {
+            1
+        } else {
+            usize::from(num_filter_classes.max(1))
+        };
+        let n_coeffs = if plane_is_chroma {
+            WIENER_NS_CHROMA_COEFFS
+        } else {
+            WIENER_NS_LUMA_COEFFS
+        };
+        let nopcw = view.lr_pc_wiener_disabled;
 
-        let mut coeffs = WienerNsCoeffs::default();
-        coeffs.extend_within(core::iter::repeat_n(0, n_coeffs));
-        let mut j = 0usize;
-        while j < n_coeffs {
-            let mut value = filter_match_coeff(
-                plane_is_chroma,
-                match_indices[c],
-                num_classes,
-                capped_ref,
-                ref_taps,
-                &classes,
-                j,
-            );
-            if !merged[c] {
-                let tap_subset = usize::from(subset.unwrap_or(0));
-                if WIENER_NS_TAPS_PRESENT[plane_index][tap_subset][j] {
-                    let min = i32::from(WIENER_NS_TAPS_MIN[plane_index][j]);
-                    let k = u32::from(WIENER_NS_TAPS_K[plane_index][j]);
-                    value = decode_signed_subexp_with_ref(
-                        reader,
-                        min,
-                        min + (1i32 << k),
-                        i32::from(value),
-                        k.saturating_sub(3),
-                    )? as i16;
-                } else {
-                    value = 0;
-                }
-            }
-            coeffs[j] = value;
-            if !merged[c]
-                && plane_is_chroma
-                && j >= WIENER_NS_SHORT_COEFFS
-                && wiener_ns_uv_sym
-                && j + 1 < n_coeffs
+        let match_indices = read_match_indices(sr, plane, num_classes, num_ref_filters, nopcw)?;
+        let capped_ref = capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw);
+        let ref_taps = ref_taps
+            .get(..capped_ref.min(ref_taps.len()))
+            .unwrap_or(&[]);
+        for &match_index in &match_indices {
+            if (num_classes..num_classes + capped_ref).contains(&match_index)
+                && matches!(ref_taps.get(match_index - num_classes), Some(None))
             {
-                coeffs[j + 1] = value;
-                j += 2;
-            } else {
-                j += 1;
+                return Err(crate::error::Error::Unimplemented {
+                    feature: "lr_temporal_reference_filter_match",
+                });
             }
         }
-        classes
-            .push(WienerNsFrameFilterClass {
-                match_index: match_indices[c] as u8,
-                merged: merged[c],
-                ref_bank: 0,
-                subset,
-                wiener_ns_uv_sym,
-                coeffs,
-            })
-            .ok_or(crate::error::Error::Unimplemented {
-                feature: "wienerns_filter_bank_classes",
-            })?;
-    }
+        let merged = read_merged_flags(sr, num_classes)?;
+        let mut classes = crate::tile::InlineVec::default();
+        for c in 0..num_classes {
+            let class = sr.in_loop_item("class", c, |sr| {
+                let mut subset = None;
+                let mut wiener_ns_uv_sym = false;
+                if !merged[c] {
+                    let read_subset = read_wiener_ns_subset(sr, plane_is_chroma)?;
+                    if plane_is_chroma && read_subset > 0 {
+                        wiener_ns_uv_sym = sr.read_flag("wiener_ns_uv_sym")?;
+                    }
+                    subset = Some(read_subset);
+                }
 
-    Ok(WienerNsFrameFilterBank { classes })
+                let mut coeffs = WienerNsCoeffs::default();
+                coeffs.extend_within(core::iter::repeat_n(0, n_coeffs));
+                let mut j = 0usize;
+                while j < n_coeffs {
+                    let mut value = filter_match_coeff(
+                        plane_is_chroma,
+                        match_indices[c],
+                        num_classes,
+                        capped_ref,
+                        ref_taps,
+                        &classes,
+                        j,
+                    );
+                    if !merged[c] {
+                        let tap_subset = usize::from(subset.unwrap_or(0));
+                        if WIENER_NS_TAPS_PRESENT[plane_index][tap_subset][j] {
+                            let min = i32::from(WIENER_NS_TAPS_MIN[plane_index][j]);
+                            let k = u32::from(WIENER_NS_TAPS_K[plane_index][j]);
+                            let start = sr.rel_bit();
+                            let decoded = match decode_signed_subexp_with_ref(
+                                sr.reader_mut(),
+                                min,
+                                min + (1i32 << k),
+                                i32::from(value),
+                                k.saturating_sub(3),
+                            ) {
+                                Ok(v) => v,
+                                Err(err) => return sr.fail(start, Some("wiener_ns_coeff"), err),
+                            };
+                            sr.emit_read(
+                                "wiener_ns_coeff",
+                                SyntaxDescriptor::Subexp,
+                                SyntaxValue::Signed(i64::from(decoded)),
+                                start,
+                            );
+                            value = decoded as i16;
+                        } else {
+                            value = 0;
+                        }
+                    }
+                    coeffs[j] = value;
+                    if !merged[c]
+                        && plane_is_chroma
+                        && j >= WIENER_NS_SHORT_COEFFS
+                        && wiener_ns_uv_sym
+                        && j + 1 < n_coeffs
+                    {
+                        coeffs[j + 1] = value;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                Ok(WienerNsFrameFilterClass {
+                    match_index: match_indices[c] as u8,
+                    merged: merged[c],
+                    ref_bank: 0,
+                    subset,
+                    wiener_ns_uv_sym,
+                    coeffs,
+                })
+            })?;
+            classes
+                .push(class)
+                .ok_or(crate::error::Error::Unimplemented {
+                    feature: "wienerns_filter_bank_classes",
+                })?;
+        }
+
+        Ok(WienerNsFrameFilterBank { classes })
+    })
 }
 
 /// The coefficient range `min..=max` of tap `j` of a luma or chroma filter
@@ -433,8 +472,8 @@ const fn recenter(r: i32, x: i32) -> i32 {
     }
 }
 
-fn read_match_indices(
-    reader: &mut BitReader<'_>,
+fn read_match_indices<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     plane: usize,
     num_classes: usize,
     num_ref_filters: usize,
@@ -449,47 +488,62 @@ fn read_match_indices(
     let mut match_indices = crate::tile::InlineVec::default();
 
     for c in 0..num_classes {
-        let pred_group = if c == 0 {
-            most_probable_group(c, group_counts)
-        } else {
-            predict_group_from_prior_matches(&match_indices, group_counts)
-        };
-
-        let group = if only_group_available(group_counts, pred_group) || reader.read_bit()? == 0 {
-            pred_group
-        } else {
-            let zero_group = first_zero_group(group_counts, pred_group);
-            if let Some(zero_group) = zero_group {
-                3usize.saturating_sub(pred_group + zero_group)
+        let match_index = sr.in_loop_item("class", c, |sr| {
+            let pred_group = if c == 0 {
+                most_probable_group(c, group_counts)
             } else {
-                let group_bit = reader.read_bit()?;
-                if group_bit != 0 {
-                    [2usize, 2, 1][pred_group]
-                } else {
-                    [1usize, 0, 0][pred_group]
-                }
-            }
-        };
+                predict_group_from_prior_matches(&match_indices, group_counts)
+            };
 
-        let n = if group == 0 {
-            c + 1
-        } else {
-            group_counts[group]
-        };
-        let base = group_base(group, group_counts);
-        let match_index = if n == 1 {
-            base
-        } else {
-            let ref_index = base + (n >> 1);
-            let decoded = decode_signed_subexp_with_ref(
-                reader,
-                base as i32,
-                (base + n) as i32,
-                ref_index as i32,
-                4,
-            )?;
-            usize::try_from(decoded).unwrap_or(base)
-        };
+            let group = if only_group_available(group_counts, pred_group)
+                || sr.read_bit("wiener_ns_match_group_diff")? == 0
+            {
+                pred_group
+            } else {
+                let zero_group = first_zero_group(group_counts, pred_group);
+                if let Some(zero_group) = zero_group {
+                    3usize.saturating_sub(pred_group + zero_group)
+                } else {
+                    let group_bit = sr.read_bit("wiener_ns_match_group_bit")?;
+                    if group_bit != 0 {
+                        [2usize, 2, 1][pred_group]
+                    } else {
+                        [1usize, 0, 0][pred_group]
+                    }
+                }
+            };
+
+            let n = if group == 0 {
+                c + 1
+            } else {
+                group_counts[group]
+            };
+            let base = group_base(group, group_counts);
+            let match_index = if n == 1 {
+                base
+            } else {
+                let ref_index = base + (n >> 1);
+                let start = sr.rel_bit();
+                let decoded = match decode_signed_subexp_with_ref(
+                    sr.reader_mut(),
+                    base as i32,
+                    (base + n) as i32,
+                    ref_index as i32,
+                    4,
+                ) {
+                    Ok(v) => v,
+                    Err(err) => return sr.fail(start, Some("wiener_ns_match_index"), err),
+                };
+                sr.emit_read(
+                    "wiener_ns_match_index",
+                    SyntaxDescriptor::Subexp,
+                    SyntaxValue::Signed(i64::from(decoded)),
+                    start,
+                );
+                usize::try_from(decoded).unwrap_or(base)
+            };
+            Ok(match_index)
+        })?;
         match_indices
             .push(match_index)
             .ok_or(crate::error::Error::Unimplemented {
@@ -537,14 +591,15 @@ fn capped_reference_filter_count(
     num_ref_filters.min(allowed)
 }
 
-fn read_merged_flags(
-    reader: &mut BitReader<'_>,
+fn read_merged_flags<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     num_classes: usize,
 ) -> Result<crate::tile::InlineVec<bool, MAX_WIENER_NS_CLASSES>> {
     let mut merged = crate::tile::InlineVec::default();
-    for _ in 0..num_classes {
+    for c in 0..num_classes {
+        let flag = sr.in_loop_item("class", c, |sr| sr.read_flag("wiener_ns_merged"))?;
         merged
-            .push(reader.read_flag()?)
+            .push(flag)
             .ok_or(crate::error::Error::Unimplemented {
                 feature: "wienerns_filter_bank_classes",
             })?;
@@ -552,15 +607,29 @@ fn read_merged_flags(
     Ok(merged)
 }
 
-fn read_wiener_ns_subset(reader: &mut BitReader<'_>, plane_is_chroma: bool) -> Result<u8> {
-    let num_subsets = if plane_is_chroma { 3 } else { 4 };
+fn read_wiener_ns_subset<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    plane_is_chroma: bool,
+) -> Result<u8> {
+    let num_subsets = if plane_is_chroma { 3u32 } else { 4u32 };
+    let start = sr.rel_bit();
     let mut subset = 0u8;
-    while usize::from(subset) < num_subsets - 1 {
-        if reader.read_bit()? == 0 {
+    while u32::from(subset) < num_subsets - 1 {
+        let bit = match sr.reader_mut().read_bit() {
+            Ok(b) => b,
+            Err(err) => return sr.fail(start, Some("wiener_ns_length"), err),
+        };
+        if bit == 0 {
             break;
         }
         subset = subset.saturating_add(1);
     }
+    sr.emit_read(
+        "wiener_ns_length",
+        SyntaxDescriptor::Tu(num_subsets - 1),
+        SyntaxValue::Unsigned(u64::from(subset)),
+        start,
+    );
     Ok(subset)
 }
 
@@ -628,7 +697,7 @@ const fn group_base(group: usize, group_counts: [usize; 3]) -> usize {
 /// `m == 0` seeds zero, `m < numClasses` copies an earlier class of the frame
 /// bank, `m < numClasses + numRefFilters` copies the matched REFERENCE frame's
 /// retained taps (`RefFrameLrWienerNs`, 05:17763-17780), and the remainder
-/// translates a sampled PC-Wiener filter offset by BOTH group sizes.
+/// translates a sampled PC-Wiener filter offset by both group sizes.
 fn filter_match_coeff(
     plane_is_chroma: bool,
     match_index: usize,
@@ -681,7 +750,6 @@ fn translated_pc_wiener(match_index: usize, j: usize) -> i16 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use crate::span::ByteOffset;
 
@@ -711,9 +779,15 @@ mod tests {
         bits.bit(1); // merged[1]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 2, 0, &[], restoration_without_pc_wiener())
-                .unwrap();
+        let bank = parse_frame_wiener_ns_filter_for_test(
+            &mut r,
+            0,
+            2,
+            0,
+            &[],
+            restoration_without_pc_wiener(),
+        )
+        .unwrap();
 
         assert_eq!(r.consumed_bits(), 3);
         assert_eq!(bank.classes.len(), 2);
@@ -738,7 +812,7 @@ mod tests {
         bits.bit(1); // merged[0] -> class copies the reference bank slot verbatim.
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let bank = parse_frame_wiener_ns_filter(
+        let bank = parse_frame_wiener_ns_filter_for_test(
             &mut r,
             0,
             1,
@@ -760,9 +834,15 @@ mod tests {
         bits.bit(1); // merged[0]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 1, &[], restoration_without_pc_wiener())
-                .unwrap();
+        let bank = parse_frame_wiener_ns_filter_for_test(
+            &mut r,
+            0,
+            1,
+            1,
+            &[],
+            restoration_without_pc_wiener(),
+        )
+        .unwrap();
 
         assert_eq!(bank.classes.len(), 1);
         assert_eq!(bank.classes[0].match_index, 1);
@@ -780,7 +860,7 @@ mod tests {
         bits.bit(1); // merged[0]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_frame_wiener_ns_filter(
+        let outcome = parse_frame_wiener_ns_filter_for_test(
             &mut r,
             0,
             1,
@@ -803,9 +883,15 @@ mod tests {
         bits.bit(1); // merged[0]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 1, &[], restoration_without_pc_wiener())
-                .unwrap();
+        let bank = parse_frame_wiener_ns_filter_for_test(
+            &mut r,
+            0,
+            1,
+            1,
+            &[],
+            restoration_without_pc_wiener(),
+        )
+        .unwrap();
 
         assert_eq!(r.consumed_bits(), 2);
         assert_eq!(bank.classes.len(), 1);
@@ -826,9 +912,15 @@ mod tests {
         bits.raw("01010"); // tap 5.
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let bank =
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, &[], restoration_without_pc_wiener())
-                .unwrap();
+        let bank = parse_frame_wiener_ns_filter_for_test(
+            &mut r,
+            0,
+            1,
+            0,
+            &[],
+            restoration_without_pc_wiener(),
+        )
+        .unwrap();
 
         assert_eq!(bank.classes.len(), 1);
         let class = &bank.classes[0];
@@ -852,7 +944,8 @@ mod tests {
         let data = bits.into_bytes();
         let parse = |num_ref_filters| {
             let mut r = reader(&data);
-            let bank = parse_frame_wiener_ns_filter(&mut r, 0, 1, num_ref_filters, &[], view);
+            let bank =
+                parse_frame_wiener_ns_filter_for_test(&mut r, 0, 1, num_ref_filters, &[], view);
             (bank.unwrap(), r.consumed_bits())
         };
 
@@ -863,8 +956,15 @@ mod tests {
     fn eof_inside_frame_bank_is_structured_error() {
         let mut r = reader(&[]);
         assert!(
-            parse_frame_wiener_ns_filter(&mut r, 0, 1, 0, &[], restoration_without_pc_wiener())
-                .is_err()
+            parse_frame_wiener_ns_filter_for_test(
+                &mut r,
+                0,
+                1,
+                0,
+                &[],
+                restoration_without_pc_wiener()
+            )
+            .is_err()
         );
     }
     #[test]
@@ -891,7 +991,7 @@ mod tests {
             let len = 4 + (next() % 60) as usize;
             let data: Vec<u8> = (0..len).map(|_| next() as u8).collect();
             let mut r = reader(&data);
-            let result = parse_frame_wiener_ns_filter(
+            let result = parse_frame_wiener_ns_filter_for_test(
                 &mut r,
                 plane,
                 num_classes,

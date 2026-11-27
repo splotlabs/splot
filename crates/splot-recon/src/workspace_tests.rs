@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 
 use crate::{
@@ -1572,4 +1570,124 @@ fn u16_rect_writes_into_eight_bit_storage_narrow_exactly() {
             assert_eq!(stored, want, "{width} {x} at {x_at},{y}");
         }
     }
+}
+
+#[test]
+fn typed_backend_matches_compatibility_routes() {
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+    struct Check;
+    impl SimdScope<()> for Check {
+        fn run<B: SimdBackend>(self, backend: B) {
+            let frame8 = info(
+                BitDepth::Eight,
+                PixelFormat::Monochrome,
+                size(64, 64),
+                rect(0, 0, 64, 64),
+            );
+            let mut ws8_a = CurrentFrameWorkspace::<u8>::new(frame8, 12).unwrap();
+            let mut ws8_b = CurrentFrameWorkspace::<u8>::new(frame8, 12).unwrap();
+            let src8: Vec<u8> = (0..16 * 16).map(|i| ((i * 29 + 7) % 256) as u8).collect();
+            ws8_a
+                .write_rect(PlaneId::Y, rect(0, 0, 16, 16), &src8, 16)
+                .unwrap();
+            ws8_b
+                .write_rect_with(backend, PlaneId::Y, rect(0, 0, 16, 16), &src8, 16)
+                .unwrap();
+
+            let block_sz = IntraRectBlockSize::new(3, 3).unwrap();
+            ws8_a
+                .write_rect_block(PlaneId::Y, 16, 0, block_sz, &src8[..64])
+                .unwrap();
+            ws8_b
+                .write_rect_block_with(backend, PlaneId::Y, 16, 0, block_sz, &src8[..64])
+                .unwrap();
+
+            let u16_src: Vec<u16> = (0..37 * 2).map(|i| ((i * 41 + 3) % 256) as u16).collect();
+            CurrentFrameSurface::Frame(&mut ws8_a)
+                .write_u16_rect(PlaneId::Y, rect(8, 24, 37, 2), &u16_src, 37)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws8_b)
+                .write_u16_rect_with(backend, PlaneId::Y, rect(8, 24, 37, 2), &u16_src, 37)
+                .unwrap();
+
+            let res64: Vec<i32> = (0..64).map(|i| (i * 13) - 200).collect();
+            CurrentFrameSurface::Frame(&mut ws8_a)
+                .add_residual_rect_block(PlaneId::Y, 16, 0, block_sz, &res64)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws8_b)
+                .add_residual_rect_block_with(backend, PlaneId::Y, 16, 0, block_sz, &res64)
+                .unwrap();
+
+            let big_sz = IntraRectBlockSize::new(6, 5).unwrap();
+            let adj_res: Vec<i32> = (0..32 * 32).map(|i| (i % 47) - 20).collect();
+            CurrentFrameSurface::Frame(&mut ws8_a)
+                .add_adjusted_residual_rect_block(PlaneId::Y, 0, 32, big_sz, &adj_res)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws8_b)
+                .add_adjusted_residual_rect_block_with(backend, PlaneId::Y, 0, 32, big_sz, &adj_res)
+                .unwrap();
+
+            CurrentFrameSurface::Frame(&mut ws8_a)
+                .add_constant_residual_rect_block(PlaneId::Y, 24, 8, block_sz, -17)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws8_b)
+                .add_constant_residual_rect_block_with(backend, PlaneId::Y, 24, 8, block_sz, -17)
+                .unwrap();
+            assert_eq!(
+                ws8_b.samples(PlaneId::Y).unwrap(),
+                ws8_a.samples(PlaneId::Y).unwrap()
+            );
+
+            let frame10 = info(
+                BitDepth::Ten,
+                PixelFormat::Monochrome,
+                size(32, 32),
+                rect(0, 0, 32, 32),
+            );
+            let mut ws10_a = CurrentFrameWorkspace::<u16>::new(frame10, 300).unwrap();
+            let mut ws10_b = CurrentFrameWorkspace::<u16>::new(frame10, 300).unwrap();
+            let src10: Vec<u16> = (0..16 * 16)
+                .map(|i| ((i * 73 + 11) % 1024) as u16)
+                .collect();
+            CurrentFrameSurface::Frame(&mut ws10_a)
+                .write_rect(PlaneId::Y, rect(0, 0, 16, 16), &src10, 16)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_b)
+                .write_rect_with(backend, PlaneId::Y, rect(0, 0, 16, 16), &src10, 16)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_a)
+                .write_rect_block(PlaneId::Y, 16, 0, block_sz, &src10[..64])
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_b)
+                .write_rect_block_with(backend, PlaneId::Y, 16, 0, block_sz, &src10[..64])
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_a)
+                .write_u16_rect(PlaneId::Y, rect(8, 16, 11, 2), &src10[..22], 11)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_b)
+                .write_u16_rect_with(backend, PlaneId::Y, rect(8, 16, 11, 2), &src10[..22], 11)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_a)
+                .add_residual_rect_block(PlaneId::Y, 0, 0, block_sz, &res64)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_b)
+                .add_residual_rect_block_with(backend, PlaneId::Y, 0, 0, block_sz, &res64)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_a)
+                .add_constant_residual_rect_block(PlaneId::Y, 16, 0, block_sz, 25)
+                .unwrap();
+            CurrentFrameSurface::Frame(&mut ws10_b)
+                .add_constant_residual_rect_block_with(backend, PlaneId::Y, 16, 0, block_sz, 25)
+                .unwrap();
+            assert_eq!(
+                ws10_b.samples(PlaneId::Y).unwrap(),
+                ws10_a.samples(PlaneId::Y).unwrap()
+            );
+        }
+    }
+
+    resolve_backend(SimdPolicy::Auto)
+        .expect("auto backend")
+        .enter(Check);
 }

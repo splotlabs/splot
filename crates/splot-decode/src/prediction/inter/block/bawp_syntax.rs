@@ -5,7 +5,6 @@
 //! (§ 5.20.7.6): its read gate, its symbols and the reference distance its
 //! § 7.13.3.25 process uses.
 
-#[allow(clippy::wildcard_imports)]
 use super::*;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -11,7 +11,8 @@ use super::{
     REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps,
 };
 
-pub(super) fn prepare_tip_field(
+pub(super) fn prepare_tip_field<B: splot_core::simd::SimdBackend>(
+    backend: B,
     field: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,
     projection_step: usize,
@@ -19,7 +20,8 @@ pub(super) fn prepare_tip_field(
     fill_holes: bool,
 ) -> crate::Result<()> {
     let (unit, holes) = (tmvp_unit_size8, fill_holes);
-    crate::baseline_simd!(simd => match projection_step {
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => match projection_step {
         1 if unit <= 8 => prepare_tip_units::<_, 1, 1>(simd, field, references, unit, holes),
         1 => prepare_tip_units::<_, 2, 1>(simd, field, references, unit, holes),
         2 => prepare_tip_units::<_, 1, 2>(simd, field, references, unit, holes),
@@ -100,7 +102,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
         for block_x in (0..width8).step_by(unit) {
             let unit_cols = (width8 - block_x).min(unit);
             let (rows, cols) = (unit_rows.div_ceil(STEP), unit_cols.div_ceil(STEP));
-            let mut valid_count = 0;
+            let mut counts = [splat(0); C];
             for y in 0..rows {
                 let start = (block_y + y * STEP) * width8 + block_x;
                 let cells = field.cells[start..start + unit_cols].iter().step_by(STEP);
@@ -113,11 +115,9 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
                     lanes[3][lane] = DIV_MULT[denominator];
                 }
                 let [valid, mv_row, mv_col, divisor] = lanes.each_ref().map(|lanes| load(lanes, 0));
-                let mut count = splat(0);
-                for chunk in valid {
-                    count += chunk;
+                for (count, chunk) in counts.iter_mut().zip(valid) {
+                    *count += chunk;
                 }
-                valid_count += count.reduce_sum();
                 let scale = |mv: TipRow<S, C>| -> TipRow<S, C> {
                     core::array::from_fn(|chunk| {
                         let scaled = mv[chunk] * divisor[chunk];
@@ -138,6 +138,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
             for plane in &mut planes {
                 plane[below..below + 8 * C].fill(0);
             }
+            let valid_count = counts.into_iter().fold(splat(0), |a, b| a + b).reduce_sum();
             if fill_holes && valid_count != 0 && valid_count != (rows * cols) as i32 {
                 fill_tip_holes(simd, &mut planes, rows, cols);
             }
@@ -198,7 +199,7 @@ fn prepare_tip_units<S: Simd, const C: usize, const STEP: usize>(
 
 /// `Round2Signed` per lane: a negative value adds one less before the
 /// arithmetic shift, so its half rounds away from zero.
-#[allow(clippy::inline_always, reason = "TIP field lane arithmetic")]
+#[expect(clippy::inline_always, reason = "TIP field lane arithmetic")]
 #[inline(always)]
 fn round2_signed<S: Simd>(value: i32x8<S>, shift: u32) -> i32x8<S> {
     (value + (1 << (shift - 1)) + (value >> 31)) >> shift

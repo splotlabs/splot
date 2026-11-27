@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, PlaneId, PlaneRect};
 
 use splot_core::span::ByteOffset;
@@ -119,7 +119,7 @@ pub enum LrSymbol {
     Flex {
         /// The tool the symbol selects when it is `1`.
         tool: usize,
-        /// The plane.
+        /// The index of the `RESTORE_SWITCHABLE` plane.
         plane: usize,
     },
 }
@@ -275,14 +275,10 @@ impl FilterRecorder {
                 "missing quantization params",
             ))?
             .base_q_idx;
-        let subsampling = match seq.general.chroma_format_idc {
-            ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (1, 1),
-            ChromaFormatIdc::Yuv422 => (1, 0),
-            ChromaFormatIdc::Yuv444 => (0, 0),
-        };
+        let (sub_x, sub_y) = seq.general.chroma_format_idc.subsampling();
         Ok(Self {
             qindex,
-            subsampling,
+            subsampling: (u32::from(sub_x), u32::from(sub_y)),
             deblock_blocks: Vec::new(),
             chroma_blocks: ChromaDeblockRecords::new(),
             tx_skip: Vec::new(),
@@ -691,17 +687,46 @@ pub fn apply_loop_filters(
         sink.set_gdf_grid(grid);
         sink.set_gdf_reference_context(reference);
     }
-    sink.into_filtered_frame(
-        Arc::new(core.clone()),
-        seq.filter
-            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-        crate::pipeline::deblock_quant_deltas(seq, core),
-        None,
-    )
-    .and_then(|(filtered, _)| {
-        filtered.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
-    })
-    .map_err(rule("loop filters"))
+    {
+        struct Scope {
+            sink: crate::filters::wienerns_lr::recon::WienerNsLrReconSink<u16>,
+            core: Arc<FrameHeaderCore>,
+            disable_loopfilters_across_tiles: bool,
+            deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+            rule_ctx: &'static str,
+        }
+        impl splot_core::simd::SimdScope<Result<DecodedFrame<u16>>> for Scope {
+            fn run<B: splot_core::simd::SimdBackend>(
+                self,
+                backend: B,
+            ) -> Result<DecodedFrame<u16>> {
+                self.sink
+                    .into_filtered_frame(
+                        backend.narrow(),
+                        self.core,
+                        self.disable_loopfilters_across_tiles,
+                        self.deblock_quant_deltas,
+                        None,
+                    )
+                    .and_then(|(filtered, _)| {
+                        filtered
+                            .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
+                    })
+                    .map_err(rule(self.rule_ctx))
+            }
+        }
+        splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
+            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?
+            .enter(Scope {
+                sink,
+                core: Arc::new(core.clone()),
+                disable_loopfilters_across_tiles: seq
+                    .filter
+                    .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+                deblock_quant_deltas: crate::pipeline::deblock_quant_deltas(seq, core),
+                rule_ctx: "loop filters",
+            })
+    }
 }
 
 /// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when

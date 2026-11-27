@@ -10,28 +10,114 @@
 //! Feature tracking: `INFRA-DECODE-FRAME-PIPELINING`.
 
 use super::PipelineFrame;
-use crate::Result;
+use crate::bitstream::byte_stream::SourceBytes;
+use crate::bitstream::stream_plan::tile_group_continuations;
 use crate::prediction::inter::{
     FrameProductWriters, FrameProducts, MotionFieldHandle, MotionFieldLayout,
+};
+use crate::{
+    BaseQuantizer, BaseQuantizerOrigin, CodedFrameEvent, DecodePlannedObu, ObuLocation,
+    PictureProvenance, Result,
 };
 use core::num::NonZeroUsize;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::MAX_REF_FRAMES;
+use splot_core::span::ByteOffset;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_tasks::RowPools;
+use super::frame_tasks::{DecoderRowScheduler, RowPools};
 use super::inflight::InflightRing;
+use crate::reference::buffer::{FrameRefUpdate, RuntimeReferenceBuffer};
 use crate::support::decode_buffers::DecodeBuffers;
+
+/// Dispatches to the installed observer so release linking can discard unused event code.
+pub(crate) trait DecodeObserver: Send + Sync {
+    fn observe_coded_frame(
+        &self,
+        _provenance: PictureProvenance,
+        _candidate: &DecodePlannedObu,
+        _bytes: SourceBytes<'_>,
+        _core: &FrameHeaderCore,
+        _tip_quantizer_derived: bool,
+    ) {
+    }
+
+    fn capture_input(&self, _reference: &RuntimeReferenceBuffer, _frames: &FrameStore) {}
+
+    fn publish_update(
+        &self,
+        _frames: &FrameStore,
+        _frame_index: usize,
+        _reference: &RuntimeReferenceBuffer,
+        _core: &FrameHeaderCore,
+        _update: &FrameRefUpdate<'_>,
+    ) {
+    }
+}
+
+pub(crate) struct CodedFrameObserver<F>(pub(crate) F);
+
+impl<F: Fn(CodedFrameEvent) + Send + Sync> DecodeObserver for CodedFrameObserver<F> {
+    fn observe_coded_frame(
+        &self,
+        provenance: PictureProvenance,
+        candidate: &DecodePlannedObu,
+        bytes: SourceBytes<'_>,
+        core: &FrameHeaderCore,
+        tip_quantizer_derived: bool,
+    ) {
+        let header = candidate.header();
+        (self.0)(CodedFrameEvent::Frame {
+            coded: provenance.coded,
+            sequence_header: provenance.sequence_header,
+            extended_layer_id: header.extended_layer_id,
+            embedded_layer_id: header.embedded_layer_id,
+            temporal_layer_id: header.temporal_layer_id,
+            base_quantizer: core.quantization_params.map(|quantizer| BaseQuantizer {
+                index: quantizer.base_q_idx,
+                origin: if tip_quantizer_derived {
+                    BaseQuantizerOrigin::Derived
+                } else if core.is_bridge
+                    || core
+                        .inter
+                        .as_ref()
+                        .is_some_and(|inter| inter.bru_inactive == Some(true))
+                {
+                    BaseQuantizerOrigin::Inherited
+                } else {
+                    BaseQuantizerOrigin::Signaled
+                },
+            }),
+        });
+        if header.obu_type.is_tile_group() {
+            for group in tile_group_continuations(bytes, candidate) {
+                (self.0)(CodedFrameEvent::Continuation {
+                    coded: provenance.coded,
+                    obu: ObuLocation {
+                        user_data: provenance.coded.user_data,
+                        offset: ByteOffset::new(group.offset().get() - bytes.base()),
+                    },
+                });
+            }
+        }
+    }
+}
 
 /// The frame-pipelining depth of one context and the decoder state it keeps
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
+    pub(crate) observer: Option<Box<dyn DecodeObserver>>,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) block_evidence: Option<Arc<crate::block_evidence::BlockEvidenceState>>,
+    pub(crate) external_atlases: crate::ExternalAtlases,
     frame_delay: NonZeroUsize,
+    /// Immutable concrete SIMD backend validated when the session opened.
+    backend: splot_core::simd::ResolvedBackend,
     /// The row scheduler of a multi-threaded context, which the split inter
     /// frames run on.
-    rows: Option<Arc<splot_parallel::RowScheduler>>,
+    rows: Option<Arc<DecoderRowScheduler>>,
     retained: Mutex<Option<RetainedDecode>>,
     /// Whether frames that an outside owner still holds leave the store.
     detach_held: bool,
@@ -44,6 +130,7 @@ impl core::fmt::Debug for DecodeSession {
         formatter
             .debug_struct("DecodeSession")
             .field("frame_delay", &self.frame_delay)
+            .field("backend", &self.backend.kind())
             .finish_non_exhaustive()
     }
 }
@@ -51,10 +138,16 @@ impl core::fmt::Debug for DecodeSession {
 impl DecodeSession {
     pub(crate) fn new(
         frame_delay: NonZeroUsize,
-        rows: Option<Arc<splot_parallel::RowScheduler>>,
+        rows: Option<Arc<DecoderRowScheduler>>,
+        backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
             frame_delay,
+            external_atlases: crate::ExternalAtlases::default(),
+            observer: None,
+            #[cfg(feature = "block-evidence")]
+            block_evidence: None,
+            backend,
             rows,
             retained: Mutex::new(None),
             detach_held: false,
@@ -66,16 +159,35 @@ impl DecodeSession {
     /// as a caller's picture, still holds their samples.
     pub(crate) fn detaching_held(
         frame_delay: NonZeroUsize,
-        rows: Option<Arc<splot_parallel::RowScheduler>>,
+        rows: Option<Arc<DecoderRowScheduler>>,
+        backend: splot_core::simd::ResolvedBackend,
     ) -> Self {
         Self {
             detach_held: true,
-            ..Self::new(frame_delay, rows)
+            ..Self::new(frame_delay, rows, backend)
         }
     }
 
+    pub(super) fn observe_coded_frame(
+        &self,
+        provenance: PictureProvenance,
+        candidate: &DecodePlannedObu,
+        bytes: SourceBytes<'_>,
+        core: &FrameHeaderCore,
+        tip_quantizer_derived: bool,
+    ) {
+        if let Some(observer) = &self.observer {
+            observer.observe_coded_frame(provenance, candidate, bytes, core, tip_quantizer_derived);
+        }
+    }
+
+    /// The concrete SIMD backend locked for this session.
+    pub(crate) const fn backend(&self) -> splot_core::simd::ResolvedBackend {
+        self.backend
+    }
+
     /// The row scheduler, or `None` when the decode runs on one thread.
-    pub(crate) fn rows(&self) -> Option<&splot_parallel::RowScheduler> {
+    pub(crate) fn rows(&self) -> Option<&DecoderRowScheduler> {
         self.rows.as_deref()
     }
 
@@ -183,6 +295,23 @@ impl FrameStore {
             count: 0,
             reserved: None,
             detach_held: false,
+        }
+    }
+
+    pub(super) fn ensure_capacity_for_layers(&mut self, layer_count: usize, depth: usize) {
+        if layer_count <= 1 {
+            return;
+        }
+        let target = 2 * MAX_REF_FRAMES * layer_count + depth + 1;
+        while self.entries.len() < target {
+            self.entries.push(FrameEntry {
+                index: 0,
+                frame: None,
+                motion: None,
+                products: None,
+                core: None,
+                retired: None,
+            });
         }
     }
 

@@ -302,7 +302,14 @@ fn distinct_mlayer_count_before_header_activation_under_external_hls_is_not_flag
 #[test]
 fn distinct_mlayer_count_before_frame_header_activation_is_flagged() {
     let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &sequence_header_payload_with_id(3, 0, 1),
+    ));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &seq_header_payload_seqmaxcnt_one(),
+    ));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
@@ -323,7 +330,14 @@ fn distinct_mlayer_count_before_frame_header_activation_is_flagged() {
 #[test]
 fn distinct_mlayer_count_before_frame_header_activation_within_seqmax_is_conforming() {
     let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x04, &sequence_header_payload(0, 1)));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &sequence_header_payload_with_id(3, 0, 1),
+    ));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &sequence_header_payload(0, 1),
+    ));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));
@@ -340,7 +354,14 @@ fn distinct_mlayer_count_before_frame_header_activation_within_seqmax_is_conform
 fn distinct_mlayer_count_before_frame_header_activation_under_external_hls_is_not_flagged() {
     use crate::options::{ExternalHlsMode, ExternalHlsSet, ValidationOptions};
     let mut data = temporal_delimiter_obu();
-    data.extend(annex_b_obu(0x04, &seq_header_payload_seqmaxcnt_one()));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &sequence_header_payload_with_id(3, 0, 1),
+    ));
+    data.extend(annex_b_obu_with_header(
+        &layer_obu_header(1, 0, 0, 1),
+        &seq_header_payload_seqmaxcnt_one(),
+    ));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 0, 1), &[]));
     data.extend(annex_b_obu_with_header(&layer_obu_header(7, 0, 1, 1), &[]));
     data.extend(frame_obu_direct_seq_ref_layer(7, 0, 0, 1, 0));

@@ -710,7 +710,6 @@ impl FrameUnitSegmenter {
     }
 
     /// Observes a tile-group frame OBU (the coded frame; first-tile-group rule).
-    #[allow(clippy::too_many_arguments)]
     fn observe_tile_frame(
         state: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),
@@ -765,7 +764,7 @@ impl FrameUnitSegmenter {
     ///
     /// Returns this OBU's [`FrameBoundary`]: `OpensNewUnit` for the first OBU of a coded frame,
     /// `Ambiguous` for the undecidable boundary, `ContinuesUnit` for every decided continuation.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn observe_frame(
         state: &mut UnitState,
         embedded_key: (ExtendedLayerId, EmbeddedLayerId),

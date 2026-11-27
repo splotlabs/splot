@@ -144,7 +144,13 @@ fn check<T: ReconSample, P: WindowSample + Into<u16>>(
     for (view, (params, expected)) in views.iter().zip(params.iter().zip(&expected)) {
         let plan = refinemv_window::plan(view, params, lanes).unwrap();
         let mut window = [P::default(); REFINEMV_SEARCH_AREA];
-        refinemv_window::predict_window(view, &plan, size, &mut window);
+        refinemv_window::predict_window(
+            crate::subpel_mc::BaselineSubpel,
+            view,
+            &plan,
+            size,
+            &mut window,
+        );
         let actual: Vec<u16> = window[..expected.len()].iter().map(|&s| s.into()).collect();
         assert_eq!(&actual, expected, "clamped-path window {label}");
         baseline_simd!(simd => refinemv_window::generic::window(

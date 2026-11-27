@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::{FilledWindow, OwnedFilterJob, OwnedFilterSetup, OwnedFilterShell};
 use super::*;
 use crate::filters::source::DeblockedWindow;
@@ -11,6 +9,36 @@ use crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord;
 use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
+
+fn filter_sink<T: ReconSample>(
+    sink: WienerNsLrReconSink<T>,
+    core: Arc<FrameHeaderCore>,
+) -> Result<(
+    Option<splot_recon::DecodedFrame<T>>,
+    crate::filters::wienerns_lr::FrameFilterRecords,
+)> {
+    crate::test_support::with_auto_backend!(backend => {
+        sink.into_filtered_frame(
+            backend,
+            core,
+            false,
+            crate::filters::deblock::DeblockQuantDeltas::ZERO,
+            None,
+        )
+    })
+}
+
+fn run_stripe_window<T: ReconSample>(
+    setup: &OwnedFilterSetup<T>,
+    stripe: usize,
+    window: FilledWindow<T>,
+) -> Result<()> {
+    crate::test_support::with_auto_backend!(backend => setup.run_window(backend, stripe, window))
+}
+
+fn run_filter_job<T: ReconSample>(job: OwnedFilterJob<T>) -> Result<()> {
+    crate::test_support::with_auto_backend!(backend => job.run(backend))
+}
 
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
@@ -209,14 +237,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         WienerNsLrReconSink::for_final_filtering(deblock_workspace(), 64, 32, BitDepth::Eight);
     combined.filter_records.deblock_blocks.clone_from(&records);
     combined.filter_records.chroma_deblock_blocks = chroma_records.clone();
-    let (combined, _) = combined
-        .into_filtered_frame(
-            std::sync::Arc::new(core.clone()),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (combined, _) = filter_sink(combined, Arc::new(core.clone())).unwrap();
     let combined = combined.unwrap();
 
     let mut source = crate::test_support::frontier_rows(deblock_workspace()).1;
@@ -233,9 +254,10 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         &mut crate::filters::deblock::DeblockGridStorage::default(),
     )
     .unwrap();
-    deblock
-        .advance_source(&mut source, 8, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        deblock.advance_source(backend, &mut source, 8, BitDepth::Eight)
+    })
+    .unwrap();
     let mut staged_workspace = CurrentFrameWorkspace::new(source.info(), 0).unwrap();
     crate::test_support::copy_rows_to_workspace(&mut source, &mut staged_workspace);
     let mut staged_core = core.clone();
@@ -243,14 +265,7 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
     let mut staged =
         WienerNsLrReconSink::for_final_filtering(staged_workspace, 64, 32, BitDepth::Eight);
     staged.filter_records.deblock_blocks = records;
-    let (staged, _) = staged
-        .into_filtered_frame(
-            std::sync::Arc::new(staged_core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (staged, _) = filter_sink(staged, Arc::new(staged_core)).unwrap();
     let staged = staged.unwrap();
 
     assert_eq!(
@@ -321,14 +336,11 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
     let workspace = deblock_workspace();
     let samples = workspace.samples(PlaneId::Y).unwrap().as_ptr();
 
-    let (frame, _) = WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight)
-        .into_filtered_frame(
-            Arc::new(core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (frame, _) = filter_sink(
+        WienerNsLrReconSink::for_final_filtering(workspace, 64, 32, BitDepth::Eight),
+        Arc::new(core),
+    )
+    .unwrap();
 
     let frame = frame.unwrap();
 
@@ -352,26 +364,12 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
         "fixture must exercise the stripe task path"
     );
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
     {
-        let (actual, _) = final_filter_sink_10bit()
-            .into_filtered_frame(
-                Arc::clone(&core),
-                false,
-                crate::filters::deblock::DeblockQuantDeltas::ZERO,
-                None,
-            )
-            .unwrap();
+        let (actual, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
         let actual = actual.unwrap();
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
@@ -387,12 +385,7 @@ fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
-    let result = sink.into_filtered_frame(
-        Arc::new(core),
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        None,
-    );
+    let result = filter_sink(sink, Arc::new(core));
 
     assert!(result.is_err());
 }
@@ -402,14 +395,7 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_8bit::<u16>()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_8bit::<u16>(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_8bit::<u8>();
@@ -422,9 +408,7 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
 
     for stripe in [1usize, 0, 2] {
-        setup
-            .run_window(stripe, windows[stripe].take().unwrap())
-            .unwrap();
+        run_stripe_window(&setup, stripe, windows[stripe].take().unwrap()).unwrap();
     }
     drop(progress);
     let (actual, _) = setup.finish(None).unwrap();
@@ -467,14 +451,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            Arc::clone(&core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), Arc::clone(&core)).unwrap();
     let expected = expected.unwrap();
 
     let mut sink = final_filter_sink_10bit();
@@ -487,9 +464,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
 
     for (stripe, expected_rows) in [(1usize, 0usize), (0, ranges[1].1), (2, 128)] {
-        setup
-            .run_window(stripe, windows[stripe].take().unwrap())
-            .unwrap();
+        run_stripe_window(&setup, stripe, windows[stripe].take().unwrap()).unwrap();
         assert_eq!(progress.published_luma_rows(), expected_rows);
     }
 
@@ -514,15 +489,13 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let mut windows = stripe_windows(&setup);
     let ranges = setup.stripe_ranges().to_vec();
 
-    setup.run_window(0, windows[0].take().unwrap()).unwrap();
+    run_stripe_window(&setup, 0, windows[0].take().unwrap()).unwrap();
     assert!(
-        setup.run_window(0, windows[1].take().unwrap()).is_err(),
+        run_stripe_window(&setup, 0, windows[1].take().unwrap()).is_err(),
         "a stripe cannot be claimed twice"
     );
     assert!(
-        setup
-            .run_window(ranges.len(), windows[2].take().unwrap())
-            .is_err(),
+        run_stripe_window(&setup, ranges.len(), windows[2].take().unwrap()).is_err(),
         "an out-of-range stripe must fail closed"
     );
 
@@ -615,20 +588,13 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let core = Arc::new(core);
-    let (expected, _) = final_filter_sink_10bit()
-        .into_filtered_frame(
-            core,
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-        )
-        .unwrap();
+    let (expected, _) = filter_sink(final_filter_sink_10bit(), core).unwrap();
     let expected = expected.unwrap();
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     assert_eq!(owned_setup(&setup).stripe_ranges().len(), 3);
     for job in owned_filter_jobs(&setup, &mut rows, &[1, 0, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     let restored = deblock_records();
     owned_setup(&setup)
@@ -670,7 +636,7 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     let shell = Arc::as_ptr(&setup);
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop((rows, progress));
     let (outcome, mut setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -687,7 +653,7 @@ fn owned_filter_shell_is_stable_across_consecutive_frames() {
     *Arc::get_mut(&mut setup).unwrap() = Some(next);
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop((rows, progress));
     let (outcome, setup) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -718,7 +684,7 @@ fn owned_filter_finish_reuses_derived_storage_across_enabled_disabled_enabled() 
         let mut rows = final_rows(&progress);
         let order = (0..owned_setup(&setup).stripe_ranges().len()).collect::<Vec<_>>();
         for job in owned_filter_jobs(&setup, &mut rows, &order) {
-            job.run().unwrap();
+            run_filter_job(job).unwrap();
         }
         drop((rows, progress));
         let (outcome, _) = OwnedFilterSetup::owned_finish(setup).finish(None);
@@ -763,13 +729,12 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let mut jobs = owned_filter_jobs(&setup, &mut rows, &[0, 1]);
     drop(rows);
     let second = jobs.remove(1);
-    jobs.remove(0).run().unwrap();
+    run_filter_job(jobs.remove(0)).unwrap();
     assert!(
-        OwnedFilterJob {
+        run_filter_job(OwnedFilterJob {
             stripe: 0,
             ..second
-        }
-        .run()
+        })
         .is_err()
     );
     assert!(
@@ -783,7 +748,7 @@ fn arc_owned_filter_finish_rejects_missing_duplicate_and_shared_owners() {
     let (setup, progress) = arc_owned_filter_setup();
     let mut rows = final_rows(&progress);
     for job in owned_filter_jobs(&setup, &mut rows, &[0, 1, 2]) {
-        job.run().unwrap();
+        run_filter_job(job).unwrap();
     }
     drop(rows);
     let lingering = Arc::clone(&setup);
@@ -802,7 +767,6 @@ fn owned_filter_task_values_are_send_and_shared_setup_is_sync() {
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    assert_send::<super::super::OwnedFilteredStripe<u16>>();
     assert_send::<super::super::OwnedFilterJob<u16>>();
     assert_send::<super::super::OwnedFilterFinish<u16>>();
     assert_sync::<super::super::OwnedFilterSetup<u16>>();
@@ -837,23 +801,15 @@ fn apply_luma_lr(
     let target = lease.take_target().unwrap();
     let (target, chroma) = target.split([false, true, true]);
     drop(chroma);
-    let cdef = crate::filters::cdef::cdef_stripe(
+    let cdef = crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (4, 4),
-        (1, 1),
-        splot_recon::BitDepth::Eight,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (4, 4), (1, 1), splot_recon::BitDepth::Eight, None, 0, 16,
+    ))
     .unwrap();
-    let filtered = sink
-        .stripe_chain()
-        .apply_lr_stripe(
+    let filtered =
+        crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+            b,
             core,
             cdef,
             &CdefOverlap::default(),
@@ -868,7 +824,7 @@ fn apply_luma_lr(
                 }; 3],
                 target,
             },
-        )
+        ))
         .unwrap()
         .into_filtered();
     drop(filtered);
@@ -886,24 +842,16 @@ fn inactive_filter_planes_reuse_cdef_storage() {
     progress.begin(&[(0, 16)]).unwrap();
     let mut lease = progress.direct_stripe(0).unwrap();
     let target = lease.take_target().unwrap();
-    let cdef = crate::filters::cdef::cdef_stripe(
+    let cdef = crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(sink.workspace.as_ref().unwrap()).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (4, 4),
-        (1, 1),
-        splot_recon::BitDepth::Eight,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (4, 4), (1, 1), splot_recon::BitDepth::Eight, None, 0, 16,
+    ))
     .unwrap();
     let cdef_ptr = cdef.filtered_y.samples().as_ptr();
-    let filtered = sink
-        .stripe_chain()
-        .apply_lr_stripe(
+    let filtered =
+        crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+            b,
             &switchable_core(),
             cdef,
             &CdefOverlap::default(),
@@ -914,7 +862,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
                 initializations: [StripeInitialization::CopyAll; 3],
                 target,
             },
-        )
+        ))
         .unwrap()
         .into_filtered();
 
@@ -1260,19 +1208,11 @@ fn wide_luma_block(restoration_type: LrUnitRestorationType) -> WienerNsLrSourceB
 
 fn wide_cdef(sink: &WienerNsLrReconSink<u16>) -> CdefFrame<'_, u16> {
     let workspace = sink.workspace.as_ref().unwrap();
-    crate::filters::cdef::cdef_stripe(
+    crate::test_support::with_auto_backend!(b => crate::filters::cdef::cdef_stripe(
+        b,
         crate::filters::source::DeblockedPlanes::frame(workspace).unwrap(),
-        None,
-        None,
-        None,
-        None,
-        (50, 4),
-        (1, 1),
-        BitDepth::Ten,
-        None,
-        0,
-        16,
-    )
+        None, None, None, None, (50, 4), (1, 1), BitDepth::Ten, None, 0, 16,
+    ))
     .unwrap()
 }
 
@@ -1293,21 +1233,20 @@ fn apply_wide_luma_lr(
     drop((poison, poison_target, poison_lease));
     let mut lease = progress.direct_stripe(0).unwrap();
     let (target, _) = lease.take_target().unwrap().split([false, true, true]);
-    let frame = sink
-        .stripe_chain()
-        .apply_lr_stripe(
-            core,
-            wide_cdef(sink),
-            &CdefOverlap::default(),
-            [&[block], &[], &[]],
-            &[],
-            super::LrStripeOutput {
-                active_planes: [true, false, false],
-                initializations: [initialization; 3],
-                target,
-            },
-        )
-        .unwrap();
+    let frame = crate::test_support::with_auto_backend!(b => sink.stripe_chain().apply_lr_stripe(
+        b,
+        core,
+        wide_cdef(sink),
+        &CdefOverlap::default(),
+        [&[block], &[], &[]],
+        &[],
+        super::LrStripeOutput {
+            active_planes: [true, false, false],
+            initializations: [initialization; 3],
+            target,
+        },
+    ))
+    .unwrap();
     let holds_cdef = initialization == StripeInitialization::CopyAll;
     assert_eq!(frame.post_lr_y_holds_cdef, holds_cdef);
     drop(frame.into_filtered());
@@ -1345,61 +1284,66 @@ fn unsplit_luma_lr(
     .unwrap();
     let (width, height) = (block.width, block.height);
     let mut output = vec![0u16; width * height];
-    if block.restoration_type == LrUnitRestorationType::PcWiener {
-        let subclasses = chain
-            .luma_lr_cell_subclasses(
-                block,
-                &window,
-                qindex,
-                PC_WIENER_FULL_CLASSES,
+    crate::test_support::with_auto_backend!(backend => {
+        if block.restoration_type == LrUnitRestorationType::PcWiener {
+            let subclasses = chain
+                .luma_lr_cell_subclasses(
+                    backend,
+                    block,
+                    &window,
+                    qindex,
+                    PC_WIENER_FULL_CLASSES,
+                    filter_set_index,
+                    &mut cells,
+                )
+                .unwrap();
+            let params = PcWienerFilter {
+                width,
+                height,
+                output_stride: width,
+                bit_depth: BitDepth::Ten,
                 filter_set_index,
-                &mut cells,
+                subclass_block_size: MI_SIZE,
+                subclasses,
+            };
+            let (rows, col) = window.tail(PC_WIENER_FILTER_TAP_RADIUS).unwrap();
+            let source = PcWienerPaddedSource::from_rows(rows, col, width, height).unwrap();
+            pc_wiener_filter_block_padded_with(backend, &mut output, &params, &source).unwrap();
+        } else {
+            let num_classes = usize::from(plane.num_filter_classes.unwrap());
+            let coeffs = luma_lr_frame_coeffs(plane, num_classes).unwrap();
+            let subclasses = chain
+                .luma_lr_cell_subclasses(
+                    backend,
+                    block,
+                    &window,
+                    qindex,
+                    num_classes,
+                    filter_set_index,
+                    &mut cells,
+                )
+                .unwrap();
+            let params = WienerNsLumaFilter {
+                width,
+                height,
+                output_stride: width,
+                bit_depth: BitDepth::Ten,
+                coeffs_by_class: &coeffs,
+                subclasses: None,
+            };
+            let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
+            let source = WienerNsLumaPaddedSource::from_rows(rows, col, width, height).unwrap();
+            wiener_ns_filter_luma_block_padded_cells_into_with(
+                backend,
+                &mut output,
+                &params,
+                &source,
+                subclasses,
+                &mut WienerNsLumaScratch::default(),
             )
             .unwrap();
-        let params = PcWienerFilter {
-            width,
-            height,
-            output_stride: width,
-            bit_depth: BitDepth::Ten,
-            filter_set_index,
-            subclass_block_size: MI_SIZE,
-            subclasses,
-        };
-        let (rows, col) = window.tail(PC_WIENER_FILTER_TAP_RADIUS).unwrap();
-        let source = PcWienerPaddedSource::from_rows(rows, col, width, height).unwrap();
-        pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap();
-    } else {
-        let num_classes = usize::from(plane.num_filter_classes.unwrap());
-        let coeffs = luma_lr_frame_coeffs(plane, num_classes).unwrap();
-        let subclasses = chain
-            .luma_lr_cell_subclasses(
-                block,
-                &window,
-                qindex,
-                num_classes,
-                filter_set_index,
-                &mut cells,
-            )
-            .unwrap();
-        let params = WienerNsLumaFilter {
-            width,
-            height,
-            output_stride: width,
-            bit_depth: BitDepth::Ten,
-            coeffs_by_class: &coeffs,
-            subclasses: None,
-        };
-        let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
-        let source = WienerNsLumaPaddedSource::from_rows(rows, col, width, height).unwrap();
-        wiener_ns_filter_luma_block_padded_cells_into(
-            &mut output,
-            &params,
-            &source,
-            subclasses,
-            &mut WienerNsLumaScratch::default(),
-        )
-        .unwrap();
-    }
+        }
+    });
     output
 }
 
@@ -1439,7 +1383,8 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
     .unwrap();
     let (rows, col) = window.tail(WIENER_NS_LUMA_TAP_RADIUS).unwrap();
     let mut runs = Vec::new();
-    for_each_lr_strip(
+    crate::test_support::with_auto_backend!(b => for_each_lr_strip(
+        b,
         rows,
         col,
         200,
@@ -1449,7 +1394,7 @@ fn flat_lr_strips_match_the_unsplit_block_for_both_initializations() {
             runs.push((x, end, flat));
             Ok(())
         },
-    )
+    ))
     .unwrap();
     assert_eq!(
         runs,
@@ -1487,9 +1432,11 @@ fn a_differing_sample_in_a_strip_reach_breaks_only_that_strip() {
     let strips = |samples: &[Vec<u16>], max_sample| {
         let rows: Vec<&[u16]> = samples.iter().map(Vec::as_slice).collect();
         let mut flat = Vec::new();
-        for_each_lr_strip(&rows, 0, width, R, max_sample, |x, end, value| {
-            flat.extend((x..end).step_by(64).map(|_| value));
-            Ok(())
+        crate::test_support::with_auto_backend!(b => {
+            for_each_lr_strip(b, &rows, 0, width, R, max_sample, |x, end, value| {
+                flat.extend((x..end).step_by(64).map(|_| value));
+                Ok(())
+            })
         })
         .unwrap();
         flat
@@ -1577,7 +1524,6 @@ fn checked_extent_boundaries_and_other_domains_do_not_merge() {
 }
 
 /// Resolves the `width` x `height` block at `(x, y)` with radius `(1, 1)`.
-#[allow(clippy::too_many_arguments)]
 fn resolve_rows<'a>(
     storage: &'a mut Vec<u8>,
     curr: FramePlane<'a, u8>,
@@ -1853,4 +1799,612 @@ fn luma_wiener_covers(
         start,
         end,
     )
+}
+
+fn bru_lr_core(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    tile_rows: &[(usize, usize)],
+) -> FrameHeaderCore {
+    let mut core = switchable_core();
+    core.deblocking_filter_params = None;
+    core.cdef_params = None;
+    core.ccso_params = None;
+    core.gdf_params = None;
+    if tile_rows.len() <= 1 {
+        core.tile_info = None;
+    } else if let Some(tile) = core.tile_info.as_mut() {
+        let mut starts = vec![0u32];
+        starts.extend(tile_rows.iter().map(|&(_, end)| end as u32));
+        tile.tile_cols = 1;
+        tile.tile_rows = tile_rows.len() as u32;
+        tile.mi_col_starts =
+            splot_core::tile::TileStarts::from_iter_checked([0, (width / MI_SIZE) as u32]).unwrap();
+        tile.mi_row_starts = splot_core::tile::TileStarts::from_iter_checked(starts).unwrap();
+        tile.context_update_tile_id = 0;
+    }
+    let lr = core.lr_params.as_mut().unwrap();
+    lr.uses_lr = true;
+    lr.planes[0].restoration_type = match restoration_type {
+        LrUnitRestorationType::PcWiener => FrameRestorationType::PcWiener,
+        _ => FrameRestorationType::WienerNonsep,
+    };
+    if restoration_type == LrUnitRestorationType::PcWiener {
+        lr.planes[0].frame_filters_on = false;
+        lr.planes[0].num_filter_classes = None;
+        lr.planes[0].frame_filter_bank = None;
+    } else {
+        let luma = &mut lr.planes[0];
+        luma.frame_filters_on = true;
+        luma.num_filter_classes = Some(1);
+        if let Some(bank) = luma.frame_filter_bank.as_mut() {
+            bank.classes.truncate(1);
+            let len = bank.classes[0].coeffs.len().min(4);
+            bank.classes[0].coeffs[..len].copy_from_slice(&[16, -24, 32, -16][..len]);
+        }
+    }
+    for plane in &mut lr.planes[1..] {
+        plane.restoration_type = FrameRestorationType::WienerNonsep;
+        plane.frame_filters_on = false;
+        plane.num_filter_classes = None;
+        plane.frame_filter_bank = None;
+    }
+    core
+}
+
+fn bru_contrasting_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    let mut workspace =
+        crate::test_support::yuv420_workspace_with(BitDepth::Eight, width, height, 0u8);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let jump = if (plane == PlaneId::Y && (56..64).contains(&y))
+                    || (plane != PlaneId::Y && (28..32).contains(&y))
+                {
+                    90
+                } else {
+                    0
+                };
+                let val = ((24 + (x * 13 + y * 19 + ((x ^ y) & 7) * 11 + jump)) % 200 + 24) as u8;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, val)
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
+fn bru_lr_blocks_and_filters(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    tile_rows: &[(usize, usize)],
+) -> (Vec<WienerNsLrSourceBlock>, Vec<WienerNsLrUnitFilter>) {
+    let total_rows = tile_rows.last().map_or(0, |&(_, end)| end);
+    let mut blocks = Vec::new();
+    let mut filters = Vec::new();
+    let mut chroma_coeffs = [0i16; WIENER_NS_CHROMA_COEFFS];
+    chroma_coeffs[..5].copy_from_slice(&[12, -16, 20, -10, 6]);
+    for (tile_idx, &(tile_mi_start, tile_mi_end)) in tile_rows.iter().enumerate() {
+        let tile_mi_rows = tile_mi_end - tile_mi_start;
+        for plane in [PlaneId::U.index(), PlaneId::V.index()] {
+            filters.push(WienerNsLrUnitFilter {
+                plane,
+                unit_row: tile_idx,
+                unit_col: 0,
+                coeff_count: WIENER_NS_CHROMA_COEFFS,
+                coeffs: chroma_coeffs,
+            });
+        }
+        let u_filter_idx = filters.len() - 2;
+        let v_filter_idx = filters.len() - 1;
+        let mut local_row = 0;
+        while local_row < tile_mi_rows {
+            let run_end = tile_mi_rows.min(((local_row + 2) / 16 + 1) * 16 - 2);
+            let y_start = (tile_mi_start + local_row) * MI_SIZE;
+            let height = (run_end - local_row) * MI_SIZE;
+            let luma_stripe_start_y = y_start;
+            let luma_stripe_end_y = y_start + height - 1;
+            blocks.push(WienerNsLrSourceBlock {
+                restoration_type,
+                plane: PlaneId::Y.index(),
+                unit_row: tile_idx,
+                unit_col: 0,
+                unit_filter_index: None,
+                tile_mi_row_start: tile_mi_start,
+                tile_mi_row_end: tile_mi_end,
+                tile_mi_col_end: width / MI_SIZE,
+                x: 0,
+                y: y_start,
+                width,
+                height,
+                luma_start_x: 0,
+                luma_end_x: width - 1,
+                luma_start_y: 0,
+                luma_end_y: total_rows * MI_SIZE - 1,
+                luma_stripe_start_y,
+                luma_stripe_end_y,
+            });
+            for (plane, filter_idx) in [
+                (PlaneId::U.index(), u_filter_idx),
+                (PlaneId::V.index(), v_filter_idx),
+            ] {
+                blocks.push(WienerNsLrSourceBlock {
+                    restoration_type: LrUnitRestorationType::WienerNonsep,
+                    plane,
+                    unit_row: tile_idx,
+                    unit_col: 0,
+                    unit_filter_index: Some(filter_idx),
+                    tile_mi_row_start: tile_mi_start,
+                    tile_mi_row_end: tile_mi_end,
+                    tile_mi_col_end: width / MI_SIZE,
+                    x: 0,
+                    y: y_start >> 1,
+                    width: width >> 1,
+                    height: height >> 1,
+                    luma_start_x: 0,
+                    luma_end_x: width - 1,
+                    luma_start_y: 0,
+                    luma_end_y: total_rows * MI_SIZE - 1,
+                    luma_stripe_start_y,
+                    luma_stripe_end_y,
+                });
+            }
+            local_row = run_end;
+        }
+    }
+    (blocks, filters)
+}
+
+fn plane_rect_samples(
+    frame: &splot_recon::DecodedFrame<u8>,
+    plane: PlaneId,
+    x_range: core::ops::Range<usize>,
+    y_range: core::ops::Range<usize>,
+) -> Vec<u8> {
+    let view = match plane {
+        PlaneId::Y => frame.y(),
+        PlaneId::U => frame.u().unwrap(),
+        PlaneId::V => frame.v().unwrap(),
+    };
+    let stride = view.stride_samples();
+    let samples = view.samples();
+    let mut out = Vec::new();
+    for y in y_range {
+        out.extend_from_slice(&samples[y * stride + x_range.start..y * stride + x_range.end]);
+    }
+    out
+}
+
+fn unfiltered_reference(width: usize, height: usize) -> splot_recon::DecodedFrame<u8> {
+    let mut core = bru_lr_core(LrUnitRestorationType::WienerNonsep, width, &[]);
+    core.lr_params = None;
+    let sink = WienerNsLrReconSink::for_final_filtering(
+        bru_contrasting_workspace(width, height),
+        width,
+        height,
+        BitDepth::Eight,
+    );
+    filter_sink(sink, Arc::new(core)).unwrap().0.unwrap()
+}
+
+fn run_bru_lr_frame(
+    restoration_type: LrUnitRestorationType,
+    width: usize,
+    height: usize,
+    tile_rows: &[(usize, usize)],
+    bru_modes: Arc<crate::filters::bru::BruModeMap>,
+) -> Result<splot_recon::DecodedFrame<u8>> {
+    let core = bru_lr_core(restoration_type, width, tile_rows);
+    let mut sink = WienerNsLrReconSink::for_final_filtering(
+        bru_contrasting_workspace(width, height),
+        width,
+        height,
+        BitDepth::Eight,
+    );
+    sink.tx_skip_grid = Some(
+        crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(
+            height / MI_SIZE,
+            width / MI_SIZE,
+            vec![0; (height / MI_SIZE) * (width / MI_SIZE)],
+        )
+        .unwrap(),
+    );
+    sink.filter_records.bru_modes = Some(bru_modes);
+    let (blocks, filters) = bru_lr_blocks_and_filters(restoration_type, width, tile_rows);
+    sink.filter_records.lr_source_blocks = blocks;
+    sink.filter_records.lr_unit_filters = filters;
+    let (frame, _) = filter_sink(sink, Arc::new(core))?;
+    frame.ok_or_else(super::super::lr_pipeline_state_error)
+}
+
+#[test]
+fn bru_lr_unset_mode_fails_closed_before_filtering() {
+    let map = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    map.set(0, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    assert!(
+        run_bru_lr_frame(
+            LrUnitRestorationType::WienerNonsep,
+            128,
+            128,
+            &[(0, 32)],
+            map
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn bru_lr_kernels_follow_shifted_stripes_across_normal_reversed_chroma_and_tiles() {
+    let raw = unfiltered_reference(128, 128);
+    let set_row_modes = |map: &crate::filters::bru::BruModeMap, r0: u8, r1: u8| {
+        for c in [0usize, 16] {
+            map.set(0, c, r0);
+            map.set(16, c, r1);
+        }
+    };
+
+    for tool in [
+        LrUnitRestorationType::WienerNonsep,
+        LrUnitRestorationType::PcWiener,
+    ] {
+        let normal_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+        set_row_modes(&normal_modes, crate::bitstream::tile_payload::BRU_ACTIVE, 1);
+        let normal = run_bru_lr_frame(tool, 128, 128, &[(0, 32)], normal_modes).unwrap();
+
+        assert_ne!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 52..56),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 52..56),
+            "{tool:?}: MI row 13 (y=52..56, stripeRow=0) must be filtered"
+        );
+        assert_eq!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 56..64),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 56..64),
+            "{tool:?}: MI rows 14..16 (y=56..64, stripeRow=16) must remain untouched"
+        );
+        assert_eq!(
+            plane_rect_samples(&normal, PlaneId::Y, 0..128, 64..128),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 64..128),
+            "{tool:?}: inactive SB row 1 must remain untouched"
+        );
+        for chroma in [PlaneId::U, PlaneId::V] {
+            assert_ne!(
+                plane_rect_samples(&normal, chroma, 0..64, 26..28),
+                plane_rect_samples(&raw, chroma, 0..64, 26..28),
+                "{tool:?} {chroma:?}: chroma stripe row before y=28 must be filtered"
+            );
+            assert_eq!(
+                plane_rect_samples(&normal, chroma, 0..64, 28..64),
+                plane_rect_samples(&raw, chroma, 0..64, 28..64),
+                "{tool:?} {chroma:?}: chroma from y=28 onward must remain untouched"
+            );
+        }
+
+        let rev_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+        set_row_modes(
+            &rev_modes,
+            crate::bitstream::tile_payload::BRU_INACTIVE,
+            crate::bitstream::tile_payload::BRU_ACTIVE,
+        );
+        let reversed = run_bru_lr_frame(tool, 128, 128, &[(0, 32)], rev_modes).unwrap();
+
+        assert_eq!(
+            plane_rect_samples(&reversed, PlaneId::Y, 0..128, 0..56),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 0..56),
+            "{tool:?}: reversed rows 0..56 (stripeRow=0) must stay untouched"
+        );
+        assert_ne!(
+            plane_rect_samples(&reversed, PlaneId::Y, 0..128, 56..64),
+            plane_rect_samples(&raw, PlaneId::Y, 0..128, 56..64),
+            "{tool:?}: reversed rows 56..64 (stripeRow=16) must filter using SB row 1 mode"
+        );
+        for chroma in [PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                plane_rect_samples(&reversed, chroma, 0..64, 0..28),
+                plane_rect_samples(&raw, chroma, 0..64, 0..28),
+                "{tool:?} {chroma:?}: reversed chroma rows 0..28 must stay untouched"
+            );
+            assert_ne!(
+                plane_rect_samples(&reversed, chroma, 0..64, 28..64),
+                plane_rect_samples(&raw, chroma, 0..64, 28..64),
+                "{tool:?} {chroma:?}: reversed chroma rows 28..64 must be filtered"
+            );
+        }
+    }
+
+    let raw_tall = unfiltered_reference(128, 192);
+    let tile_modes = Arc::new(crate::filters::bru::BruModeMap::new(48, 32, 16).unwrap());
+    tile_modes.set(0, 0, 1);
+    tile_modes.set(0, 16, 1);
+    tile_modes.set(16, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    tile_modes.set(16, 16, 1);
+    tile_modes.set(32, 0, 1);
+    tile_modes.set(32, 16, crate::bitstream::tile_payload::BRU_ACTIVE);
+    let tiled = run_bru_lr_frame(
+        LrUnitRestorationType::WienerNonsep,
+        128,
+        192,
+        &[(0, 16), (16, 48)],
+        tile_modes,
+    )
+    .unwrap();
+
+    assert_ne!(
+        plane_rect_samples(&tiled, PlaneId::Y, 0..64, 116..120),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 0..64, 116..120),
+        "tile 1 col 0 row 29 (y=116..120, stripeRow=16) must be filtered"
+    );
+    assert_eq!(
+        plane_rect_samples(&tiled, PlaneId::Y, 64..128, 116..120),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 64..128, 116..120),
+        "tile 1 col 1 row 29 (stripeRow=16 inactive) must stay untouched"
+    );
+    assert_eq!(
+        plane_rect_samples(&tiled, PlaneId::Y, 0..64, 120..124),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 0..64, 120..124),
+        "tile 1 col 0 row 30 (y=120..124, stripeRow=32 inactive) must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples(&tiled, PlaneId::Y, 64..128, 120..124),
+        plane_rect_samples(&raw_tall, PlaneId::Y, 64..128, 120..124),
+        "tile 1 col 1 row 30 (stripeRow=32 active) must be filtered"
+    );
+}
+
+fn bru_gdf_core(
+    with_lr: bool,
+    per_block: bool,
+    bit_depth: BitDepth,
+    width: usize,
+) -> FrameHeaderCore {
+    let mut core = bru_lr_core(LrUnitRestorationType::WienerNonsep, width, &[]);
+    if !with_lr {
+        core.lr_params = None;
+    }
+    if let Some(quant) = core.quantization_params.as_mut() {
+        quant.base_q_idx = if bit_depth == BitDepth::Eight {
+            200
+        } else {
+            224
+        };
+    }
+    let mut gdf = switchable_core().gdf_params.unwrap();
+    gdf.gdf_frame_enable = true;
+    gdf.gdf_per_block = Some(per_block);
+    gdf.gdf_pic_qc_idx = Some(0);
+    gdf.gdf_pic_scale_idx = Some(3);
+    core.gdf_params = Some(gdf);
+    core
+}
+
+fn bru_gdf_contrasting_workspace<T: splot_recon::ReconSample + TryFrom<u16>>(
+    bit_depth: BitDepth,
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<T> {
+    let zero = T::try_from(0u16).ok().unwrap();
+    let shift = bit_depth.bits().saturating_sub(8);
+    let mut workspace = crate::test_support::yuv420_workspace_with(bit_depth, width, height, zero);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = workspace.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let jump = if (plane == PlaneId::Y && (56..64).contains(&y))
+                    || (plane != PlaneId::Y && (28..32).contains(&y))
+                {
+                    90
+                } else {
+                    0
+                };
+                let val8 = ((24 + (x * 13 + y * 19 + ((x ^ y) & 7) * 11 + jump)) % 200 + 24) as u16;
+                let sample = T::try_from(val8 << shift).ok().unwrap();
+                workspace
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
+    workspace
+}
+
+fn run_bru_gdf_frame<T: splot_recon::ReconSample + TryFrom<u16>>(
+    bit_depth: BitDepth,
+    with_lr: bool,
+    with_gdf: bool,
+    per_block: bool,
+    gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
+    bru_modes: Arc<crate::filters::bru::BruModeMap>,
+) -> Result<splot_recon::DecodedFrame<T>> {
+    let (width, height) = (128, 128);
+    let mut core = bru_gdf_core(with_lr, per_block, bit_depth, width);
+    if !with_gdf {
+        core.gdf_params = None;
+    }
+    let mut sink = WienerNsLrReconSink::for_final_filtering(
+        bru_gdf_contrasting_workspace::<T>(bit_depth, width, height),
+        width,
+        height,
+        bit_depth,
+    );
+    sink.tx_skip_grid = Some(
+        crate::filters::wienerns_lr::WienerNsLrTxSkipGrid::new(
+            height / MI_SIZE,
+            width / MI_SIZE,
+            vec![0; (height / MI_SIZE) * (width / MI_SIZE)],
+        )
+        .unwrap(),
+    );
+    sink.gdf_grid = gdf_grid;
+    sink.gdf_reference =
+        Some(crate::filters::gdf::GdfReferenceContext::from_reference_list(10, &[0], &[8]));
+    sink.filter_records.bru_modes = Some(bru_modes);
+    if with_lr {
+        let (blocks, filters) =
+            bru_lr_blocks_and_filters(LrUnitRestorationType::WienerNonsep, width, &[(0, 32)]);
+        sink.filter_records.lr_source_blocks = blocks;
+        sink.filter_records.lr_unit_filters = filters;
+    }
+    let (frame, _) = filter_sink(sink, Arc::new(core))?;
+    frame.ok_or_else(super::super::lr_pipeline_state_error)
+}
+
+fn plane_rect_samples_t<T: splot_recon::ReconSample>(
+    frame: &splot_recon::DecodedFrame<T>,
+    plane: PlaneId,
+    x_range: core::ops::Range<usize>,
+    y_range: core::ops::Range<usize>,
+) -> Vec<T> {
+    let view = match plane {
+        PlaneId::Y => frame.y(),
+        PlaneId::U => frame.u().unwrap(),
+        PlaneId::V => frame.v().unwrap(),
+    };
+    let stride = view.stride_samples();
+    let samples = view.samples();
+    let mut out = Vec::new();
+    for y in y_range {
+        out.extend_from_slice(&samples[y * stride + x_range.start..y * stride + x_range.end]);
+    }
+    out
+}
+
+fn check_bru_gdf_bit_depth<
+    T: splot_recon::ReconSample + TryFrom<u16> + PartialEq + core::fmt::Debug,
+>(
+    bit_depth: BitDepth,
+) {
+    let set_row_modes = |map: &crate::filters::bru::BruModeMap, r0: u8, r1: u8| {
+        for c in [0usize, 16] {
+            map.set(0, c, r0);
+            map.set(16, c, r1);
+        }
+    };
+    let raw_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    set_row_modes(
+        &raw_modes,
+        crate::bitstream::tile_payload::BRU_ACTIVE,
+        crate::bitstream::tile_payload::BRU_INACTIVE,
+    );
+    let raw =
+        run_bru_gdf_frame::<T>(bit_depth, false, false, false, None, raw_modes.clone()).unwrap();
+
+    let normal =
+        run_bru_gdf_frame::<T>(bit_depth, false, true, false, None, raw_modes.clone()).unwrap();
+    assert_ne!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: MI row 13 (y=52..56, stripeRow=0) must be GDF-filtered"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 56..64),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..64),
+        "{bit_depth:?}: MI rows 14..15 (y=56..64, stripeRow=16) must stay untouched"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&normal, PlaneId::Y, 0..128, 64..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 64..128),
+        "{bit_depth:?}: inactive SB row 1 must stay untouched"
+    );
+    for chroma in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            plane_rect_samples_t(&normal, chroma, 0..64, 0..64),
+            plane_rect_samples_t(&raw, chroma, 0..64, 0..64),
+            "{bit_depth:?} {chroma:?}: GDF must leave chroma untouched"
+        );
+    }
+
+    let rev_modes = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    set_row_modes(
+        &rev_modes,
+        crate::bitstream::tile_payload::BRU_INACTIVE,
+        crate::bitstream::tile_payload::BRU_ACTIVE,
+    );
+    let reversed = run_bru_gdf_frame::<T>(bit_depth, false, true, false, None, rev_modes).unwrap();
+    assert_eq!(
+        plane_rect_samples_t(&reversed, PlaneId::Y, 0..128, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 0..56),
+        "{bit_depth:?}: reversed rows 0..56 (stripeRow=0) must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&reversed, PlaneId::Y, 0..128, 56..64),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..64),
+        "{bit_depth:?}: reversed rows 56..64 (stripeRow=16) must filter using SB row 1 mode"
+    );
+    for chroma in [PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            plane_rect_samples_t(&reversed, chroma, 0..64, 0..64),
+            plane_rect_samples_t(&raw, chroma, 0..64, 0..64),
+            "{bit_depth:?} {chroma:?}: reversed GDF must leave chroma untouched"
+        );
+    }
+
+    let grid = crate::filters::gdf::GdfBlockGrid::new(64, 2, 2, vec![0, 1, 1, 1]).unwrap();
+    let per_block =
+        run_bru_gdf_frame::<T>(bit_depth, false, true, true, Some(grid), raw_modes.clone())
+            .unwrap();
+    assert_eq!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 0..64, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..64, 0..56),
+        "{bit_depth:?}: per-block GDF bit 0 in active stripe must stay untouched"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 64..128, 0..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 64..128, 0..56),
+        "{bit_depth:?}: per-block GDF bit 1 in active stripe must filter"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&per_block, PlaneId::Y, 0..128, 56..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..128),
+        "{bit_depth:?}: per-block GDF bit 1 in inactive stripe must stay untouched"
+    );
+
+    let lr_only =
+        run_bru_gdf_frame::<T>(bit_depth, true, false, false, None, raw_modes.clone()).unwrap();
+    let lr_and_gdf = run_bru_gdf_frame::<T>(bit_depth, true, true, false, None, raw_modes).unwrap();
+    assert_ne!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: LR+GDF active stripe must differ from raw"
+    );
+    assert_ne!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 52..56),
+        plane_rect_samples_t(&lr_only, PlaneId::Y, 0..128, 52..56),
+        "{bit_depth:?}: LR+GDF active stripe must apply GDF after LR"
+    );
+    assert_eq!(
+        plane_rect_samples_t(&lr_and_gdf, PlaneId::Y, 0..128, 56..128),
+        plane_rect_samples_t(&raw, PlaneId::Y, 0..128, 56..128),
+        "{bit_depth:?}: LR+GDF inactive stripe must stay untouched"
+    );
+}
+
+#[test]
+fn bru_gdf_shifted_stripes_gate_frame_wide_per_block_lr_and_ten_bit() {
+    check_bru_gdf_bit_depth::<u8>(BitDepth::Eight);
+    check_bru_gdf_bit_depth::<u16>(BitDepth::Ten);
+}
+
+#[test]
+fn bru_gdf_unset_mode_fails_closed() {
+    let map = Arc::new(crate::filters::bru::BruModeMap::new(32, 32, 16).unwrap());
+    map.set(0, 0, crate::bitstream::tile_payload::BRU_ACTIVE);
+    assert!(
+        run_bru_gdf_frame::<u8>(BitDepth::Eight, false, true, false, None, map.clone()).is_err()
+    );
+
+    let skip_first_grid =
+        crate::filters::gdf::GdfBlockGrid::new(64, 2, 2, vec![0, 0, 0, 0]).unwrap();
+    assert!(
+        run_bru_gdf_frame::<u8>(
+            BitDepth::Eight,
+            false,
+            true,
+            true,
+            Some(skip_first_grid),
+            map.clone()
+        )
+        .is_err()
+    );
+    assert!(run_bru_gdf_frame::<u16>(BitDepth::Ten, true, true, false, None, map).is_err());
 }

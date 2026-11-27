@@ -6,15 +6,15 @@
 use splot_core::headers::frame::FrameSize;
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-    PlaneRect, PlaneSize, ReconSample,
+    CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter, OutputIndex, PlaneRect, PlaneSize, ReconSample,
 };
 
 use crate::error::Result;
 
-use super::Mv;
+use super::MotionVector;
 use super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
-use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into};
+use super::mc::{InterBlockParams, McBlockRect, motion_compensate_inter_block_into};
 use super::mv_scaling::PlaneScaling;
 use super::reference::HeldFrameSamples;
 
@@ -24,7 +24,8 @@ use super::reference::HeldFrameSamples;
 /// block to reference 0, zero motion vector, skip, and `EIGHTTAP_SHARP`. With bridge
 /// frame filters disabled by § 5.18.2, the resulting coded frame is a sharp-filtered,
 /// zero-motion prediction from the selected reference, including reference scaling.
-pub(crate) fn reconstruct<T: ReconSample>(
+pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     held: &HeldFrameSamples<'_, T>,
     frame_size: FrameSize,
     visible: PlaneRect,
@@ -68,11 +69,12 @@ pub(crate) fn reconstruct<T: ReconSample>(
     .with_storage_luma_size(PlaneSize::new(storage_width, storage_height)?)?;
     let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut workspace),
+        backend,
+        &mut CurrentFrameSurface::Frame(&mut workspace),
         InterBlockParams::single(
             reference,
             McBlockRect::from_luma_rect(0, 0, storage_width, storage_height),
-            Mv::ZERO,
+            MotionVector::ZERO,
             InterpolationFilter::EightTapSharp,
         )
         .with_chroma(!reference_info.pixel_format().is_monochrome()),
@@ -81,12 +83,14 @@ pub(crate) fn reconstruct<T: ReconSample>(
     Ok(workspace.freeze()?)
 }
 
-/// Builds the § 7.23 saved motion field for bridge blocks: every covered 8x8 cell
-/// references the bridge source with a zero motion vector (§ 5.20.5.2).
+/// Builds the § 7.2 / § 7.23 saved motion field for bridge and `bru_inactive`
+/// frames: every covered 8x8 cell references the selected source with a zero
+/// motion vector (§ 5.20.5.2, § 7.2).
 pub(crate) fn motion_field(
     frame_size: FrameSize,
     current_order_hint: u32,
     reference_order_hint: u32,
+    ref_order_hints: &[Option<u32>],
 ) -> Option<TemporalMotionField> {
     let width = usize::try_from(frame_size.width).ok()?;
     let height = usize::try_from(frame_size.height).ok()?;
@@ -97,7 +101,7 @@ pub(crate) fn motion_field(
         mi_cols,
         true,
         (width, height),
-        &[Some(reference_order_hint)],
+        ref_order_hints,
     )?;
     field.record_block(TemporalMotionBlock::new(
         0,
@@ -108,7 +112,7 @@ pub(crate) fn motion_field(
         mi_cols,
         current_order_hint,
         [Some(reference_order_hint), None],
-        [Mv::ZERO; 2],
+        [MotionVector::ZERO; 2],
         [None; 2],
     ));
     Some(field)
@@ -135,13 +139,14 @@ mod tests {
             source.write_rect(plane, PlaneRect::new(0, 0, side, side)?, &samples, side)?;
         }
         let source = source.freeze()?;
-        let bridge = reconstruct(
+        let bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(10, 14),
             info.visible_luma_rect(),
             1,
             ByteOffset::new(0),
-        )?;
+        ))?;
         assert_eq!(bridge.coded_luma_size(), info.coded_luma_size());
         assert_eq!(bridge.info().storage_luma_size(), info.storage_luma_size());
         assert_eq!(bridge.info().visible_luma_rect(), info.visible_luma_rect());
@@ -149,20 +154,22 @@ mod tests {
             assert_eq!(bridge.plane(plane), source.plane(plane));
         }
 
-        let from_source = reconstruct(
+        let from_source = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
             ByteOffset::new(0),
-        )?;
-        let from_bridge = reconstruct(
+        ))?;
+        let from_bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&bridge),
             FrameSize::new(8, 8),
             PlaneRect::new(0, 0, 8, 8)?,
             2,
             ByteOffset::new(0),
-        )?;
+        ))?;
         assert_eq!(from_bridge, from_source);
         Ok(())
     }
@@ -187,18 +194,34 @@ mod tests {
             ),
         )?;
 
-        let bridge = reconstruct(
+        let bridge = crate::test_support::with_auto_backend!(backend => reconstruct(
+            backend,
             &HeldFrameSamples::Settled(&source),
             FrameSize::new(2, 3),
             PlaneRect::new(0, 0, 2, 3)?,
             11,
             ByteOffset::new(0),
-        )?;
+        ))?;
 
         assert_eq!(bridge.output_index(), OutputIndex::new(11));
         assert_eq!(bridge.coded_luma_size(), PlaneSize::new(2, 3)?);
         let visible: Vec<_> = bridge.y().visible_rows().flatten().copied().collect();
         assert_ne!(visible, &[0, 1, 4, 5, 8, 9]);
         Ok(())
+    }
+
+    #[test]
+    fn bru_inactive_motion_field_preserves_full_ref_order_hints_and_nonzero_bru_ref() {
+        let hints = [Some(10), Some(20), Some(30)];
+        let field = motion_field(FrameSize::new(16, 16), 25, 20, &hints).expect("motion field");
+        let expected_meta = TemporalMotionField::new_with_metadata(4, 4, true, (16, 16), &hints)
+            .expect("expected metadata")
+            .metadata();
+        assert_eq!(field.metadata(), expected_meta);
+        for y8 in 0..2 {
+            for x8 in 0..2 {
+                assert_eq!(field.stored_cell(y8, x8), Some([1, 0, 0, 1, 0, 0]));
+            }
+        }
     }
 }

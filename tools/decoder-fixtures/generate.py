@@ -9,6 +9,13 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
   python3 tools/decoder-fixtures/generate.py find
   python3 tools/decoder-fixtures/generate.py hashes [--out oracle.json]
   python3 tools/decoder-fixtures/generate.py coverage-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-inactive-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-lr-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py bru-gdf-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py atlas-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py extended-layer-fixtures --stage <dir>
+  python3 tools/decoder-fixtures/generate.py temporal-fixtures ...
+  python3 tools/decoder-fixtures/generate.py embedded-fixtures ...
 
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo). AVM decoder
@@ -17,7 +24,12 @@ remains strict. `coverage-fixtures` re-encodes the small capability-coverage
 fixtures (profiles, chroma formats, and one isolated intra tool each) so the corpus
 is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys
+import argparse, hashlib, json, math, os, shutil, subprocess, sys
+from collections import Counter
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from atlas import generate as generate_atlas
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VALID = os.path.join(REPO, "tests/conformance/vectors/valid")
@@ -44,12 +56,12 @@ def sha(path):
     return h.hexdigest()
 
 
-def run(cmd, env=None):
-    return subprocess.run(cmd, capture_output=True, timeout=180, env=env)
+def run(cmd, env=None, *, timeout=180):
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
 
 
-def run_checked(cmd, env=None):
-    r = run(cmd, env=env)
+def run_checked(cmd, env=None, *, timeout=180):
+    r = run(cmd, env=env, timeout=timeout)
     if r.returncode != 0:
         raise SystemExit(f"error: {cmd[0]} failed ({r.returncode}): "
                          f"{r.stderr.decode(errors='replace')[:200]}")
@@ -945,6 +957,685 @@ def cmd_coverage_fixtures(args):
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
+def _write_i420_y4m(path, w, h, bit_depth, sample_fn, num_frames=6):
+    chroma = "C420p10" if bit_depth == 10 else "C420"
+    max_val = (1 << bit_depth) - 1
+    shift = bit_depth - 8
+    cw, ch = w // 2, h // 2
+    with open(path, "wb") as f:
+        f.write(f"YUV4MPEG2 W{w} H{h} F30:1 Ip A1:1 {chroma}\n".encode())
+        for t in range(num_frames):
+            f.write(b"FRAME\n")
+            y_plane = bytearray()
+            u_plane = bytearray()
+            v_plane = bytearray()
+            for y in range(h):
+                for x in range(w):
+                    yv = max(16 << shift, min(235 << shift, int(sample_fn(t, x, y, 0)) & max_val))
+                    if bit_depth == 10:
+                        y_plane += yv.to_bytes(2, "little")
+                    else:
+                        y_plane.append(yv)
+            for y in range(ch):
+                for x in range(cw):
+                    uv = max(16 << shift, min(240 << shift, int(sample_fn(t, x * 2, y * 2, 1)) & max_val))
+                    vv = max(16 << shift, min(240 << shift, int(sample_fn(t, x * 2, y * 2, 2)) & max_val))
+                    if bit_depth == 10:
+                        u_plane += uv.to_bytes(2, "little")
+                        v_plane += vv.to_bytes(2, "little")
+                    else:
+                        u_plane.append(uv)
+                        v_plane.append(vv)
+            f.write(y_plane)
+            f.write(u_plane)
+            f.write(v_plane)
+
+
+def _bru_lr_rich_smooth(x, y, plane, phase):
+    if plane == 0:
+        bar = 28 if (((x + phase * 3) // 9 + (y + phase * 5) // 11) % 2 == 0) else -28
+        ring = 35 if (((x - 32) ** 2 + (y - 32) ** 2) % 97 < 48) else -25
+        return (128 + 52 * math.sin(x * 0.23 + y * 0.17 + phase * 1.1)
+                + 32 * math.cos(x * 0.41 - y * 0.31 + phase * 0.7)
+                + bar * 0.6 + ring * 0.5)
+    if plane == 1:
+        return 128 + 42 * math.sin(x * 0.19 - y * 0.13 + phase) + (18 if (x // 8 + y // 8) % 2 else -18)
+    return 128 + 42 * math.cos(x * 0.15 + y * 0.21 - phase) - (18 if (x // 6 - y // 10) % 2 else -18)
+
+
+def _bru_lr_rich_checker(x, y, plane, phase, amp=80):
+    if plane == 0:
+        step = amp * 0.45 if (((x + phase * 3) // 5 + (y + phase * 2) // 5) % 2 == 0) else -amp * 0.45
+        wave = amp * 0.5 * math.sin(x * 0.55 + y * 0.35 + phase) + amp * 0.3 * math.cos(x * 0.8 - y * 0.65)
+        return 128 + step + wave
+    if plane == 1:
+        return 128 + 55 * math.sin(x * 0.25 - y * 0.2 + phase)
+    return 128 + 55 * math.cos(x * 0.2 + y * 0.27 - phase)
+
+
+def _bru_lr_sample_pcw8(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 8 <= x < 54 and 8 <= y < 54:
+        val = _bru_lr_rich_smooth(x, y, plane, t * 2 + 1)
+    elif t == 3 and 2 <= x < 62 and 64 <= y < 124:
+        val = _bru_lr_rich_smooth(x, y - 64, plane, 7)
+    elif t == 4 and 2 <= x < 62 and 4 <= y < 62:
+        val = _bru_lr_rich_smooth(x, y, plane, 13)
+    elif t == 5 and 12 <= x < 52 and 72 <= y < 112:
+        val = _bru_lr_rich_smooth(x, y - 64, plane, 19)
+    return int(round(val))
+
+
+def _bru_lr_sample_pcw10(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 8 <= x < 54 and 8 <= y < 54:
+        val = _bru_lr_rich_checker(x, y, plane, t * 2 + 1, 75)
+    elif t == 3 and 2 <= x < 62 and 64 <= y < 125:
+        val = _bru_lr_rich_checker(x, y - 64, plane, 7, 85)
+    elif t == 4 and 2 <= x < 62 and 4 <= y < 62:
+        val = _bru_lr_rich_checker(x, y, plane, 13, 85)
+    elif t == 5 and 12 <= x < 52 and 72 <= y < 112:
+        val = _bru_lr_rich_checker(x, y - 64, plane, 19, 80)
+    return int(round(val)) << 2
+
+
+def _bru_lr_sample_wns(t, x, y, plane, bit_depth):
+    shift = bit_depth - 8
+    if plane == 0:
+        val = 128 + 30 * math.sin(x * 0.06 + y * 0.07) + 15 * math.cos(x * 0.11 - y * 0.09)
+    elif plane == 1:
+        val = 128 + 16 * math.sin(x * 0.05 + y * 0.06)
+    else:
+        val = 128 + 16 * math.cos(x * 0.05 - y * 0.07)
+    if t in (1, 2) and 8 <= x < 56 and 8 <= y < 56:
+        val = _bru_lr_rich_checker(x, y, plane, t * 3, 75)
+    elif t == 3 and 2 <= x < 126 and 65 <= y < 126:
+        val = _bru_lr_rich_checker(x, y, plane, 7, 90)
+    elif t == 4 and ((2 <= x < 62 and 2 <= y < 62) or (130 <= x < 190 and 2 <= y < 62)):
+        val = _bru_lr_rich_checker(x, y, plane, 13, 90)
+    elif t == 5 and 16 <= x < 112 and 72 <= y < 118:
+        val = _bru_lr_rich_checker(x, y, plane, 19, 85)
+    return int(round(val)) << shift
+
+
+def _bru_lr_sample_multitile(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 38 * math.sin(x * 0.08 + y * 0.07) + 18 * math.cos(x * 0.13 - y * 0.11)
+    elif plane == 1:
+        val = 128 + 20 * math.sin(x * 0.07 + y * 0.06)
+    else:
+        val = 128 + 20 * math.cos(x * 0.06 - y * 0.08)
+    if t in (1, 2) and 70 <= x < 126 and 70 <= y < 126:
+        val = _bru_lr_rich_smooth(x - 64, y - 64, plane, t * 3)
+    elif t == 3:
+        if 66 <= x < 127 and 65 <= y < 126:
+            val = _bru_lr_rich_smooth(x - 64, y - 64, plane, 9)
+        elif 130 <= x < 188 and 6 <= y < 62:
+            val = _bru_lr_rich_smooth(x - 128, y, plane, 11)
+    elif t == 4:
+        if 66 <= x < 126 and 130 <= y < 188:
+            val = _bru_lr_rich_smooth(x - 64, y - 128, plane, 15)
+        elif 66 <= x < 126 and 6 <= y < 62:
+            val = _bru_lr_rich_smooth(x - 64, y, plane, 17)
+    elif t == 5 and 76 <= x < 122 and 76 <= y < 122:
+        val = _bru_lr_rich_smooth(x - 64, y - 64, plane, 23)
+    return int(round(val))
+
+
+BRU_LR_FIXTURES = [
+    ("syn-bru-lr-stripe-wienerns-8bit", 256, 128, 8, lambda t, x, y, p: _bru_lr_sample_wns(t, x, y, p, 8),
+     ["--cpu-used=1", "--qp=140", "--enable-wiener-nonsep=1", "--enable-pc-wiener=0"]),
+    ("syn-bru-lr-stripe-wienerns-10bit", 256, 128, 10, lambda t, x, y, p: _bru_lr_sample_wns(t, x, y, p, 10),
+     ["--cpu-used=1", "--qp=140", "--enable-wiener-nonsep=1", "--enable-pc-wiener=0"]),
+    ("syn-bru-lr-stripe-pcwiener-8bit", 128, 128, 8, _bru_lr_sample_pcw8,
+     ["--cpu-used=0", "--qp=175", "--enable-wiener-nonsep=0", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-stripe-pcwiener-10bit", 128, 128, 10, _bru_lr_sample_pcw10,
+     ["--cpu-used=0", "--qp=195", "--enable-wiener-nonsep=0", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-multitile-cross-8bit", 256, 256, 8, _bru_lr_sample_multitile,
+     ["--cpu-used=0", "--qp=175", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=0", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+    ("syn-bru-lr-multitile-isolated-8bit", 256, 256, 8, _bru_lr_sample_multitile,
+     ["--cpu-used=0", "--qp=175", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+]
+
+
+def _bru_gdf_sharp_shape(dx, dy, phase):
+    r = math.hypot(dx - 32, dy - 32)
+    ring = 70 if (10 <= r < 14 or 20 <= r < 24) else -45
+    edge = 60 if ((dx * 2 + dy + phase * 5) % 19 < 7) else -50
+    return 128 + (ring + edge) // 2
+
+
+def _bru_gdf_sample_stripe(t, x, y, plane, bit_depth, translated_consumer=False):
+    shift = bit_depth - 8
+    if plane > 0:
+        return (128 + int(24 * math.sin(x * 0.08 + y * 0.06))) << shift
+    val = 128 + int(28 * math.sin(x * 0.05) + 18 * math.cos(y * 0.07))
+    if t in (1, 2) and 8 <= x < 56 and 8 <= y < 56:
+        val = _bru_gdf_sharp_shape(x, y, t)
+    elif t == 3 and 2 <= x < 126 and 66 <= y < 126:
+        val = _bru_gdf_sharp_shape(x % 64, y - 64, 7)
+    elif t == 4 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape(x % 64, y, 13)
+    elif translated_consumer and t == 5 and 66 <= x < 190 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape((x - 2) % 64, y, 13)
+    elif t == 5 and 76 <= x < 120 and 72 <= y < 118:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, 19)
+    return int(round(val)) << shift
+
+
+def _bru_gdf_sample_lr(t, x, y, plane):
+    if plane > 0:
+        return _bru_lr_sample_wns(t, x, y, plane, 8)
+    val = _bru_lr_sample_wns(t, x, y, 0, 8)
+    if t == 3 and 2 <= x < 62 and 66 <= y < 126:
+        val = _bru_gdf_sharp_shape(x, y - 64, 7)
+    elif t == 4 and 66 <= x < 126 and 2 <= y < 62:
+        val = _bru_gdf_sharp_shape(x - 64, y, 13)
+    return int(round(val))
+
+
+def _bru_gdf_sample_multitile(t, x, y, plane):
+    if plane > 0:
+        return 128 + int(24 * math.sin(x * 0.08 + y * 0.06))
+    val = 128 + int(28 * math.sin(x * 0.05) + 18 * math.cos(y * 0.07))
+    if t in (1, 2) and 70 <= x < 126 and 70 <= y < 126:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, t * 3)
+    elif t == 3:
+        if 66 <= x < 127 and 65 <= y < 126:
+            val = _bru_gdf_sharp_shape(x - 64, y - 64, 9)
+        elif 130 <= x < 190 and 2 <= y < 62:
+            val = _bru_gdf_sharp_shape(x - 128, y, 11)
+    elif t == 4:
+        if 66 <= x < 126 and 130 <= y < 190:
+            val = _bru_gdf_sharp_shape(x - 64, y - 128, 15)
+        elif 66 <= x < 126 and 2 <= y < 62:
+            val = _bru_gdf_sharp_shape(x - 64, y, 17)
+    elif t == 5 and 74 <= x < 124 and 74 <= y < 124:
+        val = _bru_gdf_sharp_shape(x - 64, y - 64, 23)
+    return int(round(val))
+
+
+def _bru_gdf_stripe_fixtures(mode, search_flags):
+    flags = [*search_flags, "--qp=165", "--enable-restoration=0", "--enable-wiener-nonsep=0", "--enable-pc-wiener=0"]
+    return [(f"syn-bru-gdf-{mode}-{depth}bit", 256, 128, depth,
+             lambda t, x, y, p, bd=depth: _bru_gdf_sample_stripe(t, x, y, p, bd, mode == "frame"), flags)
+            for depth in (8, 10)]
+
+
+BRU_GDF_FIXTURES = [
+    *_bru_gdf_stripe_fixtures("block", ["--cpu-used=1"]),
+    ("syn-bru-gdf-lr-8bit", 256, 128, 8, _bru_gdf_sample_lr,
+     ["--cpu-used=0", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]),
+    ("syn-bru-gdf-multitile-8bit", 256, 256, 8, _bru_gdf_sample_multitile,
+     ["--cpu-used=1", "--qp=165", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0"]),
+]
+
+
+def _bru_intrabc_glyph(lx, ly, salt):
+    bx = (math.floor(lx / 4.0) + math.floor(ly * 3.0) + salt) % 7
+    val = 128 + 55 * math.sin(lx * 1.15 + salt) * math.cos(ly * 1.15 - salt)
+    if int(round(lx)) % 16 in (1, 14) or int(round(ly)) % 16 in (1, 14):
+        val += 60
+    elif bx < 2:
+        val -= 75
+    return max(20.0, min(235.0, val))
+
+
+def _bru_intrabc_sample_stripe(t, x, y, plane, bit_depth):
+    shift = bit_depth - 8
+    if plane == 1:
+        return int(round(128 + 16 * math.sin(x * 0.05 + y * 0.06))) << shift
+    if plane == 2:
+        return int(round(128 + 16 * math.cos(x * 0.05 - y * 0.07))) << shift
+    val = 128 + 24 * math.sin(x * 0.06 + y * 0.07)
+    if t in (1, 2) and 196 <= x < 252 and 68 <= y < 124:
+        val = _bru_intrabc_glyph(x - 196, y - 68, t * 3)
+    elif t == 3 and 4 <= y < 60 and 196 <= x < 316:
+        sx = (x - 196) % 16 + (0.5 if x >= 256 else 0.0)
+        val = _bru_intrabc_glyph(sx, (y - 4) % 16, 7)
+    elif t == 4:
+        if 4 <= y < 60 and 196 <= x < 316:
+            val = _bru_intrabc_glyph((x - 196) % 16, (y - 4) % 16, 7)
+        if 68 <= y < 124 and 132 <= x < 252:
+            val = _bru_intrabc_glyph((x - 132) % 16, (y - 68) % 16, 19)
+    elif t == 5 and 68 <= y < 124 and 132 <= x < 252:
+        val = _bru_intrabc_glyph(((x - 132) % 16) + 0.25, ((y - 68) % 16) + 0.5, 19)
+    return int(round(val)) << shift
+
+
+def _bru_intrabc_sample_multitile(t, x, y, plane):
+    if plane == 1:
+        return int(round(128 + 16 * math.sin(x * 0.05 + y * 0.06)))
+    if plane == 2:
+        return int(round(128 + 16 * math.cos(x * 0.05 - y * 0.07)))
+    val = 128 + 24 * math.sin(x * 0.06 + y * 0.07)
+    if t in (1, 2) and 70 <= x < 124 and 70 <= y < 124:
+        val = _bru_intrabc_glyph(x - 70, y - 70, t * 3)
+    elif t in (3, 4):
+        if 4 <= y < 120 and 128 <= x < 248:
+            sub_x = (x - 128) % 16 + (0.5 if x >= 192 else 0.0)
+            val = _bru_intrabc_glyph(sub_x, (y - 4) % 16, 11 if t == 3 else 17)
+        elif t == 4 and 66 <= x < 126 and 4 <= y < 60:
+            val = _bru_intrabc_glyph((x - 66) % 16, (y - 4) % 16, 23)
+    elif t == 5 and 66 <= x < 126 and 66 <= y < 126:
+        val = _bru_intrabc_glyph((x - 66) % 16, (y - 66) % 16, 29)
+    return int(round(val))
+
+
+def _bru_intrabc_sample_lr(t, x, y, plane):
+    if plane == 0:
+        val = 128 + 30 * math.sin(x * 0.06 + y * 0.07) + 15 * math.cos(x * 0.11 - y * 0.09)
+    elif plane == 1:
+        val = 128 + 16 * math.sin(x * 0.05 + y * 0.06)
+    else:
+        val = 128 + 16 * math.cos(x * 0.05 - y * 0.07)
+    if t in (1, 2) and 196 <= x < 252 and 68 <= y < 124:
+        val = _bru_lr_rich_checker(x, y, plane, t * 3, 75)
+    elif t == 3:
+        if 4 <= y < 60 and 196 <= x < 316 and plane == 0:
+            sx = (x - 196) % 16 + (0.5 if x >= 256 else 0.0)
+            val = _bru_intrabc_glyph(sx, (y - 4) % 16, 7)
+        elif 4 <= y < 60 and 132 <= x < 192:
+            val = _bru_lr_rich_checker(x, y, plane, 7, 90)
+    elif t == 4:
+        if 4 <= y < 60 and 196 <= x < 316 and plane == 0:
+            val = _bru_intrabc_glyph((x - 196) % 16, (y - 4) % 16, 7)
+        if 68 <= y < 124 and 132 <= x < 252:
+            val = _bru_lr_rich_checker(x, y, plane, 13, 90)
+    elif t == 5 and 68 <= y < 124 and 196 <= x < 316 and plane == 0:
+        val = _bru_intrabc_glyph(((x - 196) % 16) + 0.25, ((y - 68) % 16) + 0.5, 19)
+    return int(round(val))
+
+
+def _bru_intrabc_sample_gdf(t, x, y, plane):
+    if plane > 0:
+        return _bru_intrabc_sample_stripe(t, x, y, plane, 8)
+    val = _bru_intrabc_sample_stripe(t, x, y, 0, 8)
+    if t in (3, 4) and 4 <= y < 60 and 132 <= x < 192:
+        r = math.hypot(x - 160, y - 32)
+        ring = 75 if (8 <= r < 12 or 18 <= r < 22) else -45
+        edge = 65 if ((x * 2 + y) % 17 < 7) else -55
+        val = 128 + (ring + edge) // 2
+    return int(round(val))
+
+
+BRU_INTRABC_FIXTURES = [
+    ("syn-bru-local-intrabc-8bit", 320, 128, 8, lambda t, x, y, p: _bru_intrabc_sample_stripe(t, x, y, p, 8),
+     ["--cpu-used=0", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-10bit", 320, 128, 10, lambda t, x, y, p: _bru_intrabc_sample_stripe(t, x, y, p, 10),
+     ["--cpu-used=0", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-multitile-8bit", 256, 256, 8, _bru_intrabc_sample_multitile,
+     ["--cpu-used=2", "--qp=140", "--tile-columns=1", "--tile-rows=1",
+      "--disable-loopfilters-across-tiles=1", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-lr-8bit", 320, 128, 8, _bru_intrabc_sample_lr,
+     ["--cpu-used=1", "--qp=165", "--enable-restoration=1", "--enable-wiener-nonsep=1",
+      "--enable-pc-wiener=1", "--enable-gdf=0"]),
+    ("syn-bru-local-intrabc-gdf-8bit", 320, 128, 8, _bru_intrabc_sample_gdf,
+     ["--cpu-used=1", "--qp=140", "--enable-restoration=0", "--enable-wiener-nonsep=0",
+      "--enable-pc-wiener=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"]),
+]
+
+
+BRU_INACTIVE_POSITIONS = [(8, 8), (36, 8), (64, 24), (16, 16), (48, 36),
+                          (16, 16), (20, 16), (92, 28)]
+
+
+def _bru_inactive_sample(t, x, y, plane, bit_depth):
+    left, top = BRU_INACTIVE_POSITIONS[t]
+    if left <= x < left + 24 and top <= y < top + 24:
+        value = (200, 64, 192)[plane]
+    elif plane == 0:
+        value = 82 if (x // 9 + y // 11) % 2 else 48
+    else:
+        value = (0, 118, 132)[plane]
+    return value << (bit_depth - 8)
+
+
+BRU_INACTIVE_FIXTURES = [
+    ("syn-bru-inactive-block-use-8bit", 128, 64, 8,
+     lambda t, x, y, p: _bru_inactive_sample(t, x, y, p, 8), []),
+    ("syn-bru-inactive-block-use-10bit", 128, 64, 10,
+     lambda t, x, y, p: _bru_inactive_sample(t, x, y, p, 10), []),
+]
+
+
+def _run_bru_fixture_batch(fixtures, fixed_flags, label, args, *, num_frames=6):
+    avmenc = find("avmenc")
+    avmdec = find("avmdec")
+    stage = args.stage
+    os.makedirs(stage, exist_ok=True)
+    selected = [row for row in fixtures if args.only is None or row[0] == args.only]
+    if not selected:
+        sys.exit(f"error: unknown {label} fixture id: {args.only}")
+    for fid, w, h, bd, sample_fn, flags in selected:
+        y4m = os.path.join(stage, f"{fid}.y4m")
+        ivf = os.path.join(stage, f"{fid}.ivf")
+        repeat_ivf = os.path.join(stage, f"{fid}.repeat.ivf")
+        raw = os.path.join(stage, f"{fid}.avm.raw")
+        _write_i420_y4m(y4m, w, h, bd, sample_fn, num_frames)
+        encode = [
+            avmenc, "--codec=av2", "--ivf", "-D", "--passes=1",
+            "--lag-in-frames=0", "--kf-min-dist=9999", "--kf-max-dist=9999",
+            "--enable-bru=1", "--sb-size=64",
+            *fixed_flags, f"--bit-depth={bd}", f"--input-bit-depth={bd}", "--i420",
+            "--threads=1", "--end-usage=q", "--quiet", "--disable-warning-prompt", *flags,
+        ]
+        run_checked([*encode, "-o", ivf, y4m], timeout=None)
+        run_checked([*encode, "-o", repeat_ivf, y4m], timeout=None)
+        ivf_sha = sha(ivf)
+        if sha(repeat_ivf) != ivf_sha:
+            sys.exit(f"error: {fid} is not deterministic across two encodes")
+        os.remove(repeat_ivf)
+        run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
+        print(f"  {fid}: src={sha(y4m)} ivf={ivf_sha} avm_raw={sha(raw)} size={os.path.getsize(ivf)}")
+    print(f"staged {len(selected)} {label} fixtures in {stage}")
+
+
+def cmd_bru_inactive_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_INACTIVE_FIXTURES,
+        ["--cpu-used=5", "--qp=220"],
+        "inactive BRU",
+        args,
+        num_frames=len(BRU_INACTIVE_POSITIONS),
+    )
+
+
+def cmd_bru_lr_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_LR_FIXTURES,
+        ["--enable-intrabc=0", "--enable-gdf=0", "--enable-restoration=1"],
+        "BRU+LR",
+        args,
+    )
+
+
+def cmd_bru_gdf_fixtures(args):
+    """Regenerate the frame-wide pair and the 10-bit LR stream at AVM 457cd58681a747465661baccb1f32095bc5b7774.
+
+    Configure AVM with the following command.
+
+      cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_TESTS=0 -DENABLE_DOCS=0 \
+        -DCONFIG_ML_PART_SPLIT=0 -DCONFIG_DIP_EXT_PRUNING=0 -DCONFIG_TENSORFLOW_LITE=0
+      cmake --build build --target avmenc avmdec
+
+    For --frame-wide, edit only the local AVM encoder. In av2/encoder/encoder.c,
+    add the following statement immediately after gdf_optimizer(cpi, cm) in gdf_optimize_frame.
+
+      if (cm->bru.enabled && !cm->bru.frame_inactive_flag) cm->gdf_info.gdf_mode = 1;
+
+    Rebuild avmenc. Set AVM_BUILD to the directory containing this encoder and the pristine avmdec.
+    Run bru-gdf-fixtures --frame-wide --stage <dir> to regenerate the three streams.
+    The frame-wide pair uses a bounded partition search. Its last picture translates the textured patch
+    from picture 4 by two pixels so an active inter block uses its filtered reference.
+    The 10-bit LR stream uses the scaled 8-bit LR source and enables restoration.
+    """
+    fixtures = BRU_GDF_FIXTURES
+    if args.frame_wide:
+        partition_flags = ["--min-partition-size=16", "--max-partition-size=32"]
+        fixtures = _bru_gdf_stripe_fixtures("frame", ["--cpu-used=3", *partition_flags])
+        fixtures.append(("syn-bru-gdf-lr-10bit", 256, 128, 10, lambda t, x, y, p: _bru_gdf_sample_lr(t, x, y, p) << 2,
+                         ["--cpu-used=2", *partition_flags, "--qp=165", "--enable-restoration=1",
+                          "--enable-wiener-nonsep=1", "--enable-pc-wiener=1"]))
+    _run_bru_fixture_batch(
+        fixtures,
+        ["--enable-intrabc=0", "--enable-gdf=1", "--gdf-unit-matches-sb=1"],
+        "BRU+GDF",
+        args,
+    )
+
+
+def cmd_bru_intrabc_fixtures(args):
+    _run_bru_fixture_batch(
+        BRU_INTRABC_FIXTURES,
+        ["--tune-content=screen", "--enable-intrabc=1", "--enable-intrabc-ext=1"],
+        "BRU+IntraBC",
+        args,
+    )
+
+
+def cmd_extended_layer_fixtures(args):
+    from extended_layers import generate
+    try:
+        generate(VALID, args.stage, find("avmenc"), find("avmdec"), _write_i420_y4m, run_checked)
+    except (OSError, ValueError) as error:
+        sys.exit(f"error: {error}")
+
+
+def signal_sparse_tlayers(data):
+    # The pinned encoder emits this SequenceHeader prefix for fixture 2.
+    # AV2 § 5.8.1 puts the TL dependency flag after the display and decoder models.
+    if not data.startswith(bytes.fromhex("01081804800a0c157ffc08")):
+        sys.exit("Unexpected sequence header. Check the AVM revision and build options.")
+
+    header_end = 2 + 1 + data[2]
+    bits = "".join(f"{byte:08b}" for byte in data[4:header_end]).rstrip("0")
+    # AV2 § 5.18.2 writes each row from the current layer down to layer zero.
+    rows = "11" "101" "1101"
+    bits = bits[:49] + "1" + rows + bits[50:]
+    bits += "0" * (-len(bits) % 8)
+    payload = int(bits, 2).to_bytes(len(bits) // 8, "big")
+    return data[:2] + bytes([len(payload) + 1]) + data[3:4] + payload + data[header_end:]
+
+
+def check_temporal_fixture(splot, avmdec, path, depth, frame_size, layers, groups):
+    run_checked([splot, "validate", "--strict", path])
+    obus = json.loads(run_checked([splot, "inspect", "--json", path]).stdout)
+    frames = [obu for obu in obus if "frame_header_core" in obu]
+    observed = [obu["header"]["temporal_layer_id"] for obu in frames]
+    tile_groups = [obu for obu in obus
+                   if obu["header"]["obu_type"] in ("ClosedLoopKey", "RegularTileGroup")]
+    if observed != layers or len(tile_groups) != len(layers) * groups:
+        sys.exit(f"Unexpected layers or tile groups in {path.name}.")
+    if groups == 2:
+        per_frame = Counter(obu["ivf_frame"]["index"] for obu in tile_groups)
+        if per_frame != dict.fromkeys(range(len(layers)), 2):
+            sys.exit(f"Expected two tile groups per frame in {path.name}.")
+    if any(obu["frame_header_core"]["frame_type"] != "inter" for obu in frames[1:]):
+        sys.exit(f"Expected an inter frame after the key frame in {path.name}.")
+
+    raw = run_checked([avmdec, "--rawvideo", "--i420", f"--output-bit-depth={depth}",
+                       "-o", "-", path]).stdout
+    if len(raw) != len(layers) * frame_size:
+        sys.exit(f"Unexpected decoded size for {path.name}.")
+    decode = [splot, "decode", "--output-format", "raw", "-o", "-"]
+    if run_checked([*decode, path]).stdout != raw:
+        sys.exit(f"Splot and AVM output differ for {path.name}.")
+
+    for layer in sorted(set(layers)):
+        subset = b"".join(raw[i * frame_size:(i + 1) * frame_size]
+                          for i, current in enumerate(layers) if current == layer)
+        if run_checked([*decode, "--temporal-output-mask", str(1 << layer),
+                        path]).stdout != subset:
+            sys.exit(f"Layer {layer} output differs for {path.name}.")
+    base = b"".join(raw[i * frame_size:(i + 1) * frame_size]
+                         for i, current in enumerate(layers) if current == 0)
+    if run_checked([*decode, "--temporal-layer", "0", path]).stdout != base:
+        sys.exit(f"Base layer output differs for {path.name}.")
+    print(f"{sha(path)}  {path.name}")
+    print(f"{hashlib.sha256(raw).hexdigest()}  {path.name} decoded I420")
+
+
+def build_layer_fixture_encoder(args, work):
+    revision = "a1ec4594d97028ebc34083ec8346616d697c2fc9"
+    actual = run_checked(["git", "-C", args.avm_source, "rev-parse", "HEAD"])
+    if actual.stdout.decode().strip() != revision:
+        sys.exit(f"Check out AVM revision {revision}.")
+
+    avmdec = args.avm_build / "avmdec"
+    version = run_checked([avmdec, "--help"]).stdout
+    if f"-g{revision[:10]}".encode() not in version:
+        sys.exit(f"Build avmdec at revision {revision}.")
+
+    runner = Path(work) / "encode-temporal"
+    source = Path(__file__).with_name("encode-temporal.c")
+    run_checked([os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
+                 "-I", args.avm_source, source, args.avm_build / "libavm.a",
+                 "-pthread", "-lm", "-o", runner])
+    return runner, avmdec
+
+
+def encode_layer_fixture(runner, index, source, name, source_sha256):
+    command = [runner, str(index), source]
+    data = run_checked(command, timeout=600).stdout
+    if sha(source) != source_sha256:
+        sys.exit(f"Source I420 bytes differ for {name}.")
+    if data != run_checked(command, timeout=600).stdout or sha(source) != source_sha256:
+        sys.exit(f"Repeated encodes produced different bytes for {name}.")
+    print(f"{source_sha256}  {name} source I420")
+    return data
+
+
+def stage_layer_fixtures(stage, work, specs):
+    stage.mkdir(parents=True, exist_ok=True)
+    for name, *_ in specs:
+        with (stage / name).open("xb") as target:
+            target.write((Path(work) / name).read_bytes())
+
+
+def cmd_temporal_fixtures(args):
+    specs = [
+        ("syn-tlayer2-reproducible-8bit.ivf", 8, 12288, [0, 1, 0, 1], 2,
+         "aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46"),
+        ("syn-tlayer2-reproducible-10bit.ivf", 10, 12288, [0, 1, 0, 1], 1,
+         "2b830b7920d09315c5d74d7eb2dcbc79858e0106a05f09428b82b7637e5824f7"),
+        ("syn-tlayer4-reproducible-sparse.obu", 8, 6144, [0, 1, 2, 3, 0], 1,
+         "703087d9408ac4adef3e4618c9b183a1cb8c282d114863bec1bf19023959a18c"),
+    ]
+    for name, *_ in specs:
+        if (args.stage / name).exists():
+            sys.exit(f"Use a stage directory without {name}.")
+    with TemporaryDirectory() as work:
+        runner, avmdec = build_layer_fixture_encoder(args, work)
+        for index, (name, depth, frame_size, layers, groups, source_sha256) in enumerate(specs):
+            raw = Path(work) / "source.i420"
+            data = encode_layer_fixture(runner, index, raw, name, source_sha256)
+            if index == 2:
+                data = signal_sparse_tlayers(data)
+            if data != (Path(VALID) / name).read_bytes():
+                sys.exit(f"Generated bytes differ from the committed fixture {name}.")
+            path = Path(work) / name
+            path.write_bytes(data)
+            check_temporal_fixture(args.splot, avmdec, path, depth, frame_size,
+                                   layers, groups)
+
+        stage_layer_fixtures(args.stage, work, specs)
+
+
+def local_embedded_lcr(data):
+    # The pinned AVM encoder emits a local LCR with parent ID 1 before the sequence.
+    # These single-stream fixtures supply no global LCR. Clear its f(3) parent ID
+    # (AV2 § 5.8.3) without changing the OBU size or subsequent syntax.
+    if data[:8] != bytes.fromhex("01 08 05 40 24 00 00 40"):
+        sys.exit("Unexpected local LCR. Check the AVM revision and build options.")
+    return data[:4] + bytes([data[4] & 31]) + data[5:]
+
+
+def check_embedded_fixture(splot, avmdec, path, depth, pictures, groups, raw_sha256):
+    run_checked([splot, "validate", "--strict", path])
+    obus = json.loads(run_checked([splot, "inspect", "--json", path]).stdout)
+    tile_groups = [obu for obu in obus
+                   if obu["header"]["obu_type"] in ("ClosedLoopKey", "RegularTileGroup")]
+    observed = [(obu["header"]["embedded_layer_id"], obu["header"]["temporal_layer_id"])
+                for obu in tile_groups]
+    expected = [(m, t) for m, t, _, _ in pictures for _ in range(groups)]
+    if observed != expected:
+        sys.exit(f"Unexpected tile groups in {path.name}.")
+
+    if any(tlayer != 0 for _, tlayer, _, _ in pictures):
+        mfh_headers = [obu["header"] for obu in obus
+                       if obu["header"]["obu_type"] == "MultiFrameHeader"]
+        if [(h["embedded_layer_id"], h["temporal_layer_id"]) for h in mfh_headers] != [(0, 0)]:
+            sys.exit(f"Expected one ML0/TL0 multi-frame header in {path.name}.")
+        referenced_mfh = [obu.get("frame_header_prefix", {}).get("cur_mfh_id")
+                          for obu in tile_groups[::groups]]
+        if referenced_mfh != [1] * len(pictures):
+            sys.exit(f"Expected every picture in {path.name} to use multi-frame header 1.")
+
+    raw = run_checked([avmdec, "--all-layers", "--skip-film-grain", "--rawvideo",
+                      "--i420", f"--output-bit-depth={depth}", "-o", "-", path]).stdout
+    if hashlib.sha256(raw).hexdigest() != raw_sha256:
+        sys.exit(f"AVM output differs from the recorded digest for {path.name}.")
+    decode = [splot, "decode", "--output-format", "raw", "-o", "-"]
+    if run_checked([*decode, path]).stdout != raw:
+        sys.exit(f"Splot and AVM output differ for {path.name}.")
+
+    samples = []
+    offset = 0
+    for _, _, width, height in pictures:
+        size = width * height * 3 // 2 * (1 if depth == 8 else 2)
+        samples.append(raw[offset:offset + size])
+        offset += size
+    if offset != len(raw):
+        sys.exit(f"Unexpected decoded size for {path.name}.")
+
+    for axis, flag in enumerate(("--embedded-output-mask", "--temporal-output-mask")):
+        ids = sorted({picture[axis] for picture in pictures})
+        if len(ids) < 2:
+            continue
+        for layer in ids:
+            subset = b"".join(frame for frame, picture in zip(samples, pictures)
+                              if picture[axis] == layer)
+            if run_checked([*decode, flag, str(1 << layer), path]).stdout != subset:
+                sys.exit(f"Output for {flag} {1 << layer} differs in {path.name}.")
+    print(f"{sha(path)}  {path.name}")
+    print(f"{raw_sha256}  {path.name} decoded I420")
+
+
+def cmd_embedded_fixtures(args):
+    same_size = [(layer, 0, 64, 64) for _ in range(3) for layer in (0, 1)]
+    mixed_size = [(0, 0, 128, 128), (1, 0, 256, 256)] * 3
+    joint = [(layer, int(frame != 0), 128, 64)
+             for frame in range(4) for layer in (0, 1)]
+    specs = [
+        ("syn-mlayer2-reproducible-8bit.obu", 8, same_size, 1,
+         "33e129a615d52d1efb767fe543d1e4e9138961045a2b3a3f64da413155b4998d",
+         "6b1c68c461792ee00843253575b70204a00059381fd76b8037387036e1cffcbc"),
+        ("syn-mlayer2-reproducible-10bit.obu", 10, same_size, 1,
+         "45a4add1eb104ef19c2a6c58fd7fdf8f6f2667e0e9f08f652b0f5167610539b5",
+         "c9d7de9c050d472aff6ccd3a9aea208e43b190d982b74391be371becf4ca8c74"),
+        ("syn-mlayer2-reproducible-mixedres-8bit.obu", 8, mixed_size, 1,
+         "be30dbcb82cf5413fee7644436835eea22116b33aad36cf416b6dd31b1697d66",
+         "b6975e368cbde9728aa1d76218e9c610c6260a6d218384d1302d6f10e962f3e5"),
+        ("syn-mlayer2-reproducible-2d-8bit.obu", 8, joint, 2,
+         "aa536ca69716284731231b1de7558547a47c01437f495b8ec6d94decc5ac3a46",
+         "2735a0e58bf3ee19fb7ca625aad6bcadff45ce176b4e74e66f2356b795988600"),
+    ]
+    with TemporaryDirectory() as work:
+        runner, avmdec = build_layer_fixture_encoder(args, work)
+        for index, (name, depth, pictures, groups, source_sha256, raw_sha256) in enumerate(specs, start=3):
+            destination = args.stage / name
+            if destination.exists():
+                sys.exit(f"Use a stage directory without {name}.")
+            source = Path(work) / "source.i420"
+            data = local_embedded_lcr(
+                encode_layer_fixture(runner, index, source, name, source_sha256))
+            if data != (Path(VALID) / name).read_bytes():
+                sys.exit(f"Generated bytes differ from the committed fixture {name}.")
+            path = Path(work) / name
+            path.write_bytes(data)
+            check_embedded_fixture(args.splot, avmdec, path, depth, pictures, groups,
+                                   raw_sha256)
+        stage_layer_fixtures(args.stage, work, specs)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -953,6 +1644,35 @@ def main():
     c = sub.add_parser("coverage-fixtures"); c.add_argument("--stage", required=True)
     c.add_argument("--only", help="regenerate one fixture id")
     c.set_defaults(fn=cmd_coverage_fixtures)
+    inactive = sub.add_parser("bru-inactive-fixtures")
+    inactive.add_argument("--stage", required=True)
+    inactive.add_argument("--only", help="regenerate one fixture id")
+    inactive.set_defaults(fn=cmd_bru_inactive_fixtures)
+    b = sub.add_parser("bru-lr-fixtures"); b.add_argument("--stage", required=True)
+    b.add_argument("--only", help="regenerate one fixture id")
+    b.set_defaults(fn=cmd_bru_lr_fixtures)
+    g = sub.add_parser("bru-gdf-fixtures"); g.add_argument("--stage", required=True)
+    g.add_argument("--only", help="regenerate one fixture id")
+    g.add_argument("--frame-wide", action="store_true", help="use the frame-wide AVM encoder described in cmd_bru_gdf_fixtures")
+    g.set_defaults(fn=cmd_bru_gdf_fixtures)
+    i = sub.add_parser("bru-intrabc-fixtures"); i.add_argument("--stage", required=True)
+    i.add_argument("--only", help="regenerate one fixture id")
+    i.set_defaults(fn=cmd_bru_intrabc_fixtures)
+    a = sub.add_parser("atlas-fixtures")
+    a.add_argument("--stage", required=True)
+    a.set_defaults(fn=lambda args: generate_atlas(VALID, args.stage))
+    multi = sub.add_parser("extended-layer-fixtures")
+    multi.add_argument("--stage", required=True)
+    multi.set_defaults(fn=cmd_extended_layer_fixtures)
+
+    for name, command in [("temporal-fixtures", cmd_temporal_fixtures),
+                          ("embedded-fixtures", cmd_embedded_fixtures)]:
+        layer = sub.add_parser(name)
+        layer.add_argument("--stage", type=Path, required=True)
+        layer.add_argument("--avm-source", type=Path, required=True)
+        layer.add_argument("--avm-build", type=Path, required=True)
+        layer.add_argument("--splot", type=Path, required=True)
+        layer.set_defaults(fn=command)
     args = p.parse_args()
     args.fn(args)
 

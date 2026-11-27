@@ -378,7 +378,6 @@ impl Lookahead {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 

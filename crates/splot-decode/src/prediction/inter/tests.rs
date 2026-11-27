@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use crate::reference::buffer::RefSlots;
 
 use splot_core::headers::frame::{
@@ -15,8 +13,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconError, ReferenceSlot, SharedFrame,
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat,
+    PlaneId, PlaneRect, PlaneSize, ReconError, ReferenceSlot, SharedFrame,
 };
 
 use super::block::{
@@ -39,6 +37,7 @@ use crate::{
     DecodeStreamPlan,
 };
 
+mod bru_filters;
 mod header_state;
 mod segmentation;
 mod zero_reference;
@@ -322,6 +321,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         &key_core,
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
     )?;
     reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];
@@ -355,18 +355,21 @@ fn decode_inter_frame_after_core_mutation_inner(
     mutate(&mut core);
     super::validate_inter_frame_core(&core, &sequence)?;
     let mut products = super::FrameProductWriters::fresh().expect("fresh product writers");
-    let walk = crate::pipeline::frame_engine::walk_frame(
-        &mut super::InterDecodeScratch::default(),
-        inter_candidate,
-        bytes.into(),
-        inter_envelope,
-        std::sync::Arc::new(core),
-        &sequence,
-        &options,
-        &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
-        BitDepth::Eight,
-        &mut products,
-    )?;
+    let walk = crate::test_support::with_auto_backend!(backend => {
+        crate::pipeline::frame_engine::walk_frame(
+            backend,
+            &mut super::InterDecodeScratch::default(),
+            inter_candidate,
+            bytes.into(),
+            inter_envelope,
+            std::sync::Arc::new(core),
+            &sequence,
+            &options,
+            &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
+            BitDepth::Eight,
+            &mut products,
+        )
+    })?;
     let crate::pipeline::frame_engine::finish::WalkStage::Pending(walked) = walk.stage else {
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
@@ -417,6 +420,7 @@ fn parse_inter_core_for_validation_inner(
         &key_core,
         key_envelope.offset,
         key_envelope.header.embedded_layer_id,
+        key_envelope.header.temporal_layer_id,
     )?;
     reference.update(0, &update, crate::pipeline::is_key_or_switch(&key_core));
     let frames = vec![Some(key_frame)];
@@ -460,6 +464,9 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: eob as u16,
+        scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -553,16 +560,19 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         },
     ];
     let residual = super::InterResidual { block_range: 0..3 };
-    super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &u_quant,
-        101,
-        false,
-        true,
-        BitDepth::Eight,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &u_quant,
+            101,
+            false,
+            true,
+            BitDepth::Eight,
+        )
+    })
     .unwrap();
 
     assert_eq!(read_rect_samples(&workspace, PlaneId::U, rect), want_u);
@@ -616,16 +626,19 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
         coeffs,
     }];
     let residual = super::InterResidual { block_range: 0..1 };
-    super::add_inter_residual_to_workspace(
-        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &quant,
-        150,
-        false,
-        false,
-        BitDepth::Ten,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &quant,
+            150,
+            false,
+            false,
+            BitDepth::Ten,
+        )
+    })
     .unwrap();
 
     let first_row = workspace
@@ -2263,12 +2276,23 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
 }
 
 #[test]
-fn tip_output_disables_saved_cdf_blending() {
-    assert!(super::cdf_blending_enabled(true, None));
-    assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));
+fn tip_output_and_bru_inactive_disable_saved_cdf_blending() {
+    assert!(super::cdf_blending_enabled(true, None, false));
+    assert!(super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsRef),
+        false
+    ));
     assert!(!super::cdf_blending_enabled(
         true,
-        Some(TipFrameMode::AsOutput)
+        Some(TipFrameMode::AsOutput),
+        false
+    ));
+    assert!(!super::cdf_blending_enabled(true, None, true));
+    assert!(!super::cdf_blending_enabled(
+        true,
+        Some(TipFrameMode::AsRef),
+        true
     ));
 }
 
@@ -2418,14 +2442,4 @@ fn tile_neighbour_availability_is_tile_bounded() {
     assert_eq!(tile_neighbour_availability(9, 16, 8, 16), (true, false));
     assert_eq!(tile_neighbour_availability(8, 17, 8, 16), (false, true));
     assert_eq!(tile_neighbour_availability(9, 17, 8, 16), (true, true));
-}
-
-#[test]
-fn floor_log2_matches_msb_index() {
-    use super::cross_frame::floor_log2;
-    assert_eq!(floor_log2(0), 0);
-    assert_eq!(floor_log2(1), 0);
-    assert_eq!(floor_log2(2), 1);
-    assert_eq!(floor_log2(64 * 64), 12);
-    assert_eq!(floor_log2(4095), 11);
 }

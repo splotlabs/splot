@@ -83,7 +83,7 @@ fearless_simd::kernel!(
 
 /// The lane sums of the top and bottom halves of an 8x8 unit of rows in
 /// lanes, paired first.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 pub(super) fn rows_8x8_sums<S: Simd>(
     simd: S,
@@ -97,7 +97,7 @@ pub(super) fn rows_8x8_sums<S: Simd>(
 }
 
 /// [`rows_8x8_sums`] of rows that are already paired.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn sums<S: Simd>(
     simd: S,
@@ -157,7 +157,7 @@ fn sums<S: Simd>(
 }
 
 /// The eight-bit rows of an 8x8 prediction, two rows to a pair.
-#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[expect(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn byte_rows<S: Simd>(simd: S, rows: &[u64; 8]) -> [i16x16<S>; 4] {
     let (quads, _) = rows.as_chunks::<4>();

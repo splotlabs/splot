@@ -544,7 +544,6 @@ impl<'a, T: ReconSample> FrameMut<'a, T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::{BitDepth, DecodedFrame, FramePlanes, OutputIndex, PixelFormat, Plane};

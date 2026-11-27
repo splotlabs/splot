@@ -9,7 +9,7 @@
 //! before it widens into `u64` lanes.
 
 use fearless_simd::{
-    Bytes as _, Level, Select as _, Simd, SimdBase as _, SimdCombine as _, SimdWiden as _,
+    Level, Select as _, Simd, SimdBase as _, SimdCombine as _, SimdInt as _, SimdWiden as _,
     dispatch, i16x8, i32x8, u64x4,
 };
 
@@ -91,7 +91,7 @@ fn scale_sse_kernel<S: Simd>(
         let (lo, hi) = i16x8::from_slice(simd, &err[x..x + LANES]).widen();
         let e = lo.combine(hi);
         let square = |acc: &mut u64x4<S>, sample: i32x8<S>| {
-            add_squares(acc, (sample - target).abs().bitcast());
+            add_squares(acc, (sample - target).unsigned_abs());
         };
         square(&mut acc[0], base);
         for scale in 1..=4 {
@@ -116,7 +116,6 @@ fn scale_sse_kernel<S: Simd>(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use proptest::prelude::*;
 

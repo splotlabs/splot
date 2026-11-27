@@ -5,7 +5,7 @@ use splot_core::symbol::SymbolDecoder;
 
 use crate::bitstream::tile_payload::{TileCdfSubset, read_row, row_at};
 
-#[allow(clippy::inline_always, reason = "measured: per-leaf reference read")]
+#[expect(clippy::inline_always, reason = "measured: per-leaf reference read")]
 #[inline(always)]
 pub(crate) fn read_single_ref(
     cdfs: &mut TileCdfSubset,

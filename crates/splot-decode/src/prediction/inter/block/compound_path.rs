@@ -6,7 +6,7 @@ use splot_recon::wedge_mask_unit;
 
 use super::super::CompoundOrderHint;
 use super::super::compound::{
-    CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
+    CompoundMode, CompoundParseInput, read_compound_mode_syntax, read_compound_reference_pair,
 };
 use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::mv_scaling::PlaneScaling;
@@ -339,7 +339,7 @@ pub(super) fn read_reference_mode(
     read_row(symbols, row_at(cdfs.block_rows_mut().comp_mode(), ctx)) != 0
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn decode_compound_inter_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -440,7 +440,7 @@ pub(super) fn decode_compound_inter_block(
         if second_drl {
             ref_mv_idx0 = read_drl_idx(cdfs, symbols, new_mv_context, max_drl_bits_minus_1);
             let second_min_idx = if compound.ref_frame0 == compound.ref_frame1
-                && compound.y_mode == CompoundYMode::NearNear
+                && compound.y_mode == CompoundMode::NearNear
             {
                 ref_mv_idx0.saturating_add(1)
             } else {
@@ -467,7 +467,7 @@ pub(super) fn decode_compound_inter_block(
         compound.y_mode.has_newmv(),
         use_amvd,
     )?;
-    let joint = (compound.y_mode == CompoundYMode::JointNew)
+    let joint = (compound.y_mode == CompoundMode::JointNew)
         .then(|| compound_joint_mv_projection(facts, compound.ref_frame0, compound.ref_frame1))
         .transpose()?;
     let mvd = read_compound_mvd_syntax(
@@ -508,7 +508,7 @@ pub(super) fn decode_compound_inter_block(
     let compound_blend_tools = CompoundBlendToolConfig::from_sequence(sequence);
     let mut blend_input = CompoundBlendInput {
         use_optflow: compound.use_optflow,
-        joint_amvd: compound.y_mode == CompoundYMode::JointNew && use_amvd,
+        joint_amvd: compound.y_mode == CompoundMode::JointNew && use_amvd,
         switchable_refinemv_on: refinemv_signalled && refinemv_switchable,
         n4w,
         n4h,
@@ -654,10 +654,10 @@ pub(super) fn compound_optflow_distances(
 pub(super) fn compound_needs_interp_filter(
     n4w: usize,
     n4h: usize,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     local_warp: bool,
 ) -> bool {
-    !local_warp && (n4w < 2 || n4h < 2 || y_mode != CompoundYMode::GlobalGlobal)
+    !local_warp && (n4w < 2 || n4h < 2 || y_mode != CompoundMode::GlobalGlobal)
 }
 
 pub(super) fn compound_local_warp_signal_allowed(
@@ -669,7 +669,7 @@ pub(super) fn compound_local_warp_signal_allowed(
     local_warp_enabled: bool,
     warp_sample_found: impl FnOnce() -> [bool; 2],
 ) -> bool {
-    compound.y_mode == CompoundYMode::NewNew
+    compound.y_mode == CompoundMode::NewNew
         && compound.ref_frame0 != compound.ref_frame1
         && n4w >= 2
         && n4h >= 2
@@ -689,8 +689,8 @@ pub(super) fn compound_local_warp_models(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     ref_frame1: i8,
-    mv0: Mv,
-    mv1: Mv,
+    mv0: MotionVector,
+    mv1: MotionVector,
 ) -> Result<[Option<[i32; 6]>; 2]> {
     let model0 = compound_ref_warp_model(mv_grid, block_ctx, block_ctx.ref_frame0, mv0)?;
     let model1 = compound_ref_warp_model(mv_grid, block_ctx, ref_frame1, mv1)?;
@@ -701,7 +701,7 @@ fn compound_ref_warp_model(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     target_ref: i8,
-    mv: Mv,
+    mv: MotionVector,
 ) -> Result<Option<[i32; 6]>> {
     let samples = super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref);
     if samples.is_empty() {
@@ -726,9 +726,9 @@ fn compound_ref_warp_model(
 pub(super) fn compound_warp_blend(
     blend: mc::CompoundBlend,
     local_warp: bool,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
 ) -> mc::CompoundBlend {
-    if !local_warp && y_mode != CompoundYMode::GlobalGlobal {
+    if !local_warp && y_mode != CompoundMode::GlobalGlobal {
         return blend;
     }
     match blend {
@@ -754,7 +754,7 @@ fn read_compound_motion_mode_syntax(
 /// Input to the § 5.20.7.7 compound motion-vector difference reads.
 #[derive(Clone, Copy)]
 struct CompoundMvdInput {
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     use_amvd: bool,
     ref_mv_idx: usize,
     precision: BlockPrecisionRecord,
@@ -769,9 +769,9 @@ fn read_compound_mvd_syntax(
     symbols: &mut SymbolDecoder<'_>,
     input: CompoundMvdInput,
     tile_offset: ByteOffset,
-) -> Result<[Mv; 2]> {
+) -> Result<[MotionVector; 2]> {
     if !input.y_mode.has_newmv() {
-        return Ok([Mv::ZERO; 2]);
+        return Ok([MotionVector::ZERO; 2]);
     }
     let config = MvReadConfig::inter(input.precision.mv_precision);
     let threshold = input.y_mode.mvd_sign_derivation_threshold();
@@ -784,16 +784,16 @@ fn read_compound_mvd_syntax(
                 config,
             );
     match input.y_mode {
-        CompoundYMode::NearNew | CompoundYMode::NewNear => {
+        CompoundMode::NearNew | CompoundMode::NewNear => {
             let magnitude =
                 read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
             let diff =
                 apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, threshold)?;
-            let mut mvd = [Mv::ZERO; 2];
-            mvd[usize::from(input.y_mode == CompoundYMode::NearNew)] = diff;
+            let mut mvd = [MotionVector::ZERO; 2];
+            mvd[usize::from(input.y_mode == CompoundMode::NearNew)] = diff;
             Ok(mvd)
         }
-        CompoundYMode::JointNew => {
+        CompoundMode::JointNew => {
             let magnitude =
                 read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
             let diff = apply_inter_mvd_signs(
@@ -804,9 +804,9 @@ fn read_compound_mvd_syntax(
                 derive_sign,
                 threshold,
             )?;
-            Ok([diff, Mv::ZERO])
+            Ok([diff, MotionVector::ZERO])
         }
-        CompoundYMode::NewNew => {
+        CompoundMode::NewNew => {
             let magnitude0 =
                 read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
             let magnitude1 =
@@ -822,7 +822,7 @@ fn read_compound_mvd_syntax(
             )?;
             Ok([diff0, diff1])
         }
-        CompoundYMode::NearNear | CompoundYMode::GlobalGlobal => Ok([Mv::ZERO; 2]),
+        CompoundMode::NearNear | CompoundMode::GlobalGlobal => Ok([MotionVector::ZERO; 2]),
     }
 }
 
@@ -832,7 +832,7 @@ fn read_compound_mvd_magnitude(
     use_amvd: bool,
     config: MvReadConfig,
     tile_offset: ByteOffset,
-) -> Result<Mv> {
+) -> Result<MotionVector> {
     if use_amvd {
         read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)
     } else {
@@ -859,8 +859,9 @@ pub(super) const fn compound_deblock_sub_pu_size(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn append_compound_temporal_motion(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn append_compound_temporal_motion<B: splot_core::simd::SimdBackend>(
+    backend: B,
     records: &mut Vec<TemporalMotionBlock>,
     reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
@@ -889,7 +890,7 @@ pub(super) fn append_compound_temporal_motion(
             let mvs = if let Some(motion) = motion {
                 motion.temporal_mvs_at_luma_offset(x, y)?
             } else {
-                let unit_mv = |params: Option<[i32; 6]>, block_mv: Mv| {
+                let unit_mv = |params: Option<[i32; 6]>, block_mv: MotionVector| {
                     params.map_or(block_mv, |params| {
                         super::super::find_mv_stack::warp_sub_mv_at(
                             params,
@@ -906,6 +907,7 @@ pub(super) fn append_compound_temporal_motion(
                 ]
             };
             let allowed = wedge_temporal_allowed_lists(
+                backend,
                 block.compound_blend,
                 placed.luma_w(),
                 placed.luma_h(),
@@ -913,8 +915,8 @@ pub(super) fn append_compound_temporal_motion(
                 y,
             )?;
             let (ref_frame0, ref_frame1, mvs) = match allowed {
-                [true, false] => (block.ref_frame0, None, [mvs[0], Mv::ZERO]),
-                [false, true] => (ref_frame1, None, [mvs[1], Mv::ZERO]),
+                [true, false] => (block.ref_frame0, None, [mvs[0], MotionVector::ZERO]),
+                [false, true] => (ref_frame1, None, [mvs[1], MotionVector::ZERO]),
                 _ => (block.ref_frame0, Some(ref_frame1), mvs),
             };
             let record = temporal_motion_block(
@@ -939,7 +941,8 @@ pub(super) fn append_compound_temporal_motion(
     Ok(())
 }
 
-fn wedge_temporal_allowed_lists(
+fn wedge_temporal_allowed_lists<B: splot_core::simd::SimdBackend>(
+    backend: B,
     blend: mc::CompoundBlend,
     luma_width: usize,
     luma_height: usize,
@@ -949,7 +952,7 @@ fn wedge_temporal_allowed_lists(
     let mc::CompoundBlend::Wedge { index, sign } = blend else {
         return Ok([true; 2]);
     };
-    wedge_dominant_lists(luma_width, luma_height, (index, sign), x, y)
+    wedge_dominant_lists(backend, luma_width, luma_height, (index, sign), x, y)
 }
 
 /// The lists that keep a temporal record of the 8x8 unit at `(x, y)` of a
@@ -958,7 +961,8 @@ fn wedge_temporal_allowed_lists(
 /// most 64.
 #[cold]
 #[inline(never)]
-fn wedge_dominant_lists(
+fn wedge_dominant_lists<B: splot_core::simd::SimdBackend>(
+    backend: B,
     luma_width: usize,
     luma_height: usize,
     (index, sign): (u8, bool),
@@ -967,7 +971,8 @@ fn wedge_dominant_lists(
 ) -> Result<[bool; 2]> {
     use fearless_simd::{prelude::*, u8x16};
     let unit = wedge_mask_unit(luma_width, luma_height, (usize::from(index), sign), (x, y))?;
-    let dominant = crate::baseline_simd!(simd => {
+    let narrow = backend.narrow();
+    let dominant = splot_core::with_simd!(narrow, simd => {
         let (one, zero) = (u8x16::splat(simd, 1), u8x16::splat(simd, 0));
         let (mut first, mut second) = (zero, zero);
         for lanes in unit.as_chunks::<16>().0 {
@@ -1028,14 +1033,14 @@ pub(super) fn decode_skip_mode_inter_block(
         frontier,
         InterBlockSyntax {
             motion: InterMotionSyntax::Compound(CompoundMotionSyntax {
-                y_mode: CompoundYMode::NearNear,
+                y_mode: CompoundMode::NearNear,
                 ref_frame1,
                 skip_mode: true,
                 use_optflow: false,
                 local_warp: false,
                 ref_mv_idx: ref_mv_idx as u8,
                 independent_idx: None,
-                mvd: [Mv::ZERO; 2],
+                mvd: [MotionVector::ZERO; 2],
                 joint: None,
                 jmvd_scale_mode: 0,
                 temporal_allowed: true,
@@ -1062,7 +1067,7 @@ pub(super) fn decode_skip_mode_inter_block(
 
 /// The § 5.20.7.10 `skip_mode_frames` reference pair of a skip-mode block
 /// whose neighbours give `neighbour_ctx`; the encoder facade calls it too.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the parse path of the parent with the facade as second caller"
 )]
@@ -1133,7 +1138,7 @@ pub(super) fn compound_switchable_opfl_reachable(
     n4w: usize,
     n4h: usize,
 ) -> Result<bool> {
-    if compound.y_mode == CompoundYMode::GlobalGlobal {
+    if compound.y_mode == CompoundMode::GlobalGlobal {
         return Ok(false);
     }
     if opfl_refine_type != REFINE_SWITCHABLE || !compound_opfl_block_size_allowed(n4w, n4h) {
@@ -1145,7 +1150,7 @@ pub(super) fn compound_switchable_opfl_reachable(
 fn read_compound_use_optflow_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
 ) -> bool {
     let rows = cdfs.block_rows_mut().use_optflow();
     read_row(symbols, row_at(rows, use_optflow_ctx(y_mode))) != 0
@@ -1154,14 +1159,14 @@ fn read_compound_use_optflow_syntax(
 /// The § 8.3.2 `use_refinemv` context `1 + (YMode - NEAR_NEARMV) + 6 *
 /// use_optflow`, reduced by one for optical-flow modes past
 /// `GLOBAL_GLOBALMV`.
-pub(super) const fn use_refinemv_ctx(y_mode: CompoundYMode, use_optflow: bool) -> usize {
+pub(super) const fn use_refinemv_ctx(y_mode: CompoundMode, use_optflow: bool) -> usize {
     let mode_delta = match y_mode {
-        CompoundYMode::NearNear => 0usize,
-        CompoundYMode::NearNew => 1,
-        CompoundYMode::NewNear => 2,
-        CompoundYMode::GlobalGlobal => 3,
-        CompoundYMode::NewNew => 4,
-        CompoundYMode::JointNew => 5,
+        CompoundMode::NearNear => 0usize,
+        CompoundMode::NearNew => 1,
+        CompoundMode::NewNear => 2,
+        CompoundMode::GlobalGlobal => 3,
+        CompoundMode::NewNew => 4,
+        CompoundMode::JointNew => 5,
     };
     let ctx = 1 + mode_delta + 6 * use_optflow as usize;
     if use_optflow && mode_delta > 3 {
@@ -1172,8 +1177,8 @@ pub(super) const fn use_refinemv_ctx(y_mode: CompoundYMode, use_optflow: bool) -
 }
 
 /// The § 5.20.7.6 `use_optflow` context: `0` for `NEAR_NEARMV`.
-pub(super) fn use_optflow_ctx(y_mode: CompoundYMode) -> usize {
-    usize::from(y_mode != CompoundYMode::NearNear)
+pub(super) fn use_optflow_ctx(y_mode: CompoundMode) -> usize {
+    usize::from(y_mode != CompoundMode::NearNear)
 }
 
 /// AV2 § 5.20.7.17 switchable `use_refinemv` read over
@@ -1181,7 +1186,7 @@ pub(super) fn use_optflow_ctx(y_mode: CompoundYMode) -> usize {
 fn read_compound_use_refinemv_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     use_optflow: bool,
 ) -> bool {
     let rows = cdfs.block_rows_mut().use_refinemv();
@@ -1195,16 +1200,15 @@ const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlo
 pub(super) fn select_near_near_candidates(
     independent_indices: Option<[usize; 2]>,
     paired_idx: usize,
-    paired: impl FnOnce(usize) -> [Mv; 2],
-    independent: impl FnOnce([usize; 2]) -> [Mv; 2],
-) -> [Mv; 2] {
+    paired: impl FnOnce(usize) -> [MotionVector; 2],
+    independent: impl FnOnce([usize; 2]) -> [MotionVector; 2],
+) -> [MotionVector; 2] {
     match independent_indices {
         Some(indices) => independent(indices),
         None => paired(paired_idx),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn compound_all_opfl_reachable(
     opfl_refine_type: u32,
     facts: &FrameRefFacts,
@@ -1227,7 +1231,7 @@ fn compound_all_opfl_block_allowed(
     blend: mc::CompoundBlend,
 ) -> bool {
     compound_opfl_block_size_allowed(n4w, n4h)
-        && compound.y_mode != CompoundYMode::GlobalGlobal
+        && compound.y_mode != CompoundMode::GlobalGlobal
         && matches!(blend, mc::CompoundBlend::Average { .. })
         && blend.cwp_weight() == mc::CWP_EQUAL
 }
@@ -1248,7 +1252,6 @@ fn compound_opfl_reference_allowed(
     Ok((d0 <= 0) ^ (d1 <= 0))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn compound_refinemv_reachable(
     enable_refinemv: bool,
     opfl_refine_type: u32,
@@ -1274,7 +1277,7 @@ const fn compound_refinemv_mode_allowed(
     compound: super::super::compound::CompoundBlockSyntax,
     opfl_refine_type: u32,
 ) -> bool {
-    !(matches!(compound.y_mode, CompoundYMode::GlobalGlobal)
+    !(matches!(compound.y_mode, CompoundMode::GlobalGlobal)
         || opfl_refine_type == REFINE_SWITCHABLE
             && compound.y_mode.has_newmv()
             && !compound.use_optflow)
@@ -1284,8 +1287,8 @@ pub(super) fn compound_refinemv_is_switchable(
     compound: super::super::compound::CompoundBlockSyntax,
     opfl_refine_type: u32,
 ) -> bool {
-    compound.y_mode != CompoundYMode::NearNear
-        && !(compound.y_mode == CompoundYMode::JointNew
+    compound.y_mode != CompoundMode::NearNear
+        && !(compound.y_mode == CompoundMode::JointNew
             && compound.use_optflow
             && opfl_refine_type == REFINE_SWITCHABLE)
 }
@@ -1360,11 +1363,11 @@ fn compound_joint_mv_projection_from_order_hints(
     }
 }
 
-pub(super) fn project_joint_mvd(diff: Mv, num: i32, den: i32) -> Mv {
+pub(super) fn project_joint_mvd(diff: MotionVector, num: i32, den: i32) -> MotionVector {
     let num = num.clamp(-31, 31);
     let den = den.clamp(1, 31);
     let frac = i64::from(num) * i64::from(MV_PROJECTION_DIV_MULT[den as usize]);
-    Mv {
+    MotionVector {
         row: project_joint_mvd_component(diff.row, frac),
         col: project_joint_mvd_component(diff.col, frac),
     }
@@ -1377,10 +1380,10 @@ fn project_joint_mvd_component(component: i32, frac: i64) -> i32 {
 }
 
 pub(super) fn scale_joint_projected_mvd(
-    mut projected: Mv,
+    mut projected: MotionVector,
     jmvd_scale_mode: u8,
     use_amvd: bool,
-) -> Mv {
+) -> MotionVector {
     if use_amvd {
         match jmvd_scale_mode {
             1 => {
@@ -1405,8 +1408,8 @@ pub(super) fn scale_joint_projected_mvd(
     projected
 }
 
-pub(super) fn add_mv_clamped(pred: Mv, diff: Mv) -> Mv {
-    Mv {
+pub(super) fn add_mv_clamped(pred: MotionVector, diff: MotionVector) -> MotionVector {
+    MotionVector {
         row: mv_clamp_to_integer(pred.row.saturating_add(diff.row)),
         col: mv_clamp_to_integer(pred.col.saturating_add(diff.col)),
     }
@@ -1416,7 +1419,7 @@ fn read_compound_use_amvd_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     enable_adaptive_mvd: bool,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     use_optflow: bool,
     ctx: usize,
     tile_offset: ByteOffset,
@@ -1435,7 +1438,7 @@ fn read_compound_use_amvd_syntax(
 /// `None` where the decoder reads no `use_amvd`.
 pub(super) fn compound_use_amvd_selector(
     enable_adaptive_mvd: bool,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     use_optflow: bool,
     ctx: usize,
 ) -> Option<TileCdfSelector> {
@@ -1448,10 +1451,10 @@ pub(super) fn compound_use_amvd_selector(
 fn read_compound_jmvd_scale_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    y_mode: CompoundYMode,
+    y_mode: CompoundMode,
     use_amvd: bool,
 ) -> u8 {
-    if y_mode != CompoundYMode::JointNew {
+    if y_mode != CompoundMode::JointNew {
         return 0;
     }
     let rows = cdfs.block_rows_mut();
@@ -1497,7 +1500,7 @@ impl CompoundBlendToolConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CompoundCwpInput {
-    pub(super) y_mode: CompoundYMode,
+    pub(super) y_mode: CompoundMode,
     pub(super) jmvd_scale_mode: u8,
     pub(super) use_optflow: bool,
     pub(super) use_refinemv: bool,
@@ -1621,9 +1624,9 @@ pub(super) fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpI
         && matches!(input.blend, mc::CompoundBlend::Average { .. })
 }
 
-const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -> bool {
-    matches!(y_mode, CompoundYMode::NearNear)
-        || matches!(y_mode, CompoundYMode::JointNew) && jmvd_scale_mode == 0
+const fn compound_cwp_mode_allowed(y_mode: CompoundMode, jmvd_scale_mode: u8) -> bool {
+    matches!(y_mode, CompoundMode::NearNear)
+        || matches!(y_mode, CompoundMode::JointNew) && jmvd_scale_mode == 0
 }
 
 pub(super) fn compound_cwp_same_side(

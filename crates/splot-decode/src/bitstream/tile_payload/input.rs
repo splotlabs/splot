@@ -58,7 +58,6 @@ pub(crate) struct FrameCandidateCoeffFacts {
 }
 
 impl FrameCandidateCoeffFacts {
-    #[allow(clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
         enable_fsc: bool,
@@ -146,16 +145,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
             });
         }
         let use_bru = core.inter.as_ref().and_then(|inter| inter.use_bru) == Some(true);
-        let unsupported_bru_tools = core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr)
-            || core
-                .gdf_params
-                .as_ref()
-                .is_some_and(|gdf| gdf.gdf_frame_enable)
-            || core.allow_intrabc == Some(true);
-        if use_bru
-            && (unsupported_bru_tools
-                || core.inter.as_ref().and_then(|inter| inter.bru_inactive) != Some(false))
-        {
+        if use_bru && core.inter.as_ref().and_then(|inter| inter.bru_inactive) != Some(false) {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::BackwardReferenceUpdate,
             });
@@ -221,7 +211,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
     }
 
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) const fn new_for_test(
         obu_type: ObuType,
         frame_is_intra: bool,
@@ -326,7 +316,6 @@ pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
 }
 
 impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
         candidate: &'facts DecodePlannedObu,
@@ -372,10 +361,49 @@ pub(crate) enum FrameCandidateTileBoundaryError {
     Boundary(#[from] TilePayloadBoundaryError),
 }
 
+/// The planned-candidate field that disagrees with the parsed OBU envelope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EnvelopeField {
+    PayloadSource,
+    Offset,
+    Size,
+    Header,
+    PayloadLen,
+    Payload,
+    IvfFrame,
+}
+
+impl EnvelopeField {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::PayloadSource => "payload_source",
+            Self::Offset => "offset",
+            Self::Size => "size",
+            Self::Header => "header",
+            Self::PayloadLen => "payload_len",
+            Self::Payload => "payload",
+            Self::IvfFrame => "ivf_frame",
+        }
+    }
+
+    /// The stable reason code of a mismatch in this field.
+    pub(crate) const fn reason(self) -> &'static str {
+        match self {
+            Self::PayloadSource => "payload_source_mismatch",
+            Self::Offset => "candidate_offset_mismatch",
+            Self::Size => "candidate_size_mismatch",
+            Self::Header => "candidate_header_mismatch",
+            Self::PayloadLen => "candidate_payload_len_mismatch",
+            Self::Payload => "candidate_payload_mismatch",
+            Self::IvfFrame => "ivf_frame_mismatch",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileMalformed {
     CandidateEnvelopeMismatch {
-        field: &'static str,
+        field: EnvelopeField,
     },
     ObuSizeSmallerThanHeader {
         size: u32,
@@ -404,7 +432,7 @@ impl fmt::Display for FrameCandidateTileMalformed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CandidateEnvelopeMismatch { field } => {
-                write!(f, "candidate/envelope mismatch for {field}")
+                write!(f, "candidate/envelope mismatch for {}", field.name())
             }
             Self::ObuSizeSmallerThanHeader { size, header_size } => write!(
                 f,
@@ -442,9 +470,8 @@ pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
     IncompleteFrameHeader,
     NonIntraFrame,
-    /// A `use_bru == 1` frame whose § 7.20.1 loop restoration or GDF runs, or that
-    /// allows IntraBC: the § 7.20.1 superblock gate and the § 5.20.4.1
-    /// `update_ibc_buffers` reset of non-active superblocks are not applied.
+    /// A `use_bru == 1` frame whose `bru_inactive != 0` header belongs on the
+    /// § 7.2 inactive-frame copy path rather than tile decoding.
     BackwardReferenceUpdate,
 }
 
@@ -586,21 +613,21 @@ fn validate_candidate(
         });
     }
     if candidate.offset() != envelope.offset {
-        return mismatch("offset");
+        return mismatch(EnvelopeField::Offset);
     }
     if candidate.size() != envelope.size {
-        return mismatch("size");
+        return mismatch(EnvelopeField::Size);
     }
     if candidate.header() != envelope.header {
-        return mismatch("header");
+        return mismatch(EnvelopeField::Header);
     }
 
     let payload_len = declared_payload_len(envelope)?;
     if candidate.payload_len() != payload_len {
-        return mismatch("payload_len");
+        return mismatch(EnvelopeField::PayloadLen);
     }
     if envelope.payload.len() as u64 != payload_len {
-        return mismatch("payload");
+        return mismatch(EnvelopeField::Payload);
     }
     validate_envelope_payload_slice(input_bytes, envelope, payload_len)?;
 
@@ -609,12 +636,12 @@ fn validate_candidate(
     match candidate.source_kind() {
         DecodeObuSourceKind::AnnexB => {
             if candidate.ivf_frame().is_some() {
-                return mismatch("ivf_frame");
+                return mismatch(EnvelopeField::IvfFrame);
             }
         }
         DecodeObuSourceKind::Ivf => {
             let Some(frame) = candidate.ivf_frame() else {
-                return mismatch("ivf_frame");
+                return mismatch(EnvelopeField::IvfFrame);
             };
             let frame_start = frame.frame_payload_offset().get();
             let frame_end = frame_start
@@ -658,12 +685,12 @@ fn validate_envelope_payload_slice(
         ),
     )?;
     if !core::ptr::eq(expected, envelope.payload) {
-        return mismatch("payload_source");
+        return mismatch(EnvelopeField::PayloadSource);
     }
     Ok(())
 }
 
-fn mismatch<T>(field: &'static str) -> Result<T, FrameCandidateTileBoundaryError> {
+fn mismatch<T>(field: EnvelopeField) -> Result<T, FrameCandidateTileBoundaryError> {
     Err(FrameCandidateTileBoundaryError::Malformed(
         FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field },
     ))

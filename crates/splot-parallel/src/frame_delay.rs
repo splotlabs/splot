@@ -79,7 +79,6 @@ impl From<usize> for FrameDelay {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn nz(n: usize) -> NonZeroUsize {

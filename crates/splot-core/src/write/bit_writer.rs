@@ -316,7 +316,7 @@ impl BitWriter {
     /// Returns [`WriteError::ZeroWidth`] if `n == 0`, or
     /// [`WriteError::ValueOutOfRange`] if `value >= n` (the descriptor encodes
     /// `0 ..= n - 1`).
-    #[allow(clippy::many_single_char_names)]
+    #[expect(clippy::many_single_char_names)]
     pub fn write_ns(&mut self, value: u32, n: u32) -> WriteResult<()> {
         if n == 0 {
             return Err(WriteError::ZeroWidth { descriptor: "ns" });
@@ -467,7 +467,6 @@ impl BitWriter {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
@@ -771,7 +770,6 @@ mod tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod proptests {
     use super::*;
     use crate::bitio::BitReader;

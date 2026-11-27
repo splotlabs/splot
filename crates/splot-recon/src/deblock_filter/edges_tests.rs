@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use super::super::{
@@ -263,10 +261,24 @@ fn check_portable(
         let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
         if vertical {
             portable_chunk::<_, u16, true>(simd, &mut portable, stride, start, chunk, max_sample);
-            u16::chunk::<true>(&mut dispatched, stride, start, chunk, max_sample);
+            u16::chunk::<_, true>(
+                BaselineDeblock,
+                &mut dispatched,
+                stride,
+                start,
+                chunk,
+                max_sample,
+            );
         } else {
             portable_chunk::<_, u16, false>(simd, &mut portable, stride, start, chunk, max_sample);
-            u16::chunk::<false>(&mut dispatched, stride, start, chunk, max_sample);
+            u16::chunk::<_, false>(
+                BaselineDeblock,
+                &mut dispatched,
+                stride,
+                start,
+                chunk,
+                max_sample,
+            );
         }
         assert_eq!(portable, dispatched);
         if bit_depth == BitDepth::Eight {

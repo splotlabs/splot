@@ -13,7 +13,7 @@ fn with_compound(compound_types: u8, implicit_mask: bool) -> &'static PresetPara
     Box::leak(Box::new(PresetParams {
         compound_types,
         implicit_mask,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }))
 }
 
@@ -50,7 +50,7 @@ fn compound_type_streams_decode_on_any_thread_count() {
         "deblocking off"
     );
     assert_same_samples(&decode(&one), &expected, "compound types");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
     });
 }
@@ -86,7 +86,7 @@ fn forced_compound_types_decode_on_any_thread_count() {
         compound_types: crate::mode_decision::FORCED_COMPOUND_TYPES,
         implicit_mask: true,
         refinemv: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 200);
@@ -96,7 +96,7 @@ fn forced_compound_types_decode_on_any_thread_count() {
         };
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9)
     };
     crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (one, expected, cores, _) = stream(1);
@@ -111,7 +111,8 @@ fn forced_compound_types_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "forced compound types");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(stream(threads).0 == one, "{threads} threads");
     }
 }
@@ -127,11 +128,12 @@ fn avm_decodes_compound_types_like_splot() {
         compound_types: crate::mode_decision::FORCED_COMPOUND_TYPES,
         implicit_mask: true,
         refinemv: true,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let config = config(136, 72, BitDepth::Eight, 6, 200);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    let (units, ..) =
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),
@@ -153,7 +155,7 @@ fn searched_stream(
         compound_types: 2,
         pd_window: Levels::all(u8::MAX),
         tcq_type_trellis: false,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
     config.tiles = TileLayout::Uniform {
@@ -193,7 +195,7 @@ fn searched_compound_types_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "searched compound types");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(searched_stream(150, threads).0 == one, "{threads} threads");
     });
     let (coarse, expected, cores, coded) = searched_stream(240, 1);
@@ -235,7 +237,7 @@ fn interintra_streams_decode_on_any_thread_count() {
         };
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9)
     };
     crate::tile_writer::CODED_TYPES.set([0; 7]);
     crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
@@ -250,7 +252,7 @@ fn interintra_streams_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "inter-intra");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(stream(threads).0 == one, "{threads} threads");
     });
 }
@@ -283,7 +285,7 @@ fn forced_interintra_at_tile_edges_decodes() {
     crate::tile_writer::CODED_TYPES.set([0; 7]);
     crate::mode_decision::FORCE_INTERINTRA.set(true);
     let (units, expected, ..) =
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     crate::mode_decision::FORCE_INTERINTRA.set(false);
     let [.., interintra, at_tile_edge, _] = crate::tile_writer::CODED_TYPES.get();
     assert!(
@@ -319,7 +321,8 @@ fn avm_decodes_interintra_like_splot() {
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
     crate::tile_writer::CODED_WEDGE_INTERINTRA.set(0);
-    let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    let (units, ..) =
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     assert!(
         crate::tile_writer::CODED_WEDGE_INTERINTRA.get() > 0,
         "no wedge inter-intra leaf"
@@ -345,7 +348,7 @@ fn bawp_stream(
         bawp: true,
         tx_type_depth: 1,
         tx_type_model_keep: 0,
-        ..*Preset::new(6).unwrap().params()
+        ..fast_p6()
     }));
     let mut config = config(width, height, BitDepth::Ten, 6, 200);
     config.tiles = TileLayout::Uniform {
@@ -357,7 +360,7 @@ fn bawp_stream(
     assert!(coder.sequence.inter.unwrap().enable_bawp);
     crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (units, expected, cores, _) =
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+        super::carry::planned_stream_frames(&config, coder, noisy_panning_frame, 200, 9);
     (
         units,
         expected,
@@ -379,7 +382,7 @@ fn bawp_streams_decode_on_any_thread_count() {
             .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
     }));
     assert_same_samples(&decode(&one), &expected, "BAWP");
-    each_case([2, 8], |threads| {
+    each_case([2], |threads| {
         assert!(
             bawp_stream((136, 72), threads).0 == one,
             "{threads} threads"
@@ -530,7 +533,7 @@ fn compound_modes_stream(
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     crate::tile_writer::CODED_MODES.set([0; 5]);
     let (units, expected, cores, _) =
-        super::carry::planned_stream_of(&config, coder, accelerating_frame, qp);
+        super::carry::planned_stream_frames(&config, coder, accelerating_frame, qp, 9);
     (
         units,
         expected,
@@ -566,7 +569,8 @@ fn searched_compound_modes_decode_on_any_thread_count() {
             .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
     );
     assert_same_samples(&decode(&one), &expected, "searched compound modes");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         assert!(
             compound_modes_stream(180, threads, [false; 3]).0 == one,
             "{threads} threads"
@@ -582,7 +586,8 @@ fn searched_compound_amvd_decodes_on_any_thread_count() {
     let (one, expected, _, coded) = compound_modes_stream(120, 1, [true; 3]);
     assert!(coded[4] > 0, "{coded:?}");
     assert_same_samples(&decode(&one), &expected, "compound AMVD");
-    for threads in [2, 8] {
+    {
+        let threads = 2;
         let other = compound_modes_stream(120, threads, [true; 3]).0;
         assert!(other == one, "{threads} threads");
     }

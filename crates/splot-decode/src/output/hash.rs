@@ -7,23 +7,23 @@
 
 use core::num::NonZeroUsize;
 
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
+use splot_core::simd::SimdBackend;
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::UnitSource;
 use crate::error::Result;
-use crate::hash_report::{
-    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
-};
+use crate::hash_report::{DecodeHashEntry, DecodeHashFrame, DecodeHashReport};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn decode_hash_report_from_plan(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
-    let report_frames = decode_hash_frames(source, options, session)?;
+    let report_frames = decode_hash_frames(backend, source, options, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -33,6 +33,7 @@ pub(crate) fn decode_hash_report_from_plan(
 
 /// Hashes each decoded frame as the driver emits it.
 fn decode_hash_frames(
+    backend: impl SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -40,13 +41,13 @@ fn decode_hash_frames(
     let mut completed = Vec::new();
     let mut emitted = 0u64;
     crate::pipeline::emit_frames(
+        backend,
         source,
         options,
         session,
         |_| Ok(()),
         |output| {
-            let ready = output.ready_frame()?;
-            completed.push(hash_pipeline_frame(&ready, emitted));
+            completed.push(hash_pipeline_frame(output, emitted)?);
             emitted += 1;
             Ok(())
         },
@@ -59,23 +60,27 @@ fn decode_hash_frames(
 /// `emitted` is the frame's 0-based emission ordinal, counted where the driver
 /// hands the frame to the report; frame pipelining may finish frames out of
 /// order, but it never reorders emission.
-fn hash_pipeline_frame(frame: &PipelineDecodedFrame, emitted: u64) -> DecodeHashFrame {
-    match frame {
+fn hash_pipeline_frame(
+    output: &crate::pipeline::PipelineFrame,
+    emitted: u64,
+) -> Result<DecodeHashFrame> {
+    Ok(match output.ready_frame()? {
         PipelineDecodedFrame::Eight(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted, output)
         }
         PipelineDecodedFrame::Ten(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted, output)
         }
-    }
+    })
 }
 
 fn hash_frame_from_decoded<T: ReconSample>(
     frame: &DecodedFrame<T>,
     digest_hex: String,
     emitted: u64,
+    output: &crate::pipeline::PipelineFrame,
 ) -> DecodeHashFrame {
     let visible = frame.visible_luma_rect();
     let chroma = frame
@@ -85,6 +90,9 @@ fn hash_frame_from_decoded<T: ReconSample>(
         .flatten();
     DecodeHashFrame {
         output_index: emitted,
+        extended_layer_id: output.extended_layer_id,
+        embedded_layer_id: output.embedded_layer_id,
+        atlas_associations: output.output_effects.atlas.clone(),
         visible_luma_left: visible.x() as u32,
         visible_luma_top: visible.y() as u32,
         visible_luma_width: visible.width() as u32,
@@ -96,17 +104,8 @@ fn hash_frame_from_decoded<T: ReconSample>(
         chroma_width: chroma.map(|size| size.width() as u32),
         chroma_height: chroma.map(|size| size.height() as u32),
         bit_depth: frame.bit_depth().bits(),
-        pixel_format: decode_hash_pixel_format(frame.pixel_format()),
+        pixel_format: frame.pixel_format(),
         hashes: vec![DecodeHashEntry::raw_intermediate_output_sha256(digest_hex)],
-    }
-}
-
-fn decode_hash_pixel_format(pixel_format: PixelFormat) -> DecodeHashPixelFormat {
-    match pixel_format {
-        PixelFormat::Monochrome => DecodeHashPixelFormat::Monochrome,
-        PixelFormat::Yuv420 => DecodeHashPixelFormat::Yuv420,
-        PixelFormat::Yuv422 => DecodeHashPixelFormat::Yuv422,
-        PixelFormat::Yuv444 => DecodeHashPixelFormat::Yuv444,
     }
 }
 

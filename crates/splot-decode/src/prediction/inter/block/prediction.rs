@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
+use splot_recon::CurrentFrameSurface;
 
 /// § 7.11.3.1 disables compound chroma prediction in two cases: the § 5.20.4
 /// `sub8x8Inter` mismatch between the block and its chroma reference, and any
@@ -80,8 +81,9 @@ pub(super) fn placed_inter_block_at<B>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -100,6 +102,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     let rect = placed.motion_compensation_rect();
     if let Some(prediction) = placed.block.interintra {
         super::predict_interintra_planes(
+            backend,
             interintra_scratch,
             workspace,
             placed,
@@ -111,13 +114,15 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
     held.predict_into(
-        &mut mc::WorkspaceSink::Frame(workspace),
+        backend,
+        &mut CurrentFrameSurface::Frame(workspace),
         placed,
         rect,
         tile_offset,
     )?;
     if placed.block.bawp.enabled {
         super::super::bawp::apply_bawp(
+            backend,
             workspace,
             held.reference0_samples(),
             placed,
@@ -130,7 +135,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {
                 InterIntraPrediction::SmoothMask { mode } => workspace
-                    .blend_smooth_interintra_rect(
+                    .blend_smooth_interintra_rect_with(
+                        backend,
                         prediction.plane,
                         prediction.x,
                         prediction.y,
@@ -139,7 +145,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         samples,
                     ),
                 InterIntraPrediction::WedgeMask { wedge_index, .. } => workspace
-                    .blend_wedge_interintra_rect(
+                    .blend_wedge_interintra_rect_with(
+                        backend,
                         prediction.plane,
                         prediction.x,
                         prediction.y,
@@ -155,9 +162,12 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             blend?;
         }
     }
+    #[cfg(feature = "block-evidence")]
+    capture_inter_prediction(&CurrentFrameSurface::Frame(workspace), placed);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            &mut mc::WorkspaceSink::Frame(workspace),
+            backend,
+            &mut CurrentFrameSurface::Frame(workspace),
             residual,
             residual_blocks,
             residual_coeffs,
@@ -173,9 +183,10 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 /// Reconstructs one deferable inter block (no interintra, no BAWP, no
 /// current-frame reads, no refined motion) into `sink`: motion compensation,
 /// then residual add.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+#[expect(clippy::too_many_arguments)]
+pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -188,9 +199,18 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let held = super::super::hold_inter_block_references(lists, reference, placed)?;
-    held.predict_into(sink, placed, placed.motion_compensation_rect(), tile_offset)?;
+    held.predict_into(
+        backend,
+        sink,
+        placed,
+        placed.motion_compensation_rect(),
+        tile_offset,
+    )?;
+    #[cfg(feature = "block-evidence")]
+    capture_inter_prediction(sink, placed);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            backend,
             sink,
             residual,
             residual_blocks,
@@ -208,9 +228,10 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
 /// refine-MV, § 7.13.3.8 optical flow) in one pass: the luma motion of every
 /// unit into `units`, then `records` from it (§ 7.22), then with `predict`
 /// every plane from it into `sink`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn predict_refined_inter_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+#[expect(clippy::too_many_arguments)]
+pub(super) fn predict_refined_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,
     (use_refinemv, refinemv_switchable): (bool, bool),
@@ -226,10 +247,37 @@ pub(super) fn predict_refined_inter_block<T: ReconSample>(
         .with_switchable_refinemv(refinemv_switchable)
         .into_compound()
         .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
-    mc::refine_block_units(sink, &block, units, tile_offset)?;
+    mc::refine_block_units(backend, sink, &block, units, tile_offset)?;
     records(units)?;
     if predict {
-        mc::predict_refined_block(sink, &block, units, tile_offset)?;
+        mc::predict_refined_block(backend, sink, &block, units, tile_offset)?;
     }
     Ok(())
+}
+
+#[cfg(feature = "block-evidence")]
+pub(super) fn capture_inter_prediction<T: ReconSample>(
+    sink: &CurrentFrameSurface<'_, '_, T>,
+    placed: &PlacedInterBlock,
+) {
+    use crate::block_evidence::stages;
+    let Some(plane) = stages::selected_plane() else {
+        return;
+    };
+    let format = sink.info().pixel_format();
+    let chroma = plane != ReconPlaneId::Y;
+    if chroma && !placed.predict_chroma {
+        return;
+    }
+    let (x, y, width, height) = placed.motion_compensation_rect().plane_rect(
+        plane,
+        u32::from(u8::from(chroma) * format.subsampling_x()),
+        u32::from(u8::from(chroma) * format.subsampling_y()),
+    );
+    if let Ok(rect) = splot_recon::PlaneRect::new(x, y, width, height) {
+        stages::surface_prediction(sink, plane, rect);
+        if placed.block.residual.is_none() {
+            stages::skip_residual(plane, Some(rect));
+        }
+    }
 }

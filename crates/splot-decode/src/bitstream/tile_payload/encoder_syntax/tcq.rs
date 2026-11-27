@@ -7,12 +7,12 @@
 
 use std::borrow::Cow;
 
-use super::super::coeff_loop::max_level::CoeffTransformClass;
 use super::super::coeff_loop::quant_state::{
     CoeffQuantReadInput, CoeffQuantStateAccumulator, CoeffQuantStateConfig, next_tcq_state,
 };
 use super::super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::{EncoderSyntaxError, IntraTileSyntax, Result, TransformBlock, coefficient_scan, rule};
+use splot_recon::TransformClass;
 
 /// The number of `tcqState` values.
 pub const TCQ_STATES: usize = 8;
@@ -58,8 +58,7 @@ impl IntraTileSyntax {
         self.tools.tcq
             && !self.tools.scalar_trial
             && tx.plane == 0
-            && CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize)
-                == CoeffTransformClass::TwoD
+            && splot_recon::tx_class(tx.tx_type as usize) == TransformClass::TwoD
             && !(self.tools.enable_fsc && self.uses_fsc(tx))
     }
 

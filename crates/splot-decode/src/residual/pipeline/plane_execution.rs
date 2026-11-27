@@ -18,6 +18,8 @@ use crate::bitstream::tile_payload::{
     luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
     luma_transform_records_for_partition, read_intra_luma_tx_partition,
 };
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::DecodedTransformUnit;
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
 use super::transform_units::tx_size_log2;
@@ -133,7 +135,7 @@ impl ResidualPlaneArena {
     }
 
     /// Reads each planned plane into the arena in syntax order.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         &mut self,
         block_ctx: BlockCtx,
@@ -216,7 +218,7 @@ impl ResidualPlanePlan {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn parse(
         &self,
         frame: FrameTileCtx,
@@ -333,7 +335,7 @@ impl ResidualPlanePlan {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(never)]
     fn parse_lossless_transform_units(
         &self,
@@ -407,7 +409,7 @@ impl ResidualPlanePlan {
         )?))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     #[inline(never)]
     fn parse_partitioned_luma(
         &self,
@@ -507,9 +509,50 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct<T: ReconSample>(
+    #[cfg(feature = "block-evidence")]
+    pub(crate) fn visit_transform_units(
         &self,
+        arena: &ResidualPlaneArena,
+        mut visit: impl FnMut(DecodedTransformUnit<'_>),
+    ) {
+        let mut cctx_u = None;
+        for plane in &arena.planes[self.planes.start as usize..self.planes.end as usize] {
+            let plane_id = plane.plane.plane_id;
+            match &plane.kind {
+                ParsedResidualPlaneKind::Single { coeffs, .. } => {
+                    if plane_id == PlaneId::U {
+                        cctx_u = Some(coeffs);
+                    }
+                    visit(DecodedTransformUnit {
+                        plane: plane_id,
+                        x: plane.plane.x as usize,
+                        y: plane.plane.y as usize,
+                        tx_size: plane.plane.tx_size,
+                        coeffs,
+                        cctx_u: if plane_id == PlaneId::Y { None } else { cctx_u },
+                    });
+                }
+                ParsedResidualPlaneKind::Lossless(units)
+                | ParsedResidualPlaneKind::PartitionedLuma(units) => {
+                    for unit in &arena.units[units.start as usize..units.end as usize] {
+                        visit(DecodedTransformUnit {
+                            plane: plane_id,
+                            x: unit.block.x as usize,
+                            y: unit.block.y as usize,
+                            tx_size: unit.block.tx_size,
+                            coeffs: &unit.block.coeffs,
+                            cctx_u: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+        &self,
+        backend: B,
         arena: &mut ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -543,6 +586,7 @@ impl ParsedGeneralIntraResidual {
                         });
                     };
                     reconstruct_chroma_pair(
+                        backend,
                         frame,
                         scratch,
                         workspace,
@@ -562,6 +606,7 @@ impl ParsedGeneralIntraResidual {
                 deferred = true;
             } else {
                 plane.reconstruct(
+                    backend,
                     frame,
                     scratch,
                     workspace,
@@ -577,6 +622,7 @@ impl ParsedGeneralIntraResidual {
         }
         if let Some(u) = pending_u {
             reconstruct_chroma_pair(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -591,6 +637,7 @@ impl ParsedGeneralIntraResidual {
         }
         if deferred {
             reconstruct_deferred_planes(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -637,9 +684,10 @@ impl ParsedResidualPlane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct<T: ReconSample>(
+    #[expect(clippy::too_many_arguments)]
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -660,6 +708,7 @@ impl ParsedResidualPlane {
                 let palette_color_map =
                     super::palette::take_stored_palette_map(palette_maps, *palette_color_map)?;
                 plane.reconstruct(
+                    backend,
                     frame,
                     scratch,
                     workspace,
@@ -689,6 +738,7 @@ impl ParsedResidualPlane {
                         unit.palette_color_map,
                     )?;
                     plan.reconstruct(
+                        backend,
                         frame,
                         scratch,
                         workspace,
@@ -729,8 +779,9 @@ impl ParsedResidualPlane {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconstruct_chroma_pair<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn reconstruct_chroma_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -751,6 +802,7 @@ fn reconstruct_chroma_pair<T: ReconSample>(
         None => None,
     };
     chroma_pair::reconstruct_chroma_pair_or_planes(
+        backend,
         frame,
         scratch,
         workspace,
@@ -763,8 +815,9 @@ fn reconstruct_chroma_pair<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn reconstruct_deferred_planes<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn reconstruct_deferred_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -790,6 +843,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             && let Some(u) = pending_u.take()
         {
             reconstruct_chroma_pair(
+                backend,
                 frame,
                 scratch,
                 workspace,
@@ -804,6 +858,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             continue;
         }
         plane.reconstruct(
+            backend,
             frame,
             scratch,
             workspace,
@@ -818,6 +873,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
     }
     if let Some(u) = pending_u {
         reconstruct_chroma_pair(
+            backend,
             frame,
             scratch,
             workspace,

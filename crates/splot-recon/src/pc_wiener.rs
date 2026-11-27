@@ -22,10 +22,12 @@ use crate::PlaneId;
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::loop_restoration::PaddedRows;
+use crate::lr_madd::{BaselineLr, LrBackend, LrSimdOp, TypedLr};
 use crate::math::{round2_i32, round2_signed_i32};
 use crate::wienerns_filter::eight_bit::ByteLaneOutput;
 use crate::wienerns_filter::{FlatChunks, LumaSimdOutput, LumaSimdSource};
 use crate::{BitDepth, ReconError, ReconSample, Result};
+use splot_core::simd::SimdBackend;
 
 /// AV2 § 3 `PC_WIENER_NUM_FEATURES`.
 pub const PC_WIENER_NUM_FEATURES: usize = 4;
@@ -377,6 +379,7 @@ where
     let mut qval_offsets: QvalOffsetsCache = [[0; PC_WIENER_NUM_FEATURES]; QVAL_CACHE_LEN];
     prepare_qval_offsets_cache(params.base_q_idx, params.bit_depth, &mut qval_offsets)?;
     classify_grid_from_cache(
+        BaselineLr,
         params,
         cell_cols,
         cell_rows,
@@ -408,6 +411,7 @@ where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     classify_grid_padded_mapped_into(
+        BaselineLr,
         params,
         cell_cols,
         cell_rows,
@@ -442,9 +446,66 @@ where
 /// [`ReconError`] when the padded source cannot cover the classification
 /// region, and [`ReconError::PcWienerInvalidBounds`] for a span that breaks
 /// these rules.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline]
 pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    tx_skip: FT,
+    subclasses: &'static [u8; PC_WIENER_LUT_CLASSES],
+    scratch: &mut PcWienerClassifyScratch,
+    output: &'a mut Vec<u8>,
+) -> Result<&'a [u8]>
+where
+    T: ReconSample,
+    FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
+{
+    classify_grid_padded_classes_with_backend(
+        BaselineLr, params, cell_cols, cell_rows, source, tx_skip, subclasses, scratch, output,
+    )
+}
+
+/// Executes [`pc_wiener_classify_grid_padded_classes_into`] using startup-selected
+/// `backend`.
+///
+/// # Errors
+/// Returns the same errors as [`pc_wiener_classify_grid_padded_classes_into`].
+#[expect(clippy::too_many_arguments)]
+#[inline]
+pub fn pc_wiener_classify_grid_padded_classes_into_with<'a, 'g, B, T, FT>(
+    backend: B,
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    tx_skip: FT,
+    subclasses: &'static [u8; PC_WIENER_LUT_CLASSES],
+    scratch: &mut PcWienerClassifyScratch,
+    output: &'a mut Vec<u8>,
+) -> Result<&'a [u8]>
+where
+    B: SimdBackend,
+    T: ReconSample,
+    FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
+{
+    classify_grid_padded_classes_with_backend(
+        TypedLr(backend.narrow()),
+        params,
+        cell_cols,
+        cell_rows,
+        source,
+        tx_skip,
+        subclasses,
+        scratch,
+        output,
+    )
+}
+
+#[expect(clippy::too_many_arguments)]
+fn classify_grid_padded_classes_with_backend<'a, 'g, L, T, FT>(
+    backend: L,
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -455,6 +516,7 @@ pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
     output: &'a mut Vec<u8>,
 ) -> Result<&'a [u8]>
 where
+    L: LrBackend,
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
 {
@@ -471,6 +533,7 @@ where
         }
     }
     classify_grid_padded_mapped_into(
+        backend,
         params,
         cell_cols,
         cell_rows,
@@ -486,8 +549,9 @@ where
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
+#[expect(clippy::too_many_arguments)]
+fn classify_grid_padded_mapped_into<'a, 'g, L, T, FT, O>(
+    backend: L,
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -502,6 +566,7 @@ fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
     split_blocks: bool,
 ) -> Result<&'a [O]>
 where
+    L: LrBackend,
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
@@ -514,7 +579,7 @@ where
     }
     let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
     let region = padded_source_region(source, &geo)?;
-    validate_padded_u16_source(region, &geo, params.bit_depth)?;
+    validate_padded_u16_source(backend, region, &geo, params.bit_depth)?;
     let key = (params.base_q_idx, params.bit_depth);
     if *qval_cache_key != Some(key) {
         prepare_qval_offsets_cache(params.base_q_idx, params.bit_depth, qval_offsets)?;
@@ -523,6 +588,7 @@ where
     macro_rules! classify_rows {
         ($cast:expr) => {
             classify_grid_from_cache(
+                backend,
                 params,
                 cell_cols,
                 cell_rows,
@@ -682,7 +748,8 @@ fn padded_source_region<'a, T: ReconSample>(
         })
 }
 
-fn validate_padded_u16_source<T: ReconSample>(
+fn validate_padded_u16_source<L: LrBackend, T: ReconSample>(
+    backend: L,
     region: PaddedRows<'_, T>,
     geo: &ClassifyGridGeometry,
     bit_depth: BitDepth,
@@ -692,7 +759,7 @@ fn validate_padded_u16_source<T: ReconSample>(
         let Some(row_samples) = region.row(row, geo.source_width).and_then(T::u16_slice) else {
             continue;
         };
-        if crate::workspace::u16_samples_exceed(row_samples, max_sample)
+        if backend.u16_samples_exceed(row_samples, max_sample)
             && let Some(col) = row_samples.iter().position(|&value| value > max_sample)
         {
             return Err(ReconError::PcWienerSourceSampleOutOfRange {
@@ -706,8 +773,37 @@ fn validate_padded_u16_source<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn classify_grid_from_cache<'s, 'g, T, FR, FT, O>(
+struct ClassifyRowOp<'a, O> {
+    outer: &'a [u16],
+    window: &'a mut [u16],
+    row_sums: &'a [u8],
+    tables: (&'a QvalOffsetsCache, &'a [u8; PC_WIENER_LUT_INPUTS]),
+    bit_depth: BitDepth,
+    cells: &'a mut [O],
+}
+
+impl<O: ClassifiedCell> LrSimdOp<Option<()>> for ClassifyRowOp<'_, O> {
+    #[expect(
+        clippy::inline_always,
+        reason = "measured PC-Wiener classification hot path"
+    )]
+    #[inline(always)]
+    fn run<S: Simd>(self, simd: S) -> Option<()> {
+        window_rows(simd, self.outer, self.window);
+        classify_cells(
+            simd,
+            self.window,
+            self.row_sums,
+            self.tables,
+            self.bit_depth,
+            self.cells,
+        )
+    }
+}
+
+#[expect(clippy::too_many_arguments)]
+fn classify_grid_from_cache<'s, 'g, L, T, FR, FT, O>(
+    backend: L,
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -722,6 +818,7 @@ fn classify_grid_from_cache<'s, 'g, T, FR, FT, O>(
     split_blocks: bool,
 ) -> Result<()>
 where
+    L: LrBackend,
     T: LumaSimdSource + 's,
     FR: Fn(usize) -> Result<&'s [T]>,
     FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
@@ -753,6 +850,7 @@ where
         });
     }
     let skip_sums = tx_skip::window_sums(
+        backend,
         params,
         cell_cols,
         cell_rows,
@@ -788,7 +886,8 @@ where
             .ok_or_else(rows_missing)?;
         let (vertical, rest) = planes.split_at_mut(plane_width);
         let (anti_diag, diag) = rest.split_at_mut(plane_width);
-        pooled_feature_row(rows, [vertical, anti_diag, diag], &plan).ok_or_else(rows_missing)
+        pooled_feature_row(backend, rows, [vertical, anti_diag, diag], &plan)
+            .ok_or_else(rows_missing)
     };
     build_row(feature_rows, 0, 0)?;
     for (cell_row, (cells, row_sums)) in output
@@ -799,23 +898,23 @@ where
         build_row(feature_rows, 2, 2 * cell_row + 1)?;
         build_row(feature_rows, (cell_row + 1) & 1, 2 * cell_row + 2)?;
         let (outer, window) = feature_rows.split_at_mut(6 * plane_width);
-        crate::lr_madd::lr_simd!(simd => window_rows(simd, outer, window));
-        crate::lr_madd::lr_simd!(simd => classify_cells(
-            simd,
-            window,
-            row_sums,
-            (offsets_cache, lut),
-            params.bit_depth,
-            cells,
-        ))
-        .ok_or_else(rows_missing)?;
+        backend
+            .run(ClassifyRowOp {
+                outer,
+                window,
+                row_sums,
+                tables: (offsets_cache, lut),
+                bit_depth: params.bit_depth,
+                cells,
+            })
+            .ok_or_else(rows_missing)?;
     }
     Ok(())
 }
 
 /// Adds both outer pooled rows into the middle row. The last outer row
 /// becomes the first outer row of the next 6x6 window.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn window_rows<S: Simd>(simd: S, outer: &[u16], window: &mut [u16]) {
     let (a, b) = outer.split_at(outer.len() / 2);
@@ -834,7 +933,6 @@ fn window_rows<S: Simd>(simd: S, outer: &[u16], window: &mut [u16]) {
 /// Finishes the cells of a grid row from its window rows `window`, one per
 /// feature: cell `c` sums window columns `2c..2c + 3`, as one pair sum and
 /// one even lane.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn classify_cells<S: Simd, O: ClassifiedCell>(
     simd: S,
@@ -976,9 +1074,34 @@ impl PooledPlan {
 /// column, so it is exactly 3x3 pooled entries. A pooled feature is at most
 /// `4 * 2 * 1023` under § 6 Table 6.3's 10-bit cap, so three pooled rows still
 /// fit `i16` lanes.
-#[allow(clippy::inline_always)]
+struct PooledLanesOp<'a, T, const REACH: usize> {
+    rows: [&'a [T; REACH]; 4],
+    planes: [&'a mut [u16; 16]; 3],
+}
+
+impl<T: LumaSimdSource, const REACH: usize> LrSimdOp<()> for PooledLanesOp<'_, T, REACH> {
+    #[expect(clippy::inline_always)]
+    #[inline(always)]
+    fn run<S: Simd>(self, simd: S) {
+        pooled_lanes(simd, self.rows, self.planes);
+    }
+}
+
+struct ClippedFeaturesOp<'a, T> {
+    rows: [&'a [T; 18]; 4],
+}
+
+impl<T: LumaSimdSource> LrSimdOp<[u16; 3]> for ClippedFeaturesOp<'_, T> {
+    #[inline]
+    fn run<S: Simd>(self, simd: S) -> [u16; 3] {
+        clipped_features(simd, self.rows)
+    }
+}
+
+#[expect(clippy::inline_always)]
 #[inline(always)]
-fn pooled_feature_row<'a, T: LumaSimdSource>(
+fn pooled_feature_row<'a, L: LrBackend, T: LumaSimdSource>(
+    backend: L,
     rows: [&'a [T]; 4],
     mut planes: [&mut [u16]; 3],
     plan: &PooledPlan,
@@ -1000,15 +1123,18 @@ fn pooled_feature_row<'a, T: LumaSimdSource>(
             r2.first_chunk::<34>(),
             r3.first_chunk::<34>(),
         ) {
-            crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
+            backend.run(PooledLanesOp {
+                rows: [r0, r1, r2, r3],
+                planes: [vertical, anti_diag, diag],
+            });
         }
     }
     for &(start, wide) in plan.tails.iter().flatten() {
         let linear = [r0, r1, r2, r3];
         if wide {
-            pooled_chunk::<T, 34>(linear, &mut planes, start)?;
+            pooled_chunk::<L, T, 34>(backend, linear, &mut planes, start)?;
         } else {
-            pooled_chunk::<T, 18>(linear, &mut planes, start)?;
+            pooled_chunk::<L, T, 18>(backend, linear, &mut planes, start)?;
         }
     }
     if plan.linear < plan.width {
@@ -1019,7 +1145,9 @@ fn pooled_feature_row<'a, T: LumaSimdSource>(
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = rows.map(column) else {
             return None;
         };
-        let values = crate::lr_madd::lr_simd!(simd => clipped_features(simd, [&c0, &c1, &c2, &c3]));
+        let values = backend.run(ClippedFeaturesOp {
+            rows: [&c0, &c1, &c2, &c3],
+        });
         for (plane, value) in planes.into_iter().zip(values) {
             plane.get_mut(plan.linear..plan.width)?.fill(value);
         }
@@ -1030,9 +1158,10 @@ fn pooled_feature_row<'a, T: LumaSimdSource>(
 /// Pools the `REACH - 2` feature columns from entry `start` into 16 entries
 /// of each plane (the upper half undefined for an 8-entry chunk), reading the rows
 /// zero-padded past their ends; `None` when a plane is short.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
-fn pooled_chunk<'a, T: LumaSimdSource, const REACH: usize>(
+fn pooled_chunk<'a, L: LrBackend, T: LumaSimdSource, const REACH: usize>(
+    backend: L,
     rows: [&'a [T]; 4],
     planes: &mut [&mut [u16]; 3],
     start: usize,
@@ -1053,12 +1182,18 @@ fn pooled_chunk<'a, T: LumaSimdSource, const REACH: usize>(
         tail(r2).first_chunk::<REACH>(),
         tail(r3).first_chunk::<REACH>(),
     ) {
-        crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [r0, r1, r2, r3], [vertical, anti_diag, diag]));
+        backend.run(PooledLanesOp {
+            rows: [r0, r1, r2, r3],
+            planes: [vertical, anti_diag, diag],
+        });
         return Some(());
     }
     let padded = |row: &'a [T]| zero_padded::<T, REACH>(tail(row));
     let (r0, r1, r2, r3) = (padded(r0), padded(r1), padded(r2), padded(r3));
-    crate::lr_madd::lr_simd!(simd => pooled_lanes(simd, [&r0, &r1, &r2, &r3], [vertical, anti_diag, diag]));
+    backend.run(PooledLanesOp {
+        rows: [&r0, &r1, &r2, &r3],
+        planes: [vertical, anti_diag, diag],
+    });
     Some(())
 }
 
@@ -1069,7 +1204,7 @@ fn zero_padded<T: Copy + Default, const N: usize>(samples: &[T]) -> [T; N] {
 
 /// Pools `REACH - 2` feature columns of two feature rows into 16 entries of
 /// each plane; `rows` are the four source rows of the pooled row.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_lanes<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
@@ -1095,7 +1230,6 @@ fn pooled_lanes<S: Simd, T: LumaSimdSource, const REACH: usize>(
 
 /// Twice the two-row sum of each feature at the first center of `rows`: the
 /// pooled entry of two clipped feature columns.
-#[allow(clippy::inline_always)]
 #[inline(always)]
 fn clipped_features<S: Simd, T: LumaSimdSource>(simd: S, rows: [&[T; 18]; 4]) -> [u16; 3] {
     const FIRST: [i16; 16] = [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -1103,7 +1237,7 @@ fn clipped_features<S: Simd, T: LumaSimdSource>(simd: S, rows: [&[T; 18]; 4]) ->
         .map(|sums| <[i32; 8]>::from(sums)[0] as u16)
 }
 
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
     simd: S,
@@ -1123,7 +1257,7 @@ fn pooled_sums<S: Simd, T: LumaSimdSource, const REACH: usize>(
 
 /// § 7.20.4 `get_features` absolute second derivatives (vertical, anti-diagonal,
 /// diagonal) for sixteen consecutive centers `up[1..17]`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn second_derivative_lanes<S: Simd, T: LumaSimdSource>(
     simd: S,
@@ -1316,7 +1450,7 @@ impl ClassifiedCell for u8 {
     const SCALED: bool = true;
 
     /// [`rounded_lut_input`] in eight lanes, then the class of each.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured PC-Wiener classification hot path"
     )]
@@ -1361,7 +1495,7 @@ impl ClassifiedCell for u8 {
 }
 
 /// The columns of the 4x4 matrix whose rows are `rows`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 pub fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
     let wide = |rows: i32x4<S>| rows.bitcast::<i64x2<S>>();
@@ -1379,7 +1513,7 @@ pub fn transpose4<S: Simd>([r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>; 4] {
 /// negative `v` yields zero either way. `nf[i]` is `(f * N + h) >> s`, and
 /// adding `(offset + 2^13) << s` before that shift is exact, so the cache
 /// holds `((offset + 2^13) << s) + h` and one `>> (19 + s)` remains.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn rounded_lut_input(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
@@ -1400,7 +1534,7 @@ fn rounded_lut_input(
 ///
 /// `(x + ((1 << n) >> 1)) >> n` is `Round2` for every shift including zero,
 /// and `36 * 4 * 1023 * 3739` keeps the product inside `i32`.
-#[allow(clippy::inline_always)]
+#[expect(clippy::inline_always)]
 #[inline(always)]
 fn normalized_features(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
@@ -1415,7 +1549,7 @@ fn normalized_features(
     })
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured PC-Wiener classification hot path"
 )]
@@ -1599,7 +1733,8 @@ struct PcWienerPaddedFilterSetup {
     lanes: bool,
 }
 
-fn prepare_pc_wiener_padded_filter<T: ReconSample>(
+fn prepare_pc_wiener_padded_filter<L: LrBackend, T: ReconSample>(
+    backend: L,
     output_len: usize,
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
@@ -1622,7 +1757,8 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
                 source
                     .rows
                     .row(row, padded_width)
-                    .is_some_and(|samples| !crate::workspace::samples_exceed(samples, max_sample))
+                    .and_then(T::u16_slice)
+                    .is_some_and(|samples| !backend.u16_samples_exceed(samples, max_sample))
             }));
     Ok(PcWienerPaddedFilterSetup {
         filters,
@@ -1650,19 +1786,57 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<()> {
-    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
+    pc_wiener_filter_block_padded_with_backend(BaselineLr, output, params, source)
+}
+
+/// Applies [`pc_wiener_filter_block_padded`] using startup-selected `backend`.
+///
+/// # Errors
+/// Returns the same typed [`ReconError`] values as
+/// [`pc_wiener_filter_block_padded`].
+#[inline]
+pub fn pc_wiener_filter_block_padded_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    output: &mut [T],
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<()> {
+    pc_wiener_filter_block_padded_with_backend(TypedLr(backend.narrow()), output, params, source)
+}
+
+fn pc_wiener_filter_block_padded_with_backend<L: LrBackend, T: ReconSample>(
+    backend: L,
+    output: &mut [T],
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<()> {
+    let setup = prepare_pc_wiener_padded_filter(backend, output.len(), params, source)?;
     if !setup.lanes {
         return pc_wiener_filter_block(output, params, |x, y| source.sample(x, y, params.width));
     }
 
     if let Some(destination) = T::u16_slice_mut(output) {
-        return filter_pc_wiener_padded(destination, params, source.rows, T::u16_slice, &setup);
+        return filter_pc_wiener_padded(
+            backend,
+            destination,
+            params,
+            source.rows,
+            T::u16_slice,
+            &setup,
+        );
     }
     let destination = T::u8_slice_mut(output).ok_or(ReconError::SampleTypeUnsupportedBitDepth {
         sample_type: T::TYPE_NAME,
         bit_depth: params.bit_depth,
     })?;
-    filter_pc_wiener_padded(destination, params, source.rows, T::u8_slice, &setup)
+    filter_pc_wiener_padded(
+        backend,
+        destination,
+        params,
+        source.rows,
+        T::u8_slice,
+        &setup,
+    )
 }
 
 /// Filters a cell row in column groups of up to four 4x4 cells, each lane with
@@ -1671,10 +1845,12 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
 /// at compile time below).
 fn filter_pc_wiener_padded<
     'a,
+    L: LrBackend,
     S,
     T: ReconSample + LumaSimdSource + 'a,
     O: LumaSimdOutput + ByteLaneOutput,
 >(
+    backend: L,
     destination: &mut [O],
     params: &PcWienerFilter<'_>,
     source: PaddedRows<'a, S>,
@@ -1690,8 +1866,8 @@ fn filter_pc_wiener_padded<
     let mut flat = FlatChunks::<R>::new();
     let mut window = [&[][..]; PC_WIENER_BLOCK_SIZE + 2 * R];
     #[cfg(target_arch = "x86_64")]
-    let bytes = fearless_simd::Level::baseline()
-        .as_avx2()
+    let bytes = backend
+        .avx2_token()
         .filter(|_| setup.max_sample == 255 && T::u8_slice(&[]).is_some())
         .zip(bytes::BYTE_CLASSES.get(params.filter_set_index));
     #[cfg(target_arch = "x86_64")]
@@ -1712,7 +1888,7 @@ fn filter_pc_wiener_padded<
                     *slot = T::u8_slice(row).ok_or_else(rows_error)?;
                 }
             }
-            flat.update(&window[..group + 2 * R], row, params.width);
+            flat.update(backend, &window[..group + 2 * R], row, params.width);
         }
         let group_rows = row..row + group;
         let subclass_row = row / PC_WIENER_BLOCK_SIZE;
@@ -1788,7 +1964,8 @@ fn filter_pc_wiener_padded<
                         table: setup.classes,
                     }
                 };
-                if !lr_madd::filter_run::<PcTaps, T, O, PC_WIENER_WINDOW_ROWS, 22>(
+                if !lr_madd::filter_run::<L, PcTaps, T, O, PC_WIENER_WINDOW_ROWS, 22>(
+                    backend,
                     &window,
                     group,
                     (group_col, run_end),
@@ -2228,7 +2405,6 @@ fn checked_area(width: usize, height: usize, context: &'static str) -> Result<us
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 #[path = "pc_wiener/tests.rs"]
 mod tests;
 

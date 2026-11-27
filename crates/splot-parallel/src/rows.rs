@@ -65,6 +65,24 @@ pub trait FrameWork: Send + Sync {
     fn done(&self) -> bool;
 }
 
+impl<W: FrameWork + ?Sized> FrameWork for Arc<W> {
+    fn claim(&self) -> Option<Claim> {
+        (**self).claim()
+    }
+
+    fn claim_critical(&self) -> Option<Claim> {
+        (**self).claim_critical()
+    }
+
+    fn run(&self, claim: Claim, worker: usize) {
+        (**self).run(claim, worker);
+    }
+
+    fn done(&self) -> bool {
+        (**self).done()
+    }
+}
+
 /// The ordered row cursor of one stage: at most one row runs at a time.
 ///
 /// The next row and its running bit share one atomic, so the bit is set only
@@ -306,37 +324,69 @@ fn exchange(state: &AtomicU8, from: u8, to: u8) -> bool {
 #[repr(align(128))]
 struct Line<T>(T);
 
-type FrameList = Arc<Vec<Arc<dyn FrameWork>>>;
+type FrameList<W> = Arc<Vec<W>>;
 
-#[derive(Default)]
-struct Frames {
-    live: FrameList,
+struct Frames<W> {
+    live: FrameList<W>,
     /// An emptied earlier list, reused so a change does not allocate.
-    spare: Option<FrameList>,
+    spare: Option<FrameList<W>>,
+}
+
+impl<W> Default for Frames<W> {
+    fn default() -> Self {
+        Self {
+            live: FrameList::default(),
+            spare: None,
+        }
+    }
 }
 
 /// One worker's copy of the frame list, valid while `epoch` is current.
-#[derive(Default)]
-struct Snapshot {
+struct Snapshot<W> {
     epoch: u64,
-    frames: Option<FrameList>,
+    frames: Option<FrameList<W>>,
+}
+
+impl<W> Default for Snapshot<W> {
+    fn default() -> Self {
+        Self {
+            epoch: 0,
+            frames: None,
+        }
+    }
 }
 
 /// A worker's snapshot, and the flag a list change raises when a scan
 /// held the snapshot, so the scanner checks it once the scan ends.
-#[derive(Default)]
-struct Shot {
-    snapshot: Mutex<Snapshot>,
+struct Shot<W> {
+    snapshot: Mutex<Snapshot<W>>,
     stale: AtomicBool,
 }
 
-type Job = (Arc<dyn FrameWork>, Claim);
+impl<W> Default for Shot<W> {
+    fn default() -> Self {
+        Self {
+            snapshot: Mutex::default(),
+            stale: AtomicBool::new(false),
+        }
+    }
+}
+
+type Job<W> = (W, Claim);
 
 /// One worker's snapshot and thread.
-#[derive(Default)]
-struct Slot {
-    shot: Line<Shot>,
+struct Slot<W> {
+    shot: Line<Shot<W>>,
     thread: OnceLock<Thread>,
+}
+
+impl<W> Default for Slot<W> {
+    fn default() -> Self {
+        Self {
+            shot: Line(Shot::default()),
+            thread: OnceLock::new(),
+        }
+    }
 }
 
 /// The driver's own wait, apart from the workers' idle bits.
@@ -347,36 +397,11 @@ struct Driver {
     changed: Condvar,
 }
 
-/// The scheduler's shared state.
-///
-/// A scan reads the scanning thread's own snapshot of the frame list, so it
-/// takes no shared lock. Push and pop replace the list and raise `epoch`
-/// under `frames`, then drop every snapshot of an older epoch without
-/// waiting: a snapshot held by a scan is flagged stale, and the scanner
-/// drops it right after the scan; an idle owner is woken to scan. A removed
-/// frame is thus held by no snapshot once every scan running at the change
-/// has ended, and a scan that drops the last handle on a list wakes the
-/// driver.
-///
-/// A worker with nothing to run sets its `idle` bit, fences, looks once more,
-/// and parks until a dispatcher clears the bit. A thread that publishes
-/// progress or pushes a frame calls [`Self::dispatch`]: after a fence it
-/// reads the idle bits, and when one is set a worker claims a row into
-/// `ready` (a driver claims none), then clears one bit and unparks that
-/// worker. Both sides write first, fence, then read, so either the
-/// dispatcher sees the bit or the worker's last look sees the publication:
-/// no wake is lost, and a wake is sent only for a row that exists. The same
-/// atomic step that clears a worker's idle bit sets its waking bit, which
-/// the worker clears once it runs; dispatchers skip while a bit is set, as
-/// the worker looks after it clears its bit and dispatches the next. Every
-/// worker takes `ready` rows before it scans, so a row a busy worker can
-/// start sooner does not wait for the woken one to get a core.
-struct Core {
-    frames: Line<Mutex<Frames>>,
+/// Non-generic atomic, idle-bit, and driver-wait state shared across scheduler
+/// specializations.
+struct WaitState {
     epoch: Line<AtomicU64>,
     shutdown: Line<AtomicBool>,
-    slots: Box<[Slot]>,
-    ready: Line<Mutex<VecDeque<Job>>>,
     queued: Line<AtomicUsize>,
     /// Bit `i % 32` of word `i / 32` is set while worker `i` is idle, and
     /// bit `32 + i % 32` from when a waker clears that bit until it runs.
@@ -384,169 +409,15 @@ struct Core {
     driver: Line<Driver>,
 }
 
-thread_local! {
-    /// The scheduler this thread works for and its worker index there: a
-    /// row worker's own, or the one its driver last pushed to or waited on.
-    static BOUND: RefCell<Option<(Arc<Core>, Option<usize>)>> = const { RefCell::new(None) };
-}
-
-/// Hands a row to an idle worker of the scheduler the calling thread works
-/// for, after a publication through a primitive that holds no [`RowWake`].
-pub(crate) fn wake_bound() {
-    BOUND.with_borrow(|bound| {
-        if let Some((core, slot)) = bound {
-            core.dispatch(*slot);
-        }
-    });
-}
-
-fn bind(core: &Arc<Core>, slot: Option<usize>) {
-    BOUND.with_borrow_mut(|bound| {
-        if !bound
-            .as_ref()
-            .is_some_and(|(held, at)| Arc::ptr_eq(held, core) && *at == slot)
-        {
-            *bound = Some((Arc::clone(core), slot));
-        }
-    });
-}
-
-/// A handle that wakes one scheduler's workers and its driver.
-#[derive(Clone, Debug)]
-pub struct RowWake(Arc<Core>);
-
-impl RowWake {
-    /// A wake with no workers, for a decode that runs on one thread.
-    #[must_use]
-    pub fn detached() -> Self {
-        Self(Arc::new(Core::new(0)))
-    }
-
-    /// Hands a row to an idle worker after a frame advanced a counter of
-    /// its own.
-    pub fn notify(&self) {
-        self.0.dispatch_here();
-    }
-
-    #[cfg(test)]
-    fn parked_workers(&self) -> usize {
-        self.0
-            .idle
-            .iter()
-            .map(|word| (word.0.load(Ordering::SeqCst) & IDLE).count_ones() as usize)
-            .sum()
-    }
-}
-
-impl core::fmt::Debug for Core {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("Core")
-    }
-}
-
-impl Core {
+impl WaitState {
     fn new(workers: usize) -> Self {
         Self {
-            frames: Line::default(),
             epoch: Line::default(),
             shutdown: Line::default(),
-            slots: (0..workers).map(|_| Slot::default()).collect(),
-            ready: Line::default(),
             queued: Line::default(),
             idle: (0..workers.div_ceil(32)).map(|_| Line::default()).collect(),
             driver: Line::default(),
         }
-    }
-
-    /// Dispatches from the calling thread, as its worker when it is one.
-    fn dispatch_here(&self) {
-        self.dispatch(BOUND.with_borrow(|bound| {
-            bound
-                .as_ref()
-                .filter(|(core, _)| core::ptr::eq(Arc::as_ptr(core), self))
-                .and_then(|(_, slot)| *slot)
-        }));
-    }
-
-    /// Replaces the frame list with `edit` applied to it, unless `edit`
-    /// leaves its length unchanged, and drops every stale snapshot.
-    fn change(&self, edit: impl FnOnce(&mut Vec<Arc<dyn FrameWork>>)) {
-        let mut frames = self.frames.0.lock();
-        let mut next = frames.spare.take().unwrap_or_default();
-        if Arc::get_mut(&mut next).is_none() {
-            next = Arc::default();
-        }
-        let Some(list) = Arc::get_mut(&mut next) else {
-            return;
-        };
-        list.clear();
-        list.extend(frames.live.iter().cloned());
-        edit(list);
-        if list.len() == frames.live.len() {
-            list.clear();
-            frames.spare = Some(next);
-            return;
-        }
-        let mut old = core::mem::replace(&mut frames.live, next);
-        self.epoch.0.fetch_add(1, Ordering::SeqCst);
-        drop(frames);
-        for (index, slot) in self.slots.iter().enumerate() {
-            slot.shot.0.stale.store(true, Ordering::SeqCst);
-            fence(Ordering::SeqCst);
-            if let Some(mut snapshot) = slot.shot.0.snapshot.try_lock() {
-                let _ = self.drop_stale(&mut snapshot);
-            } else if self.take_idle(index)
-                && let Some(thread) = slot.thread.get()
-            {
-                // The holder may be another change, so an idle owner must scan to drop it.
-                thread.unpark();
-            }
-        }
-        if let Some(list) = Arc::get_mut(&mut old) {
-            list.clear();
-            self.frames.0.lock().spare = Some(old);
-        }
-    }
-
-    /// Drops `snapshot` when the list changed since it was taken; whether
-    /// that dropped the last handle on the old list, which may release a
-    /// finished frame the driver waits for.
-    fn drop_stale(&self, snapshot: &mut Snapshot) -> bool {
-        snapshot.epoch != self.epoch.0.load(Ordering::SeqCst)
-            && snapshot.frames.take().and_then(Arc::into_inner).is_some()
-    }
-
-    /// Claims a row from `slot`'s snapshot, critical rows of every frame
-    /// first, refreshing the snapshot when the list changed.
-    fn scan(&self, slot: &Slot) -> Option<Job> {
-        let shot = &slot.shot.0;
-        let mut snapshot = shot.snapshot.lock();
-        let mut released = self.drop_stale(&mut snapshot);
-        if snapshot.frames.is_none() {
-            let frames = self.frames.0.lock();
-            snapshot.frames = Some(Arc::clone(&frames.live));
-            snapshot.epoch = self.epoch.0.load(Ordering::Acquire);
-        }
-        let claimed = snapshot.frames.as_deref().and_then(|live| {
-            live.iter()
-                .find_map(|frame| frame.claim_critical().map(|claim| (frame, claim)))
-                .or_else(|| {
-                    live.iter()
-                        .find_map(|frame| frame.claim().map(|claim| (frame, claim)))
-                })
-                .map(|(frame, claim)| (Arc::clone(frame), claim))
-        });
-        drop(snapshot);
-        fence(Ordering::SeqCst);
-        if shot.stale.load(Ordering::SeqCst) {
-            shot.stale.store(false, Ordering::SeqCst);
-            released |= self.drop_stale(&mut shot.snapshot.lock());
-        }
-        if released {
-            fence(Ordering::SeqCst);
-            self.wake_driver();
-        }
-        claimed
     }
 
     fn set_idle(&self, worker: usize) {
@@ -606,43 +477,6 @@ impl Core {
         first
     }
 
-    /// Wakes the driver, and an idle worker when there is one: worker `from`
-    /// first claims a row for it into `ready`, and finds none to claim or
-    /// wakes nobody; a thread that is no worker claims nothing, so the
-    /// driver never claims. A dispatcher wakes one worker: the woken worker
-    /// dispatches the next before it runs its row.
-    fn dispatch(&self, from: Option<usize>) {
-        fence(Ordering::SeqCst);
-        self.wake_driver();
-        if self.first_idle().is_none() {
-            return;
-        }
-        if let Some(slot) = from.and_then(|from| self.slots.get(from)) {
-            let Some(job) = self.scan(slot) else {
-                return;
-            };
-            self.ready.0.lock().push_back(job);
-            self.queued.0.fetch_add(1, Ordering::SeqCst);
-        }
-        while let Some(worker) = self.first_idle() {
-            if self.take_idle(worker) {
-                if let Some(thread) = self.slots.get(worker).and_then(|slot| slot.thread.get()) {
-                    thread.unpark();
-                }
-                return;
-            }
-        }
-    }
-
-    fn take_ready(&self) -> Option<Job> {
-        if self.queued.0.load(Ordering::SeqCst) == 0 {
-            return None;
-        }
-        let job = self.ready.0.lock().pop_front()?;
-        self.queued.0.fetch_sub(1, Ordering::SeqCst);
-        Some(job)
-    }
-
     fn wake_driver(&self) {
         let driver = &self.driver.0;
         if driver.parked.load(Ordering::SeqCst) {
@@ -652,55 +486,384 @@ impl Core {
         }
     }
 
+    fn wait(&self, ready: &mut dyn FnMut() -> bool) {
+        let driver = &self.driver.0;
+        while !ready() {
+            let mut lock = driver.lock.lock();
+            driver.parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+            if !ready() {
+                driver.changed.wait(&mut lock);
+            }
+            driver.parked.store(false, Ordering::SeqCst);
+            drop(lock);
+        }
+    }
+
+    #[cfg(test)]
+    fn parked_workers(&self) -> usize {
+        self.idle
+            .iter()
+            .map(|word| (word.0.load(Ordering::SeqCst) & IDLE).count_ones() as usize)
+            .sum()
+    }
+}
+
+/// The scheduler's shared state.
+///
+/// A scan reads the scanning thread's own snapshot of the frame list, so it
+/// takes no shared lock. Push and pop replace the list and raise `epoch`
+/// under `frames`, then drop every snapshot of an older epoch without
+/// waiting: a snapshot held by a scan is flagged stale, and the scanner
+/// drops it right after the scan; an idle owner is woken to scan. A removed
+/// frame is thus held by no snapshot once every scan running at the change
+/// has ended, and a scan that drops the last handle on a list wakes the
+/// driver.
+///
+/// A worker with nothing to run sets its `idle` bit, fences, looks once more,
+/// and parks until a dispatcher clears the bit. A thread that publishes
+/// progress or pushes a frame calls [`Self::dispatch`]: after a fence it
+/// reads the idle bits, and when one is set a worker claims a row into
+/// `ready` (a driver claims none), then clears one bit and unparks that
+/// worker. Both sides write first, fence, then read, so either the
+/// dispatcher sees the bit or the worker's last look sees the publication:
+/// no wake is lost, and a wake is sent only for a row that exists. The same
+/// atomic step that clears a worker's idle bit sets its waking bit, which
+/// the worker clears once it runs; dispatchers skip while a bit is set, as
+/// the worker looks after it clears its bit and dispatches the next. Every
+/// worker takes `ready` rows before it scans, so a row a busy worker can
+/// start sooner does not wait for the woken one to get a core.
+struct Core<W> {
+    frames: Line<Mutex<Frames<W>>>,
+    slots: Box<[Slot<W>]>,
+    ready: Line<Mutex<VecDeque<Job<W>>>>,
+    wait: WaitState,
+}
+
+trait WakeCore: Send + Sync {
+    fn dispatch(&self, from: Option<usize>);
+    fn dispatch_here(&self);
+    fn core_addr(&self) -> usize;
+    #[cfg(test)]
+    fn parked_workers(&self) -> usize;
+}
+
+impl<W: FrameWork + Clone + 'static> WakeCore for Core<W> {
+    fn dispatch(&self, from: Option<usize>) {
+        Core::dispatch(self, from);
+    }
+
+    fn dispatch_here(&self) {
+        Core::dispatch_here(self);
+    }
+
+    fn core_addr(&self) -> usize {
+        core::ptr::from_ref(self).addr()
+    }
+
+    #[cfg(test)]
+    fn parked_workers(&self) -> usize {
+        self.wait.parked_workers()
+    }
+}
+
+type BoundWake = Option<(Arc<dyn WakeCore>, Option<usize>)>;
+
+thread_local! {
+    /// The scheduler this thread works for and its worker index there: a
+    /// row worker's own, or the one its driver last pushed to or waited on.
+    static BOUND: RefCell<BoundWake> = const { RefCell::new(None) };
+}
+
+/// Hands a row to an idle worker of the scheduler the calling thread works
+/// for, after a publication through a primitive that holds no [`RowWake`].
+pub(crate) fn wake_bound() {
+    BOUND.with_borrow(|bound| {
+        if let Some((core, slot)) = bound {
+            core.dispatch(*slot);
+        }
+    });
+}
+
+#[inline(never)]
+fn bind<W: FrameWork + Clone + 'static>(core: &Arc<Core<W>>, slot: Option<usize>) {
+    let addr = core::ptr::from_ref(&**core).addr();
+    BOUND.with_borrow_mut(|bound| {
+        if !bound
+            .as_ref()
+            .is_some_and(|(held, at)| held.core_addr() == addr && *at == slot)
+        {
+            *bound = Some((Arc::clone(core) as Arc<dyn WakeCore>, slot));
+        }
+    });
+}
+
+/// A handle that wakes one scheduler's workers and its driver.
+#[derive(Clone)]
+pub struct RowWake(Option<Arc<dyn WakeCore>>);
+
+impl core::fmt::Debug for RowWake {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("RowWake").field(&self.0.is_some()).finish()
+    }
+}
+
+impl RowWake {
+    /// A wake with no workers, for a decode that runs on one thread.
+    #[must_use]
+    pub const fn detached() -> Self {
+        Self(None)
+    }
+
+    /// Hands a row to an idle worker after a frame advanced a counter of
+    /// its own.
+    pub fn notify(&self) {
+        if let Some(core) = &self.0 {
+            core.dispatch_here();
+        }
+    }
+
+    #[cfg(test)]
+    fn parked_workers(&self) -> usize {
+        self.0.as_ref().map_or(0, |core| core.parked_workers())
+    }
+}
+
+impl<W> core::fmt::Debug for Core<W> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Core")
+    }
+}
+
+impl<W: FrameWork + Clone> Core<W> {
+    fn new(workers: usize) -> Self {
+        Self {
+            frames: Line(Mutex::new(Frames::default())),
+            slots: (0..workers).map(|_| Slot::default()).collect(),
+            ready: Line(Mutex::new(VecDeque::new())),
+            wait: WaitState::new(workers),
+        }
+    }
+
+    /// Replaces the frame list with `edit` applied to it, unless `edit`
+    /// leaves its length unchanged, and drops every stale snapshot.
+    fn change(&self, edit: impl FnOnce(&mut Vec<W>)) {
+        let mut frames = self.frames.0.lock();
+        let mut next = frames.spare.take().unwrap_or_default();
+        if Arc::get_mut(&mut next).is_none() {
+            next = Arc::default();
+        }
+        let Some(list) = Arc::get_mut(&mut next) else {
+            return;
+        };
+        list.clear();
+        list.extend(frames.live.iter().cloned());
+        edit(list);
+        if list.len() == frames.live.len() {
+            list.clear();
+            frames.spare = Some(next);
+            return;
+        }
+        let mut old = core::mem::replace(&mut frames.live, next);
+        self.wait.epoch.0.fetch_add(1, Ordering::SeqCst);
+        drop(frames);
+        for (index, slot) in self.slots.iter().enumerate() {
+            slot.shot.0.stale.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+            if let Some(mut snapshot) = slot.shot.0.snapshot.try_lock() {
+                let _ = self.drop_stale(&mut snapshot);
+            } else if self.wait.take_idle(index)
+                && let Some(thread) = slot.thread.get()
+            {
+                // The holder may be another change, so an idle owner must scan to drop it.
+                thread.unpark();
+            }
+        }
+        if let Some(list) = Arc::get_mut(&mut old) {
+            list.clear();
+            self.frames.0.lock().spare = Some(old);
+        }
+    }
+
+    /// Drops `snapshot` when the list changed since it was taken; whether
+    /// that dropped the last handle on the old list, which may release a
+    /// finished frame the driver waits for.
+    fn drop_stale(&self, snapshot: &mut Snapshot<W>) -> bool {
+        snapshot.epoch != self.wait.epoch.0.load(Ordering::SeqCst)
+            && snapshot.frames.take().and_then(Arc::into_inner).is_some()
+    }
+
+    /// Claims a row from `slot`'s snapshot, critical rows of every frame
+    /// first, refreshing the snapshot when the list changed.
+    fn scan(&self, slot: &Slot<W>) -> Option<Job<W>> {
+        let shot = &slot.shot.0;
+        let mut snapshot = shot.snapshot.lock();
+        let mut released = self.drop_stale(&mut snapshot);
+        if snapshot.frames.is_none() {
+            let frames = self.frames.0.lock();
+            snapshot.frames = Some(Arc::clone(&frames.live));
+            snapshot.epoch = self.wait.epoch.0.load(Ordering::Acquire);
+        }
+        let claimed = snapshot.frames.as_deref().and_then(|live| {
+            live.iter()
+                .find_map(|frame| frame.claim_critical().map(|claim| (frame, claim)))
+                .or_else(|| {
+                    live.iter()
+                        .find_map(|frame| frame.claim().map(|claim| (frame, claim)))
+                })
+                .map(|(frame, claim)| (frame.clone(), claim))
+        });
+        drop(snapshot);
+        fence(Ordering::SeqCst);
+        if shot.stale.load(Ordering::SeqCst) {
+            shot.stale.store(false, Ordering::SeqCst);
+            released |= self.drop_stale(&mut shot.snapshot.lock());
+        }
+        if released {
+            fence(Ordering::SeqCst);
+            self.wait.wake_driver();
+        }
+        claimed
+    }
+
+    /// Wakes the driver, and an idle worker when there is one: worker `from`
+    /// first claims a row for it into `ready`, and finds none to claim or
+    /// wakes nobody; a thread that is no worker claims nothing, so the
+    /// driver never claims. A dispatcher wakes one worker: the woken worker
+    /// dispatches the next before it runs its row.
+    fn dispatch(&self, from: Option<usize>) {
+        fence(Ordering::SeqCst);
+        self.wait.wake_driver();
+        if self.wait.first_idle().is_none() {
+            return;
+        }
+        if let Some(slot) = from.and_then(|from| self.slots.get(from)) {
+            let Some(job) = self.scan(slot) else {
+                return;
+            };
+            self.ready.0.lock().push_back(job);
+            self.wait.queued.0.fetch_add(1, Ordering::SeqCst);
+        }
+        while let Some(worker) = self.wait.first_idle() {
+            if self.wait.take_idle(worker) {
+                if let Some(thread) = self.slots.get(worker).and_then(|slot| slot.thread.get()) {
+                    thread.unpark();
+                }
+                return;
+            }
+        }
+    }
+
+    fn take_ready(&self) -> Option<Job<W>> {
+        if self.wait.queued.0.load(Ordering::SeqCst) == 0 {
+            return None;
+        }
+        let job = self.ready.0.lock().pop_front()?;
+        self.wait.queued.0.fetch_sub(1, Ordering::SeqCst);
+        Some(job)
+    }
+
     /// The next row for worker `index`: a claimed row from `ready`, a
     /// scanned one, or either once a dispatcher woke it from idle; `None`
     /// once the scheduler shuts down. A worker that got a row this way
     /// dispatches once more, so it keeps its own continuation and hands out
     /// the rest.
-    fn next_job(&self, index: usize, slot: &Slot) -> Option<Job> {
+    fn next_job(&self, index: usize, slot: &Slot<W>) -> Option<Job<W>> {
         loop {
             if let Some(job) = self.take_ready().or_else(|| self.scan(slot)) {
                 self.dispatch(Some(index));
                 return Some(job);
             }
-            self.set_idle(index);
+            self.wait.set_idle(index);
             fence(Ordering::SeqCst);
             if let Some(job) = self.take_ready().or_else(|| self.scan(slot)) {
-                if self.leave_idle(index) {
-                    self.awake(index);
+                if self.wait.leave_idle(index) {
+                    self.wait.awake(index);
                     self.dispatch(Some(index));
                 }
                 return Some(job);
             }
-            while self.is_idle(index) {
-                if self.shutdown.0.load(Ordering::SeqCst) {
+            while self.wait.is_idle(index) {
+                if self.wait.shutdown.0.load(Ordering::SeqCst) {
                     return None;
                 }
                 std::thread::park();
             }
-            self.awake(index);
+            self.wait.awake(index);
             fence(Ordering::SeqCst);
         }
     }
 
-    fn worker(&self, index: usize) {
-        let Some(slot) = self.slots.get(index) else {
+    #[inline(never)]
+    fn start_worker(&self, index: usize) -> Option<&Slot<W>> {
+        let slot = self.slots.get(index)?;
+        let _ = slot.thread.set(std::thread::current());
+        Some(slot)
+    }
+
+    #[inline(never)]
+    fn finish_job(&self, frame: W) {
+        let done = frame.done();
+        drop(frame);
+        if done {
+            self.change(|live| {
+                let finished = live.iter().take_while(|frame| frame.done()).count();
+                live.drain(..finished);
+            });
+        }
+        fence(Ordering::SeqCst);
+        self.wait.wake_driver();
+    }
+
+    #[inline]
+    fn worker(&self, index: usize, execute: &mut impl FnMut(&W, Claim, usize)) {
+        let Some(slot) = self.start_worker(index) else {
             return;
         };
-        let _ = slot.thread.set(std::thread::current());
         while let Some((frame, claim)) = self.next_job(index, slot) {
-            frame.run(claim, index);
-            let done = frame.done();
-            drop(frame);
-            if done {
-                self.change(|live| {
-                    let finished = live.iter().take_while(|frame| frame.done()).count();
-                    live.drain(..finished);
-                });
-            }
-            fence(Ordering::SeqCst);
-            self.wake_driver();
+            execute(&frame, claim, index);
+            self.finish_job(frame);
         }
+    }
+}
+
+impl<W: FrameWork + Clone + 'static> Core<W> {
+    /// Dispatches from the calling thread, as its worker when it is one.
+    fn dispatch_here(&self) {
+        let addr = core::ptr::from_ref(self).addr();
+        self.dispatch(BOUND.with_borrow(|bound| {
+            bound
+                .as_ref()
+                .filter(|(core, _)| core.core_addr() == addr)
+                .and_then(|(_, slot)| *slot)
+        }));
+    }
+}
+
+/// Worker-thread handle passed to [`RowScheduler::new_with`] so each worker can
+/// enter its own compile-time execution context before draining jobs.
+pub struct WorkerLoop<W: FrameWork + Clone + 'static> {
+    core: Arc<Core<W>>,
+    index: usize,
+}
+
+impl<W> core::fmt::Debug for WorkerLoop<W>
+where
+    W: FrameWork + Clone + 'static,
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("WorkerLoop")
+            .field("index", &self.index)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<W: FrameWork + Clone + 'static> WorkerLoop<W> {
+    /// Binds this thread to its scheduler slot and runs claimed work via `execute` until shutdown.
+    #[inline]
+    pub fn run(self, mut execute: impl FnMut(&W, Claim, usize)) {
+        bind(&self.core, Some(self.index));
+        self.core.worker(self.index, &mut execute);
     }
 }
 
@@ -746,25 +909,43 @@ pub fn run_on_thread<R: Send>(
 }
 
 /// Dedicated worker threads that run [`FrameWork`] rows oldest frame first.
-#[derive(Debug)]
-pub struct RowScheduler {
-    core: Arc<Core>,
+pub struct RowScheduler<W: FrameWork + Clone + 'static> {
+    core: Arc<Core<W>>,
     workers: Vec<JoinHandle<()>>,
 }
 
-impl RowScheduler {
+impl<W: FrameWork + Clone + 'static> core::fmt::Debug for RowScheduler<W> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("RowScheduler")
+            .field("workers", &self.workers.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<W: FrameWork + Clone + 'static> RowScheduler<W> {
     /// Starts `threads` workers named `splot-row-{i}`.
     ///
     /// # Errors
     /// Returns [`ParallelError::PoolBuild`] when a thread cannot start.
     pub fn new(threads: NonZeroUsize) -> Result<Self, ParallelError> {
+        Self::new_with(threads, |worker_loop| worker_loop.run(FrameWork::run))
+    }
+
+    /// Starts `threads` workers named `splot-row-{i}` and enters `start` on each worker thread.
+    ///
+    /// # Errors
+    /// Returns [`ParallelError::ThreadSpawn`] when a thread cannot start.
+    pub fn new_with<F>(threads: NonZeroUsize, start: F) -> Result<Self, ParallelError>
+    where
+        F: FnOnce(WorkerLoop<W>) + Clone + Send + 'static,
+    {
         let core = Arc::new(Core::new(threads.get()));
         let mut workers = Vec::with_capacity(threads.get());
         for index in 0..threads.get() {
             let core = Arc::clone(&core);
+            let start = start.clone();
             workers.push(spawn_thread(&format!("splot-row-{index}"), move || {
-                bind(&core, Some(index));
-                core.worker(index);
+                start(WorkerLoop { core, index });
             })?);
         }
         Ok(Self { core, workers })
@@ -773,11 +954,11 @@ impl RowScheduler {
     /// The handle frames use to wake this scheduler.
     #[must_use]
     pub fn wake(&self) -> RowWake {
-        RowWake(Arc::clone(&self.core))
+        RowWake(Some(Arc::clone(&self.core) as Arc<dyn WakeCore>))
     }
 
     /// Adds the newest frame. Its rows run after every older frame's ready rows.
-    pub fn push(&self, frame: Arc<dyn FrameWork>) {
+    pub fn push(&self, frame: W) {
         bind(&self.core, None);
         self.core.change(|live| live.push(frame));
         self.core.dispatch(None);
@@ -786,7 +967,7 @@ impl RowScheduler {
     /// Workers parked with nothing to run, for tests.
     #[cfg(test)]
     pub(crate) fn parked_workers(&self) -> usize {
-        self.wake().parked_workers()
+        self.core.wait.parked_workers()
     }
 
     /// Frames pushed and not yet done, for tests.
@@ -799,17 +980,7 @@ impl RowScheduler {
     /// every publication and every worker's drop of a frame handle.
     pub fn wait(&self, mut ready: impl FnMut() -> bool) {
         bind(&self.core, None);
-        let driver = &self.core.driver.0;
-        while !ready() {
-            let mut lock = driver.lock.lock();
-            driver.parked.store(true, Ordering::SeqCst);
-            fence(Ordering::SeqCst);
-            if !ready() {
-                driver.changed.wait(&mut lock);
-            }
-            driver.parked.store(false, Ordering::SeqCst);
-            drop(lock);
-        }
+        self.core.wait.wait(&mut ready);
     }
 
     /// The number of worker threads.
@@ -819,9 +990,9 @@ impl RowScheduler {
     }
 }
 
-impl Drop for RowScheduler {
+impl<W: FrameWork + Clone + 'static> Drop for RowScheduler<W> {
     fn drop(&mut self) {
-        self.core.shutdown.0.store(true, Ordering::SeqCst);
+        self.core.wait.shutdown.0.store(true, Ordering::SeqCst);
         for worker in &self.workers {
             worker.thread().unpark();
         }
@@ -835,7 +1006,6 @@ impl Drop for RowScheduler {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::WatermarkCell;
     use core::num::NonZeroUsize;
@@ -912,13 +1082,13 @@ mod tests {
         })
     }
 
-    fn wait_done(scheduler: &RowScheduler, frames: &[Arc<Chain>]) {
+    fn wait_done<W: FrameWork + Clone + 'static>(
+        scheduler: &RowScheduler<W>,
+        frames: &[Arc<Chain>],
+    ) {
         let deadline = Instant::now() + Duration::from_secs(10);
-        scheduler.wait(|| frames.iter().all(|frame| frame.done()) || Instant::now() > deadline);
-        assert!(
-            frames.iter().all(|frame| frame.done()),
-            "frames did not finish"
-        );
+        scheduler.wait(|| frames.iter().all(FrameWork::done) || Instant::now() > deadline);
+        assert!(frames.iter().all(FrameWork::done), "frames did not finish");
     }
 
     #[test]
@@ -1066,7 +1236,7 @@ mod tests {
 
     #[test]
     fn a_push_completes_while_every_worker_scans_without_pause() {
-        let scheduler = Arc::new(RowScheduler::new(threads(8)).unwrap());
+        let scheduler = Arc::new(RowScheduler::<Arc<dyn FrameWork>>::new(threads(8)).unwrap());
         scheduler.push(Arc::new(SlowScan));
         let stop = Arc::new(AtomicBool::new(false));
         let notifier = {
@@ -1156,7 +1326,7 @@ mod tests {
 
     #[test]
     fn no_snapshot_keeps_a_finished_frame_alive_while_workers_run_or_park() {
-        let scheduler = RowScheduler::new(threads(2)).unwrap();
+        let scheduler = RowScheduler::<Arc<dyn FrameWork>>::new(threads(2)).unwrap();
         let long = Hold::new(true, None);
         let short = Hold::new(false, Some(Arc::clone(&long)));
         scheduler.push(Arc::clone(&short) as Arc<dyn FrameWork>);
@@ -1193,7 +1363,7 @@ mod tests {
 
     #[test]
     fn a_missed_revocation_wakes_the_idle_owner_and_its_scan_wakes_the_driver() {
-        let scheduler = RowScheduler {
+        let scheduler: RowScheduler<Arc<dyn FrameWork>> = RowScheduler {
             core: Arc::new(Core::new(1)),
             workers: Vec::new(),
         };
@@ -1202,13 +1372,13 @@ mod tests {
         core.change(|live| live.push(Arc::clone(&frame)));
         let slot = &core.slots[0];
         assert!(core.scan(slot).is_none());
-        core.set_idle(0);
+        core.wait.set_idle(0);
         let (owner_woken, driver_woken) = std::thread::scope(|scope| {
             let driver = scope.spawn(|| scheduler.wait(|| Arc::strong_count(&frame) == 1));
-            while !core.driver.0.parked.load(Ordering::SeqCst) {
+            while !core.wait.driver.0.parked.load(Ordering::SeqCst) {
                 std::hint::spin_loop();
             }
-            drop(core.driver.0.lock.lock());
+            drop(core.wait.driver.0.lock.lock());
             {
                 let _held_by_another_change = slot.shot.0.snapshot.lock();
                 core.change(Vec::clear);
@@ -1218,14 +1388,14 @@ mod tests {
                 2,
                 "only the owner's snapshot holds it"
             );
-            let owner_woken = !core.is_idle(0);
+            let owner_woken = !core.wait.is_idle(0);
             assert!(core.scan(slot).is_none());
             let deadline = Instant::now() + Duration::from_secs(5);
             while !driver.is_finished() && Instant::now() < deadline {
                 std::thread::yield_now();
             }
             let driver_woken = driver.is_finished();
-            core.wake_driver();
+            core.wait.wake_driver();
             (owner_woken, driver_woken)
         });
         assert!(owner_woken, "the idle owner was left with a stale snapshot");
@@ -1461,7 +1631,11 @@ mod tests {
 
     /// Waits for `frame`, failing when only a watchdog's wake after three
     /// seconds would end the wait.
-    fn wait_without_rescue(scheduler: &RowScheduler, frame: &OnCell, what: &str) {
+    fn wait_without_rescue<W: FrameWork + Clone + 'static>(
+        scheduler: &RowScheduler<W>,
+        frame: &OnCell,
+        what: &str,
+    ) {
         let rescue = scheduler.wake();
         let _watchdog = spawn_thread("watchdog", move || {
             std::thread::sleep(Duration::from_secs(3));
@@ -1599,5 +1773,122 @@ mod tests {
         assert_eq!(log.lock().len(), FRAMES * ROWS);
         let stop = AtomicBool::new(true);
         assert!(stop.load(Ordering::Relaxed));
+    }
+
+    #[derive(Clone)]
+    enum TypedWork {
+        Chain(Arc<Chain>),
+        Ready(Arc<Burst>),
+    }
+
+    impl FrameWork for TypedWork {
+        fn claim(&self) -> Option<Claim> {
+            match self {
+                Self::Chain(frame) => frame.claim(),
+                Self::Ready(frame) => frame.claim(),
+            }
+        }
+
+        fn run(&self, claim: Claim, worker: usize) {
+            match self {
+                Self::Chain(frame) => frame.run(claim, worker),
+                Self::Ready(frame) => frame.run(claim, worker),
+            }
+        }
+
+        fn done(&self) -> bool {
+            match self {
+                Self::Chain(frame) => frame.done(),
+                Self::Ready(frame) => frame.done(),
+            }
+        }
+    }
+
+    impl TypedWork {
+        fn run_typed(&self, claim: Claim, worker: usize, tag: usize, visited: &AtomicUsize) {
+            visited.fetch_add(tag, Ordering::Relaxed);
+            self.run(claim, worker);
+        }
+    }
+
+    #[test]
+    fn new_with_preserves_concrete_work_and_per_worker_state_across_worker_counts() {
+        for workers in [1usize, 3, 8] {
+            let visited = Arc::new(AtomicUsize::new(0));
+            let worker_state = Arc::clone(&visited);
+            let scheduler = RowScheduler::<TypedWork>::new_with(threads(workers), move |loop_| {
+                let tag = 1usize;
+                loop_.run(|work, claim, worker| {
+                    work.run_typed(claim, worker, tag, &worker_state);
+                });
+            })
+            .unwrap();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let mut first_raw = Chain {
+                id: 0,
+                stage: Stage::new(6),
+                gate: None,
+                need: |_| 0,
+                done_rows: Arc::new(WatermarkCell::new()),
+                log: Arc::clone(&log),
+                fail_at: Some(4),
+                slow_done: false,
+            };
+            first_raw.fail_at = Some(4);
+            let first = Arc::new(first_raw);
+            let second = chain(
+                1,
+                6,
+                Some(Arc::clone(&first.done_rows)),
+                |row| row + 1,
+                &log,
+            );
+            let burst = Arc::new(Burst {
+                stage: ParallelStage::new(),
+                runs: (0..10).map(|_| AtomicUsize::new(0)).collect(),
+                wake: scheduler.wake(),
+            });
+            burst.stage.set_rows(10);
+            scheduler.push(TypedWork::Chain(Arc::clone(&first)));
+            scheduler.push(TypedWork::Chain(Arc::clone(&second)));
+            scheduler.push(TypedWork::Ready(Arc::clone(&burst)));
+            for row in (0..10).step_by(2) {
+                burst.stage.ready(row);
+                burst.wake.notify();
+            }
+            let deadline = Instant::now() + Duration::from_secs(10);
+            scheduler.wait(|| {
+                (first.done() && second.done() && burst.done()) || Instant::now() > deadline
+            });
+            assert!(first.done() && second.done() && burst.done());
+            assert_eq!(first.done_rows.current(), WatermarkCell::FAILED);
+            assert_eq!(visited.load(Ordering::Relaxed), 22);
+            drop(scheduler);
+        }
+    }
+
+    #[test]
+    fn multiple_schedulers_keep_wake_bound_isolated() {
+        let sched_a = RowScheduler::<Arc<Chain>>::new(threads(3)).unwrap();
+        let sched_b = RowScheduler::<Arc<Chain>>::new(threads(2)).unwrap();
+        let log_a = Arc::new(Mutex::new(Vec::new()));
+        let log_b = Arc::new(Mutex::new(Vec::new()));
+        let gate_a = Arc::new(WatermarkCell::new());
+        let gate_b = Arc::new(WatermarkCell::new());
+        let frame_a = chain(0, 4, Some(Arc::clone(&gate_a)), |row| row + 1, &log_a);
+        let frame_b = chain(1, 4, Some(Arc::clone(&gate_b)), |row| row + 1, &log_b);
+        sched_a.push(Arc::clone(&frame_a));
+        sched_b.push(Arc::clone(&frame_b));
+        std::thread::sleep(Duration::from_millis(10));
+        for v in 1..=4 {
+            gate_a.publish(v);
+            gate_b.publish(v);
+            sched_a.wake().notify();
+            sched_b.wake().notify();
+        }
+        wait_done(&sched_a, &[frame_a]);
+        wait_done(&sched_b, &[frame_b]);
+        assert_eq!(log_a.lock().len(), 4);
+        assert_eq!(log_b.lock().len(), 4);
     }
 }

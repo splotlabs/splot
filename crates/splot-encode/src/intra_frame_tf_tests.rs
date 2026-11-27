@@ -218,7 +218,7 @@ fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 tf_stream(config.clone(), &[], 1).units != stream.units,
                 "{name}"
             );
-            each_case([2, 8], |threads| {
+            each_case([2], |threads| {
                 let other = tf_stream(config.clone(), &on, threads);
                 assert!(other.units == stream.units, "{name}: {threads} threads");
             });

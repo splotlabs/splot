@@ -4,5 +4,6 @@
 //! Bitstream planning and tile payload boundaries for decode.
 
 pub(crate) mod byte_stream;
+pub(crate) mod ops_plan;
 pub mod stream_plan;
 pub(crate) mod tile_payload;

@@ -145,7 +145,7 @@ impl QuantizerMatrixState {
 /// - **§ 7.3.8.9 availability.** "When using_qmatrix is equal to 1 in a frame header, the
 ///   quantization matrix levels referenced by qm_y, qm_u, and qm_v shall be available to
 ///   the decoding process, by inclusion of a quantization matrix OBU in the bitstream or by
-///   provision through external means." A referenced custom slot with NO available record
+///   provision through external means." A referenced custom slot with no available record
 ///   (`qm_state.available[level] == None`) is unavailable.
 ///
 /// **External-means suppression (zero-false-positive discipline).**
@@ -154,7 +154,7 @@ impl QuantizerMatrixState {
 /// [`ExternalHlsMode::Provided`] the levels MAY be supplied externally without being listed
 /// — exactly the inexpressible-kind case the blanket "any Provided suppresses" policy covers
 /// (matching the film-grain availability check). The availability diagnostic therefore fires
-/// only under [`ExternalHlsMode::Disabled`]. The `available[]` state honors the § 5.5 /
+/// with external HLS disabled or a complete snapshot. The `available[]` state honors the § 5.5 /
 /// § 5.13 / § 5.18.2 QmProtected `reset_qm()` discipline (a CLK / OLK at FirstPictureInTU, or
 /// a RAS / restricted SWITCH, clears unprotected levels), so a level reset out of a previous
 /// temporal unit and not re-sent in the current one is correctly judged unavailable.
@@ -171,12 +171,12 @@ impl QuantizerMatrixState {
 ///
 /// The § 6.17.6.2 layer-dependency constraints
 /// (MLayerDependencyMap[obu_mlayer_id][QmMLayerId[level]] == 1 and the TLayerDependencyMap
-/// analogue) now land here for every referenced custom level with a recorded layer identity
+/// analogue) land here for every referenced custom level with a recorded layer identity
 /// (QmMLayerId >= 0): frame-header/qm-mlayer-dependency-missing /
 /// frame-header/qm-tlayer-dependency-missing, mirroring the film-grain dependency checks.
 ///
 /// Returns the referenced custom levels that were linearly available in-band under
-/// external-disabled (so the linear `frame-header/qm-level-unavailable` did NOT fire) — the
+/// external-disabled (so the linear `frame-header/qm-level-unavailable` did not fire) — the
 /// caller buffers each as a § 7.3.8.1 random-access-point replay reference, keeping the
 /// replay predicate disjoint from this linear check. Empty when no replay reference applies
 /// (no using_qmatrix, external-HLS provided, or every referenced level unavailable/poisoned).
@@ -211,7 +211,7 @@ pub(super) fn frame_qm_reference_checks(
             }
         }
     }
-    let availability_decidable = matches!(options.external_hls, ExternalHlsMode::Disabled);
+    let availability_decidable = !matches!(options.external_hls, ExternalHlsMode::Provided(_));
     let mut replay_levels = Vec::new();
     for (level, _) in referenced
         .iter()
@@ -315,7 +315,7 @@ impl ValidatorContext {
     ///   is decidable from obu_type + `FirstPictureInTU` alone, with the unconditional
     ///   `needsReset = 1` arm (every unprotected level cleared). Always confirmed.
     /// - RAS: always resets *once the parse reaches the reset call site*. The spec's
-    ///   `reset_qm()` call (mirror :4283) sits AFTER `restricted_prediction_switch`
+    ///   `reset_qm()` call (mirror :4283) sits after `restricted_prediction_switch`
     ///   (mirror :4209), `num_key_ref_frames` (mirror :4244-4257), and the output flags — so
     ///   the validator must not assume the reset on the `obu_type` alone. A RAS core that
     ///   resolves to `Some` necessarily read through those fields and entered the inter path
@@ -324,7 +324,7 @@ impl ValidatorContext {
     ///   sequence, or a malformed prefix) leaves the reset UNCONFIRMED.
     /// - SWITCH: resets only when the parsed `restricted_prediction_switch == 1`; the bit is
     ///   read on the SWITCH / RAS arm of the core parse and recorded on the core. A `Some`
-    ///   core with the bit `0` *confirms NO reset* (nothing to do); a `None` core leaves the
+    ///   core with the bit `0` *confirms no reset* (nothing to do); a `None` core leaves the
     ///   reset UNCONFIRMED (the gate bit was never read, so the spec might or might not have
     ///   cleared the levels).
     ///
@@ -347,20 +347,28 @@ impl ValidatorContext {
         first_picture_in_tu: bool,
         resolved: Option<SequenceHeaderId>,
     ) {
+        let xlayer = obu.header.extended_layer_id;
         match obu.header.obu_type {
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey if first_picture_in_tu => {
-                self.qm.reset_qm_availability_for_key();
+                if let Some(state) = self.hls.layers[usize::from(xlayer.get())].as_deref_mut() {
+                    state.qm.reset_qm_availability_for_key();
+                }
             }
             ObuType::RasFrame | ObuType::Switch => {
                 let presence = resolved
-                    .and_then(|seq_id| self.sequence_headers.get(&seq_id))
+                    .and_then(|seq_id| {
+                        self.hls
+                            .sequence_header(obu.header.extended_layer_id, seq_id)
+                    })
                     .map(|header| header.general.mlayer_dependency_map.presence_map());
                 let obu_mlayer_id = obu.header.embedded_layer_id;
-                match resolved.and_then(|seq_id| {
+                let core = resolved.and_then(|seq_id| {
                     self.frame_core_against_resolved_header(obu, first_picture_in_tu, seq_id)
-                }) {
+                });
+                let state = self.hls.layer_mut(xlayer);
+                match core {
                     Some(core) if core.reached_qm_reset => {
-                        self.qm.reset_qm_availability_for_switch_or_ras(
+                        state.qm.reset_qm_availability_for_switch_or_ras(
                             obu_mlayer_id,
                             presence.as_ref(),
                         );
@@ -368,7 +376,7 @@ impl ValidatorContext {
                     Some(core)
                         if obu.header.obu_type == ObuType::Switch
                             && core.restricted_prediction_switch == Some(false) => {}
-                    _ => self.qm.poison_qm_availability_for_unconfirmed_reset(),
+                    _ => state.qm.poison_qm_availability_for_unconfirmed_reset(),
                 }
             }
             _ => {}
@@ -409,8 +417,11 @@ impl ValidatorContext {
         qm: &QuantizerMatrixObu,
         report: &mut ValidationReport,
     ) {
+        let Some(state) = self.hls.layer(obu.header.extended_layer_id) else {
+            return;
+        };
         if qm.qm_bit_map == 0 {
-            if self.qm.qm_obu_seen_since_coded_frame {
+            if state.qm.qm_obu_seen_since_coded_frame {
                 report.push(
                     Diagnostic::error(
                         "qm/duplicate-reset-between-frames",
@@ -424,12 +435,12 @@ impl ValidatorContext {
             return;
         }
 
-        let overlap = self.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
+        let overlap = state.qm.seen_levels_since_coded_frame & qm.qm_bit_map;
         for level in 0..NUM_CUSTOM_QMS {
             if overlap & (1 << level) == 0 {
                 continue;
             }
-            let prior = match self.qm.available[level] {
+            let prior = match state.qm.available[level] {
                 Some(record) => format!(
                     " (previously specified by a quantizer matrix OBU at embedded layer {}, \
                      temporal layer {}, data_present={}, num_planes={})",
@@ -464,9 +475,11 @@ impl ValidatorContext {
         obu: &ObuEnvelope<'_>,
         qm: &QuantizerMatrixObu,
     ) {
-        self.qm.qm_obu_seen_since_coded_frame = true;
+        let xlayer = obu.header.extended_layer_id;
+        let state = self.hls.layer_mut(xlayer);
+        state.qm.qm_obu_seen_since_coded_frame = true;
         if qm.qm_bit_map == 0 {
-            for record in &mut self.qm.available {
+            for record in &mut state.qm.available {
                 *record = Some(QmLevelRecord {
                     mlayer_id: None,
                     tlayer_id: None,
@@ -474,30 +487,36 @@ impl ValidatorContext {
                     num_planes: qm.num_planes,
                 });
             }
-            self.qm.availability_poisoned = 0;
-            self.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
+            state.qm.availability_poisoned = 0;
+            state.qm.qm_protected = (1u16 << NUM_CUSTOM_QMS) - 1;
             for level in 0..NUM_CUSTOM_QMS {
                 self.rap_replay.note_resend(
-                    RapHlsKey::QmLevel { level: level as u8 },
+                    RapHlsKey::QmLevel {
+                        xlayer,
+                        level: level as u8,
+                    },
                     obu.header.extended_layer_id,
                 );
             }
             return;
         }
-        self.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
+        state.qm.seen_levels_since_coded_frame |= qm.qm_bit_map;
         for level in &qm.levels {
             let index = level.level as usize;
             if index < NUM_CUSTOM_QMS {
-                self.qm.available[index] = Some(QmLevelRecord {
+                state.qm.available[index] = Some(QmLevelRecord {
                     mlayer_id: Some(obu.header.embedded_layer_id.get()),
                     tlayer_id: Some(obu.header.temporal_layer_id.get()),
                     data_present: !level.is_default,
                     num_planes: qm.num_planes,
                 });
-                self.qm.availability_poisoned &= !(1u16 << index);
-                self.qm.qm_protected |= 1u16 << index;
+                state.qm.availability_poisoned &= !(1u16 << index);
+                state.qm.qm_protected |= 1u16 << index;
                 self.rap_replay.note_resend(
-                    RapHlsKey::QmLevel { level: level.level },
+                    RapHlsKey::QmLevel {
+                        xlayer,
+                        level: level.level,
+                    },
                     obu.header.extended_layer_id,
                 );
             }

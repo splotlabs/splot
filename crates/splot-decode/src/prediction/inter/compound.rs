@@ -3,7 +3,7 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use super::Mv;
+use super::MotionVector;
 use super::find_mv_stack::ref_count_ctx;
 use super::mode_symbols::{InterModeSymbols, TileModeSymbols};
 use crate::Result;
@@ -31,17 +31,24 @@ pub(crate) struct CompoundParseInput {
     pub(crate) ref_distance_nonnegative: [bool; MAX_REFS_PER_FRAME],
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CompoundYMode {
+/// A compound `YMode` (§ 5.20.7.6).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CompoundMode {
+    /// `NEAR_NEARMV`: the DRL candidate pair.
     NearNear,
+    /// `NEAR_NEWMV`: list 1 codes a difference.
     NearNew,
+    /// `NEW_NEARMV`: list 0 codes a difference.
     NewNear,
+    /// `GLOBAL_GLOBALMV`: the global motion vectors.
     GlobalGlobal,
+    /// `JOINT_NEWMV`: one difference, projected onto the other list.
     JointNew,
+    /// `NEW_NEWMV`: both lists code a difference.
     NewNew,
 }
 
-impl CompoundYMode {
+impl CompoundMode {
     pub(crate) const fn has_newmv(self) -> bool {
         match self {
             Self::NearNear | Self::GlobalGlobal => false,
@@ -109,12 +116,12 @@ impl CompoundYMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompoundBlockSyntax {
-    pub(crate) y_mode: CompoundYMode,
+    pub(crate) y_mode: CompoundMode,
     pub(crate) use_optflow: bool,
     pub(crate) ref_frame0: i8,
     pub(crate) ref_frame1: i8,
-    pub(crate) mv0: Mv,
-    pub(crate) mv1: Mv,
+    pub(crate) mv0: MotionVector,
+    pub(crate) mv1: MotionVector,
 }
 
 pub(crate) fn read_compound_reference_pair(
@@ -211,8 +218,8 @@ pub(crate) fn read_compound_mode_syntax(
         use_optflow: false,
         ref_frame0: pair.0,
         ref_frame1: pair.1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv0: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
     }
 }
 
@@ -223,36 +230,36 @@ pub(crate) fn compound_y_mode(
     pair: (i8, i8),
     (new_mv_context, is_joint_ctx): (usize, usize),
     symbols: &mut impl InterModeSymbols,
-) -> CompoundYMode {
+) -> CompoundMode {
     if pair.0 == pair.1 {
         same_refs_compound_mode(symbols.compound_mode_same_refs(new_mv_context))
     } else if symbols.is_joint(is_joint_ctx) != 0 {
-        CompoundYMode::JointNew
+        CompoundMode::JointNew
     } else {
         non_joint_compound_mode(symbols.compound_mode_non_joint(new_mv_context))
     }
 }
 
 /// The `YMode` of `compound_mode` over the same-reference alphabet.
-pub(crate) const fn same_refs_compound_mode(compound_mode: u8) -> CompoundYMode {
+pub(crate) const fn same_refs_compound_mode(compound_mode: u8) -> CompoundMode {
     match compound_mode {
-        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
-        1 => CompoundYMode::NearNew,
-        COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
+        COMPOUND_MODE_NEAR_NEARMV => CompoundMode::NearNear,
+        1 => CompoundMode::NearNew,
+        COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundMode::GlobalGlobal,
         // The four-symbol § 5.20.7.6 alphabet leaves only NewNew (3).
-        _ => CompoundYMode::NewNew,
+        _ => CompoundMode::NewNew,
     }
 }
 
 /// The `YMode` of `compound_mode` over the non-joint alphabet.
-pub(crate) const fn non_joint_compound_mode(compound_mode: u8) -> CompoundYMode {
+pub(crate) const fn non_joint_compound_mode(compound_mode: u8) -> CompoundMode {
     match compound_mode {
-        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
-        COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
-        COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
-        COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
+        COMPOUND_MODE_NEAR_NEARMV => CompoundMode::NearNear,
+        COMPOUND_MODE_NEAR_NEWMV => CompoundMode::NearNew,
+        COMPOUND_MODE_NEW_NEARMV => CompoundMode::NewNear,
+        COMPOUND_MODE_NEW_NEWMV => CompoundMode::NewNew,
         // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
-        _ => CompoundYMode::GlobalGlobal,
+        _ => CompoundMode::GlobalGlobal,
     }
 }
 

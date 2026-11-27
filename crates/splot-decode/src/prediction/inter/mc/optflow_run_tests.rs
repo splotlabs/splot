@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
-
 use super::super::tests::frame_for;
 use super::*;
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
@@ -10,8 +8,8 @@ use splot_recon::{BitDepth, DecodedFrame, PixelFormat};
 const WIDTH: usize = 64;
 const HEIGHT: usize = 32;
 
-fn mv(row: i32, col: i32) -> Mv {
-    Mv { row, col }
+fn mv(row: i32, col: i32) -> MotionVector {
+    MotionVector { row, col }
 }
 
 fn reference<T: ReconSample>(
@@ -74,12 +72,15 @@ fn predict<T: ReconSample + CompoundAverageOutput + Send>(
         HEIGHT,
     );
     let mut units = RefinedUnits::with_cells(cells.to_vec(), columns, unit_size, merge);
-    predict_refined_block(
-        &mut WorkspaceSink::Frame(&mut workspace),
-        &block,
-        &mut units,
-        ByteOffset::new(0),
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        predict_refined_block(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &block,
+            &mut units,
+            ByteOffset::new(0),
+        )
+    })
     .expect("refined prediction");
     let frame = workspace.freeze().expect("freeze");
     super::super::mc_planes(info.pixel_format())
@@ -145,7 +146,7 @@ fn merged_runs_match_per_cell<T: ReconSample + CompoundAverageOutput + Send>(
         }
     }
     assert!(fullpel_run_pairs(&cells, 6));
-    let cells_of = |mvs: &[[Mv; 2]]| {
+    let cells_of = |mvs: &[[MotionVector; 2]]| {
         mvs.iter()
             .map(|&mvs| MotionCell::from_refinemv(mvs))
             .collect::<Vec<_>>()
@@ -280,10 +281,22 @@ fn fullpel_center_sad_matches_the_search_windows() {
                 .expect("compound block");
                 let rect = McBlockRect::from_luma_rect(x, y, unit + 8, unit + 8);
                 let mut luma = LumaReference::pair(info, &block, ByteOffset::new(0));
-                let ends = fullpel_center_ends_search(&mut luma, rect, candidates).expect("centre");
+                let ends = crate::test_support::with_auto_backend!(backend => {
+                    fullpel_center_ends_search(backend, &mut luma, rect, candidates)
+                })
+                .expect("centre");
                 let mut windows = [[0u8; 24 * 24]; 2];
-                search_windows(&mut luma, rect, candidates, true, windows.each_mut())
-                    .expect("windows");
+                crate::test_support::with_auto_backend!(backend => {
+                    search_windows(
+                        backend,
+                        &mut luma,
+                        rect,
+                        candidates,
+                        true,
+                        windows.each_mut(),
+                    )
+                })
+                .expect("windows");
                 if candidates.iter().any(|mv| (mv.row | mv.col) & 7 != 0) {
                     assert_eq!(ends, None, "{candidates:?}");
                     continue;
@@ -348,7 +361,7 @@ fn noisy_ramps<T: ReconSample>(
 /// The TIP units of 8x8 over the whole frame, and their per-unit cells.
 fn tip_grid_and_cells<T: ReconSample>(
     references: &[DecodedFrame<T>; 2],
-    mvs: &[[Mv; 2]],
+    mvs: &[[MotionVector; 2]],
     (threshold, refine, search): (Option<u32>, bool, bool),
     pool: Option<&splot_parallel::WorkerPool>,
 ) -> (TipUnits, Vec<MotionCell>) {
@@ -380,11 +393,14 @@ fn tip_grid_and_cells<T: ReconSample>(
         width,
         height,
     );
-    let sink = WorkspaceSink::Frame(&mut workspace);
+    let sink = CurrentFrameSurface::Frame(&mut workspace);
     let offset = ByteOffset::new(0);
     let grid = || {
         let mut units = TipUnits::default();
-        refine_tip_units(&sink, &block, mvs, &mut units, (columns, 8), offset).expect("units");
+        crate::test_support::with_auto_backend!(backend => {
+            refine_tip_units(backend, &sink, &block, mvs, &mut units, (columns, 8), offset)
+        })
+        .expect("units");
         units
     };
     let grid = pool.map_or_else(grid, |pool| pool.install(grid));
@@ -394,16 +410,29 @@ fn tip_grid_and_cells<T: ReconSample>(
             (unit.rect, unit.mv0, unit.mv1) = (unit_rect(i), mvs[i][0], mvs[i][1]);
             unit.has_chroma = false;
             let mut luma = LumaReference::pair(sink.info(), &unit, offset);
-            super::super::refinemv::tip_refinemv_optflow_motion_cell(
-                &unit,
-                (unit.rect, [unit.mv0, unit.mv1]),
-                &mut super::super::TipSearchScratch::default(),
-                &mut luma,
-                &mut Default::default(),
-            )
+            crate::test_support::with_auto_backend!(backend => {
+                super::super::refinemv::tip_refinemv_optflow_motion_cell(
+                    backend,
+                    &unit,
+                    (unit.rect, [unit.mv0, unit.mv1]),
+                    &mut super::super::TipSearchScratch::default(),
+                    &mut luma,
+                    &mut Default::default(),
+                )
+            })
             .expect("refined cell")
             .map_or_else(
-                || tip_unit_motion_cell(&sink, &unit, (unit.rect, [unit.mv0, unit.mv1]), &mut luma),
+                || {
+                    crate::test_support::with_auto_backend!(backend => {
+                        tip_unit_motion_cell(
+                            backend,
+                            &sink,
+                            &unit,
+                            (unit.rect, [unit.mv0, unit.mv1]),
+                            &mut luma,
+                        )
+                    })
+                },
                 Ok,
             )
             .expect("unit cell")
@@ -416,7 +445,7 @@ fn tip_grid_and_cells<T: ReconSample>(
 /// against its cells.
 fn check_tip_grid<T: ReconSample>(
     references: &[DecodedFrame<T>; 2],
-    mvs: &[[Mv; 2]],
+    mvs: &[[MotionVector; 2]],
     modes: (Option<u32>, bool, bool),
     pool: Option<&splot_parallel::WorkerPool>,
     label: &str,
@@ -436,9 +465,9 @@ fn check_tip_grid<T: ReconSample>(
 }
 
 /// `count` units that repeat four mirrored candidates, mostly full-pel.
-fn repeated_candidates(count: usize, s: &mut u64) -> Vec<[Mv; 2]> {
+fn repeated_candidates(count: usize, s: &mut u64) -> Vec<[MotionVector; 2]> {
     let mut component = || (lcg(s) % 21) as i32 * 8 - 80 + i32::from(lcg(s).is_multiple_of(6)) * 3;
-    let palette: Vec<[Mv; 2]> = (0..4)
+    let palette: Vec<[MotionVector; 2]> = (0..4)
         .map(|_| {
             let first = mv(component(), component());
             [first, mv(-first.row, -first.col)]
@@ -506,8 +535,8 @@ fn tip_motion_grids_match_per_unit_cells() {
 
 #[test]
 fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
-    let onscreen = MotionCell::from_refinemv([Mv::ZERO; 2]);
-    let ref1_offscreen = MotionCell::from_refinemv([Mv::ZERO, mv(512, 0)]);
+    let onscreen = MotionCell::from_refinemv([MotionVector::ZERO; 2]);
+    let ref1_offscreen = MotionCell::from_refinemv([MotionVector::ZERO, mv(512, 0)]);
     let motion = CompoundMotionGrid {
         unit_size: 4,
         columns: 2,
@@ -520,18 +549,21 @@ fn chroma_implicit_mask_reads_one_motion_cell_per_four_by_four_subblock() {
     let pred0 = [16 * 100; 16];
     let pred1 = [16 * 200; 16];
     let mut output = [0u16; 16];
-    blend_implicit_mask_region(
-        [&pred0, &pred1],
-        4,
-        [0, 0, 4, 4],
-        &motion,
-        (0, 0),
-        [scaling; 2],
-        ImplicitMaskBlend::new(BitDepth::Eight, 4, 4),
-        (1, 1),
-        &mut output,
-        4,
-    )
+    crate::test_support::with_auto_backend!(backend => {
+        blend_implicit_mask_region(
+            backend,
+            [&pred0, &pred1],
+            4,
+            [0, 0, 4, 4],
+            &motion,
+            (0, 0),
+            [scaling; 2],
+            ImplicitMaskBlend::new(BitDepth::Eight, 4, 4),
+            (1, 1),
+            &mut output,
+            4,
+        )
+    })
     .expect("chroma blend");
 
     assert_eq!(output, [150; 16]);
@@ -572,7 +604,7 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
     {
         let rect = McBlockRect::from_luma_rect(x, y, bw, bh);
         let columns = bw / unit;
-        let candidates: Vec<[Mv; 2]> = (0..(columns * (bh / unit)) as i32)
+        let candidates: Vec<[MotionVector; 2]> = (0..(columns * (bh / unit)) as i32)
             .map(|i| [mv(row + 3 * i, col - 5), mv(row - 2 * i, col + 7)])
             .collect();
         let planes = [(w, h), (w + 48, h + 48)].map(|size| {
@@ -593,12 +625,25 @@ fn edge_units_match_a_larger_storage<T: ReconSample + CompoundAverageOutput + Se
             .expect("compound block");
             let mut workspace =
                 super::super::tests::workspace_for::<T>(bit_depth, format, size.0, size.1);
-            let mut sink = WorkspaceSink::Frame(&mut workspace);
+            let mut sink = CurrentFrameSurface::Frame(&mut workspace);
             let (mut units, mut mvs) = (TipUnits::default(), candidates.clone());
             let (grid, offset) = ((columns, unit), ByteOffset::new(0));
-            refine_tip_units(&sink, &block, &mvs, &mut units, grid, offset).expect("units");
-            predict_tip_units(&mut sink, &block, &mut mvs, &mut units, grid, offset)
-                .expect("predict");
+            crate::test_support::with_auto_backend!(backend => {
+                refine_tip_units(backend, &sink, &block, &mvs, &mut units, grid, offset)
+            })
+            .expect("units");
+            crate::test_support::with_auto_backend!(backend => {
+                predict_tip_units(
+                    backend,
+                    &mut sink,
+                    &block,
+                    &mut mvs,
+                    &mut units,
+                    grid,
+                    offset,
+                )
+            })
+            .expect("predict");
             super::super::mc_planes(format).map(|(plane, sub_x, sub_y)| {
                 let stride = workspace.plane(plane).expect("plane").stride_samples();
                 let samples = workspace.samples(plane).expect("samples");

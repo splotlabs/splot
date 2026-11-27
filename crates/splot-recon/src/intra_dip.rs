@@ -14,6 +14,7 @@ use fearless_simd::{
 };
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
+use splot_core::simd::SimdBackend;
 
 const DIP_FEATURE_COUNT: usize = 11;
 const DIP_GRID_SIDE: usize = 8;
@@ -95,11 +96,147 @@ impl<'a, T: ReconSample> IntraDipEdges<'a, T> {
     }
 }
 
-/// Writes rectangular AV2 §7.13.2.3 data-driven intra prediction into caller storage.
-///
-/// `output` points at the top-left destination sample and `stride_samples` is
-/// the distance between adjacent output rows. Samples outside the predicted
-/// rectangle are left unchanged.
+#[derive(Clone, Copy)]
+struct BaselineDip;
+
+#[derive(Clone, Copy)]
+struct TypedDip<B: SimdBackend>(B);
+
+trait DipRunner: Copy {
+    fn predict<P: IntraLaneSample>(
+        self,
+        block: DipBlock,
+        features: &[u32; DIP_FEATURE_PAIRS],
+        rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+        left: &[P],
+        above: &[P],
+        output: &mut [P],
+    ) -> Option<()>;
+}
+
+impl DipRunner for BaselineDip {
+    #[inline]
+    fn predict<P: IntraLaneSample>(
+        self,
+        block: DipBlock,
+        features: &[u32; DIP_FEATURE_PAIRS],
+        rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+        left: &[P],
+        above: &[P],
+        output: &mut [P],
+    ) -> Option<()> {
+        baseline_simd!(simd => {
+            predict_dip_samples(simd, block, features, rows, left, above, output)
+        })
+    }
+}
+
+impl<B: SimdBackend> DipRunner for TypedDip<B> {
+    #[inline]
+    fn predict<P: IntraLaneSample>(
+        self,
+        block: DipBlock,
+        features: &[u32; DIP_FEATURE_PAIRS],
+        rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+        left: &[P],
+        above: &[P],
+        output: &mut [P],
+    ) -> Option<()> {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => {
+            predict_dip_samples(simd, block, features, rows, left, above, output)
+        })
+    }
+}
+
+type DipRowWeights = [[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE];
+
+struct PreparedDipInputs {
+    block: DipBlock,
+    features: [u32; DIP_FEATURE_PAIRS],
+    rows: &'static DipRowWeights,
+}
+
+fn prepare_dip_inputs<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    dip_mode: usize,
+    dip_transpose: bool,
+    edges: IntraDipEdges<'_, T>,
+    output_len: usize,
+    stride_samples: usize,
+) -> Result<PreparedDipInputs> {
+    validate_sample_type::<T>(bit_depth)?;
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
+    validate_dip_edges(bit_depth, size, edges)?;
+    validate_output_shape(
+        size,
+        output_len,
+        stride_samples,
+        "DIP intra prediction output buffer length",
+    )?;
+    let features = dip_features(size, edges, dip_transpose);
+    let block = DipBlock {
+        size,
+        max: i32::from(bit_depth.max_sample()),
+        stride: stride_samples,
+    };
+    Ok(PreparedDipInputs {
+        block,
+        features,
+        rows,
+    })
+}
+
+fn predict_intra_dip_rect_into_with_runner<R: DipRunner, T: ReconSample>(
+    runner: R,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    dip_mode: usize,
+    dip_transpose: bool,
+    edges: IntraDipEdges<'_, T>,
+    (output, stride_samples): (&mut [T], usize),
+) -> Result<()> {
+    let PreparedDipInputs {
+        block,
+        features,
+        rows,
+    } = prepare_dip_inputs(
+        bit_depth,
+        size,
+        dip_mode,
+        dip_transpose,
+        edges,
+        output.len(),
+        stride_samples,
+    )?;
+    let shape_error = || ReconError::ArithmeticOverflow {
+        context: "DIP intra prediction output shape",
+    };
+    macro_rules! predict {
+        ($view:ident, $view_mut:ident) => {
+            if let (Some(left), Some(above), Some(output)) = (
+                T::$view(edges.left),
+                T::$view(edges.above),
+                T::$view_mut(output),
+            ) {
+                return runner
+                    .predict(block, &features, rows, left, above, output)
+                    .ok_or_else(shape_error);
+            }
+        };
+    }
+    predict!(u8_slice, u8_slice_mut);
+    predict!(u16_slice, u16_slice_mut);
+    Err(shape_error())
+}
+
+/// Writes rectangular DIP intra prediction into caller storage.
 ///
 /// # Errors
 /// Returns [`ReconError`] for unsupported sample type/bit depth combinations,
@@ -114,47 +251,41 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
-    validate_sample_type::<T>(bit_depth)?;
-    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
-        return Err(ReconError::UnsupportedIntraDipMode {
-            mode: dip_mode,
-            max: DIP_MODE_COUNT - 1,
-        });
-    };
-    validate_dip_edges(bit_depth, size, edges)?;
-    validate_output_shape(
+    predict_intra_dip_rect_into_with_runner(
+        BaselineDip,
+        bit_depth,
         size,
-        output.len(),
-        stride_samples,
-        "DIP intra prediction output buffer length",
-    )?;
+        dip_mode,
+        dip_transpose,
+        edges,
+        (output, stride_samples),
+    )
+}
 
-    let features = dip_features(size, edges, dip_transpose);
-    let shape_error = || ReconError::ArithmeticOverflow {
-        context: "DIP intra prediction output shape",
-    };
-    let block = DipBlock {
+/// Typed [`predict_intra_dip_rect_into`] using caller-selected `backend`.
+///
+/// # Errors
+/// Returns the same validation errors as [`predict_intra_dip_rect_into`].
+#[expect(clippy::too_many_arguments)]
+pub fn predict_intra_dip_rect_into_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    dip_mode: usize,
+    dip_transpose: bool,
+    edges: IntraDipEdges<'_, T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    predict_intra_dip_rect_into_with_runner(
+        TypedDip(backend),
+        bit_depth,
         size,
-        max: i32::from(bit_depth.max_sample()),
-        stride: stride_samples,
-    };
-    macro_rules! predict {
-        ($view:ident, $view_mut:ident) => {
-            if let (Some(left), Some(above), Some(output)) = (
-                T::$view(edges.left),
-                T::$view(edges.above),
-                T::$view_mut(output),
-            ) {
-                return baseline_simd!(simd => {
-                    predict_dip_samples(simd, block, &features, rows, left, above, output)
-                })
-                .ok_or_else(shape_error);
-            }
-        };
-    }
-    predict!(u8_slice, u8_slice_mut);
-    predict!(u16_slice, u16_slice_mut);
-    Err(shape_error())
+        dip_mode,
+        dip_transpose,
+        edges,
+        (output, stride_samples),
+    )
 }
 
 /// The geometry of one DIP block.
@@ -275,7 +406,7 @@ static DIP_ROW_WEIGHTS: [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_M
 
 const DIP_FEATURE_PAIRS: usize = DIP_FEATURE_COUNT.div_ceil(2);
 
-#[allow(
+#[expect(
     clippy::large_stack_arrays,
     reason = "evaluated only at compile time for a static"
 )]
@@ -445,7 +576,6 @@ static DIP_POINT_INDEX: [[[u8; 32]; 4]; 2] = {
     table
 };
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -453,11 +583,7 @@ mod tests {
         IntraRectBlockSize::new(log2_width, log2_height).unwrap()
     }
 
-    #[allow(
-        clippy::many_single_char_names,
-        clippy::needless_range_loop,
-        reason = "the § 7.13.2.4-6 names and loops"
-    )]
+    #[expect(clippy::many_single_char_names, reason = "the § 7.13.2.4-6 names")]
     fn spec_dip(
         (w, h, max): (usize, usize, i32),
         (mode, transpose): (usize, bool),
@@ -748,5 +874,83 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_route() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check;
+        impl SimdScope<()> for Check {
+            fn run<B: SimdBackend>(self, backend: B) {
+                for (log2_w, log2_h) in [(2, 2), (3, 4), (4, 3)] {
+                    let size = rect_size(log2_w, log2_h);
+                    let stride = size.width() + 4;
+                    let left8: Vec<u8> = (0..=size.height()).map(|i| (i * 31) as u8).collect();
+                    let above8: Vec<u8> = (0..=size.width()).map(|i| (i * 43) as u8).collect();
+                    let edges8 = IntraDipEdges::new(&left8[..], &above8[..], 80);
+                    let mut compat8 = vec![5u8; stride * size.height()];
+                    let mut typed8 = Vec::from(compat8.as_slice());
+                    predict_intra_dip_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        2,
+                        false,
+                        edges8,
+                        &mut compat8,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_dip_rect_into_with(
+                        backend,
+                        BitDepth::Eight,
+                        size,
+                        2,
+                        false,
+                        edges8,
+                        &mut typed8,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed8, compat8);
+
+                    let left10: Vec<u16> = (0..=size.height())
+                        .map(|i| ((i * 67) % 1024) as u16)
+                        .collect();
+                    let above10: Vec<u16> = (0..=size.width())
+                        .map(|i| ((i * 89) % 1024) as u16)
+                        .collect();
+                    let edges10 = IntraDipEdges::new(&left10[..], &above10[..], 512);
+                    let mut compat10 = vec![9u16; stride * size.height()];
+                    let mut typed10 = Vec::from(compat10.as_slice());
+                    predict_intra_dip_rect_into(
+                        BitDepth::Ten,
+                        size,
+                        4,
+                        true,
+                        edges10,
+                        &mut compat10,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_dip_rect_into_with(
+                        backend,
+                        BitDepth::Ten,
+                        size,
+                        4,
+                        true,
+                        edges10,
+                        &mut typed10,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed10, compat10);
+                }
+            }
+        }
+
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .enter(Check);
     }
 }

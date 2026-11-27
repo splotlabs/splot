@@ -15,7 +15,7 @@ use std::path::Path;
 use anyhow::{Context as _, Result, bail};
 
 use crate::comment_density::{
-    CommentKind, is_generated_source, rust_source_files, scan_comment_lines,
+    CommentKind, GATED_SOURCE_PATHSPECS, is_generated_source, rust_source_files, scan_comment_lines,
 };
 use crate::feature_status::display_path;
 
@@ -43,7 +43,7 @@ const BANNED_PREFIX_PHRASES: &[&str] = &["oracle fixture", "verified fixture", "
 /// Returns an error listing every offending `file:line` when a banned phrase is
 /// found, or when a tracked source file cannot be read.
 pub(crate) fn check_ai_slop(root: &Path) -> Result<()> {
-    let files = rust_source_files(root)?;
+    let files = rust_source_files(root, GATED_SOURCE_PATHSPECS)?;
     let mut scanned = 0usize;
     let mut violations = Vec::new();
 

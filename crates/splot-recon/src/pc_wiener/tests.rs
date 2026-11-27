@@ -1377,3 +1377,201 @@ fn classify_padded_source_rejects_origin_past_region() {
     .unwrap_err();
     assert!(matches!(err, ReconError::PcWienerInvalidBounds { .. }));
 }
+
+#[test]
+fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
+    use crate::lr_madd::ScalarLr;
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+    struct AutoPc<'a, T: ReconSample> {
+        classify_params: &'a PcWienerClassifyParams,
+        cell_cols: usize,
+        cell_rows: usize,
+        cls_src: &'a PcWienerClassifyPaddedSource<'a, T>,
+        tx_grid: &'a [u8],
+        table: &'static [u8; PC_WIENER_LUT_CLASSES],
+        scratch: &'a mut PcWienerClassifyScratch,
+        expected_cells: &'a [u8],
+        filter_params: &'a PcWienerFilter<'a>,
+        filter_src: &'a PcWienerPaddedSource<'a, T>,
+        expected_filtered: &'a [u16],
+    }
+    impl<T: ReconSample> SimdScope<()> for AutoPc<'_, T> {
+        fn run<B: SimdBackend>(self, backend: B) {
+            let mut cells = Vec::new();
+            pc_wiener_classify_grid_padded_classes_into_with(
+                backend,
+                self.classify_params,
+                self.cell_cols,
+                self.cell_rows,
+                self.cls_src,
+                |run| Ok(&self.tx_grid[run.row * 64 + run.col..]),
+                self.table,
+                self.scratch,
+                &mut cells,
+            )
+            .unwrap();
+            assert_eq!(cells, self.expected_cells);
+            let mut out = vec![T::default(); self.filter_params.width * self.filter_params.height];
+            pc_wiener_filter_block_padded_with(
+                backend,
+                &mut out,
+                self.filter_params,
+                self.filter_src,
+            )
+            .unwrap();
+            let got: Vec<u16> = out.into_iter().map(ReconSample::to_u16).collect();
+            assert_eq!(got, self.expected_filtered);
+        }
+    }
+
+    let mut state = 0x7777_8888_9999_aaaau64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let table = pc_wiener_subclass_table(16, 1).unwrap();
+    let (width, height) = (36usize, 9usize);
+    let cell_cols = width / 4;
+    let cell_rows = height.div_ceil(4);
+    let r = PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS);
+    let stride = width + 2 * r;
+    let mut scratch = PcWienerClassifyScratch::default();
+    let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
+    for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+        let classify_params = PcWienerClassifyParams {
+            x: 60,
+            y: 4,
+            bit_depth,
+            base_q_idx: 120,
+            block_start_x: 0,
+            block_end_x: 127,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 63,
+            tile_start_y: 0,
+            tile_end_y: 127,
+        };
+        let max = u64::from(bit_depth.max_sample()) + 1;
+        let padded_u16: Vec<u16> = (0..(height + 2 * r) * stride)
+            .map(|_| (next() % max) as u16)
+            .collect();
+        let tx_grid: Vec<u8> = (0..64 * 64).map(|idx| ((idx * 5) % 2) as u8).collect();
+        let rows_u16: Vec<_> = padded_u16.chunks(stride).collect();
+        let cls_src = PcWienerClassifyPaddedSource::from_rows(
+            &rows_u16,
+            0,
+            60 - r as isize,
+            4 - r as isize,
+            bit_depth,
+        )
+        .unwrap();
+        let mut expected_cells = Vec::new();
+        pc_wiener_classify_grid_padded_classes_into(
+            &classify_params,
+            cell_cols,
+            cell_rows,
+            &cls_src,
+            |run| Ok(&tx_grid[run.row * 64 + run.col..]),
+            table,
+            &mut scratch,
+            &mut expected_cells,
+        )
+        .unwrap();
+        let filter_params = PcWienerFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth,
+            filter_set_index: 1,
+            subclass_block_size: 4,
+            subclasses: &expected_cells,
+        };
+        let trim = r - PC_WIENER_FILTER_TAP_RADIUS;
+        let filter_src_u16 =
+            PcWienerPaddedSource::from_rows(&rows_u16[trim..], trim, width, height).unwrap();
+        let mut expected_filtered = vec![0u16; width * height];
+        pc_wiener_filter_block(&mut expected_filtered, &filter_params, |x, y| {
+            Ok(padded_u16[(y + r as isize) as usize * stride + (x + r as isize) as usize])
+        })
+        .unwrap();
+
+        resolved.enter(AutoPc {
+            classify_params: &classify_params,
+            cell_cols,
+            cell_rows,
+            cls_src: &cls_src,
+            tx_grid: &tx_grid,
+            table,
+            scratch: &mut scratch,
+            expected_cells: &expected_cells,
+            filter_params: &filter_params,
+            filter_src: &filter_src_u16,
+            expected_filtered: &expected_filtered,
+        });
+        let mut cells_scalar = Vec::new();
+        classify_grid_padded_classes_with_backend(
+            ScalarLr,
+            &classify_params,
+            cell_cols,
+            cell_rows,
+            &cls_src,
+            |run| Ok(&tx_grid[run.row * 64 + run.col..]),
+            table,
+            &mut scratch,
+            &mut cells_scalar,
+        )
+        .unwrap();
+        assert_eq!(cells_scalar, expected_cells);
+        let mut out_scalar = vec![0u16; width * height];
+        pc_wiener_filter_block_padded_with_backend(
+            ScalarLr,
+            &mut out_scalar,
+            &filter_params,
+            &filter_src_u16,
+        )
+        .unwrap();
+        assert_eq!(out_scalar, expected_filtered);
+        resolved.enter(AutoPc {
+            classify_params: &classify_params,
+            cell_cols,
+            cell_rows,
+            cls_src: &cls_src,
+            tx_grid: &tx_grid,
+            table,
+            scratch: &mut scratch,
+            expected_cells: &expected_cells,
+            filter_params: &filter_params,
+            filter_src: &filter_src_u16,
+            expected_filtered: &expected_filtered,
+        });
+        if bit_depth == BitDepth::Eight {
+            let padded_u8: Vec<u8> = padded_u16.iter().map(|&v| v as u8).collect();
+            let rows_u8: Vec<_> = padded_u8.chunks(stride).collect();
+            let cls_src8 = PcWienerClassifyPaddedSource::from_rows(
+                &rows_u8,
+                0,
+                60 - r as isize,
+                4 - r as isize,
+                bit_depth,
+            )
+            .unwrap();
+            let filter_src8 =
+                PcWienerPaddedSource::from_rows(&rows_u8[trim..], trim, width, height).unwrap();
+            resolved.enter(AutoPc {
+                classify_params: &classify_params,
+                cell_cols,
+                cell_rows,
+                cls_src: &cls_src8,
+                tx_grid: &tx_grid,
+                table,
+                scratch: &mut scratch,
+                expected_cells: &expected_cells,
+                filter_params: &filter_params,
+                filter_src: &filter_src8,
+                expected_filtered: &expected_filtered,
+            });
+        }
+    }
+}

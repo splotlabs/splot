@@ -7,7 +7,7 @@ use super::{FrameStore, PipelineFrame, unsupported, unsupported_at};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
-use splot_core::types::ObuType;
+use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::BitDepth;
 
 use crate::error::Result;
@@ -101,7 +101,7 @@ fn missing_display_frame() -> crate::error::DecodeError {
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &FrameStore,
-    scheduler: &OutputScheduler,
+    emitted_count: usize,
     queue: &mut EmissionQueue,
     newly: &[usize],
     emit: &mut dyn FnMut(&PipelineFrame) -> Result<()>,
@@ -110,9 +110,9 @@ pub(super) fn charge_emitted_outputs(
         let requested = options
             .output_frame_limit()
             .map_or(u64::MAX, std::num::NonZeroU64::get);
-        let emitted_total = (scheduler.emitted_count as u64).min(requested);
+        let emitted_total = (emitted_count as u64).min(requested);
         ensure_output_frame_count_limit(options.limits(), emitted_total)?;
-        let first_new = scheduler.emitted_count - newly.len();
+        let first_new = emitted_count - newly.len();
         for (offset, &frame_index) in newly.iter().enumerate() {
             if (first_new + offset) as u64 >= requested {
                 break;
@@ -139,15 +139,39 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
     core.immediate_output_frame == Some(true) || core.implicit_output_frame == Some(true)
 }
 
+/// AV2 § 7.21.6 `output_ordering`: `OrderHint * (max_mlayer_id + 1) + obu_mlayer_id`.
+pub(super) fn output_ordering(
+    order_hint: u32,
+    embedded_layer_id: EmbeddedLayerId,
+    max_mlayer_id: EmbeddedLayerId,
+) -> u64 {
+    let stride = u64::from(max_mlayer_id.get()) + 1;
+    u64::from(order_hint) * stride + u64::from(embedded_layer_id.get())
+}
+
+/// AV2 §§ 7.2 and 7.21.6 use the reference buffer's layer for a derived SEF.
+pub(super) fn show_existing_output_layer(
+    derive_order_hint: bool,
+    obu_mlayer: EmbeddedLayerId,
+    reference_mlayer: EmbeddedLayerId,
+) -> EmbeddedLayerId {
+    if derive_order_hint {
+        reference_mlayer
+    } else {
+        obu_mlayer
+    }
+}
+
 pub(super) struct OutputScheduler {
-    pub(super) pending: Vec<Option<(usize, u32)>>,
+    pub(super) pending: Vec<Option<(usize, u64)>>,
     emitted: Vec<usize>,
+    suppressed: Vec<usize>,
     /// The frames the last `refresh` or `on_immediate` released, kept so the
     /// per-frame calls reuse one list.
     newly: Vec<usize>,
     pub(super) emitted_count: usize,
     open_loop_active: bool,
-    open_loop_order_hint: Option<u32>,
+    open_loop_order_hint: Option<u64>,
 }
 
 impl OutputScheduler {
@@ -155,6 +179,7 @@ impl OutputScheduler {
         Self {
             pending: vec![None; num_slots],
             emitted: Vec::new(),
+            suppressed: Vec::new(),
             newly: Vec::new(),
             emitted_count: 0,
             open_loop_active: false,
@@ -162,11 +187,19 @@ impl OutputScheduler {
         }
     }
 
+    pub(super) fn suppress(&mut self, frame_index: usize) {
+        if !self.suppressed.contains(&frame_index) {
+            self.suppressed.push(frame_index);
+        }
+    }
+
     pub(super) fn emit(&mut self, frame_index: usize, newly: &mut Vec<usize>) {
         if !self.emitted.contains(&frame_index) {
             self.emitted.push(frame_index);
-            self.emitted_count += 1;
-            newly.push(frame_index);
+            if !self.suppressed.contains(&frame_index) {
+                self.emitted_count += 1;
+                newly.push(frame_index);
+            }
         }
         for slot in &mut self.pending {
             if slot.is_some_and(|(held, _)| held == frame_index) {
@@ -175,14 +208,14 @@ impl OutputScheduler {
         }
     }
 
-    pub(super) fn flush_lower_than(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+    pub(super) fn flush_lower_than(&mut self, ordering: u64, newly: &mut Vec<usize>) {
         loop {
             let next = self
                 .pending
                 .iter()
                 .flatten()
                 .filter(|(_, held)| *held < ordering)
-                .min_by_key(|(_, held)| *held)
+                .min_by_key(|&&(frame_index, held)| (held, frame_index))
                 .copied();
             let Some((frame_index, _)) = next else {
                 return;
@@ -191,10 +224,10 @@ impl OutputScheduler {
         }
     }
 
-    pub(super) fn output_successive(&mut self, ordering: u32, newly: &mut Vec<usize>) {
+    pub(super) fn output_successive(&mut self, ordering: u64, newly: &mut Vec<usize>) {
         let mut target = ordering.saturating_add(1);
         loop {
-            let held = |(_, at): &&(usize, u32)| *at == target;
+            let held = |(_, at): &&(usize, u64)| *at == target;
             if !self.pending.iter().flatten().any(|slot| held(&slot)) {
                 return;
             }
@@ -210,14 +243,14 @@ impl OutputScheduler {
         &self.newly
     }
 
-    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u32) {
+    pub(super) fn on_immediate(&mut self, frame_index: usize, ordering: u64) {
         let mut newly = core::mem::take(&mut self.newly);
         newly.clear();
         self.immediate_into(frame_index, ordering, &mut newly);
         self.newly = newly;
     }
 
-    fn immediate_into(&mut self, frame_index: usize, ordering: u32, newly: &mut Vec<usize>) {
+    fn immediate_into(&mut self, frame_index: usize, ordering: u64, newly: &mut Vec<usize>) {
         self.flush_lower_than(ordering, newly);
         self.emit(frame_index, newly);
         self.output_successive(ordering, newly);
@@ -227,7 +260,7 @@ impl OutputScheduler {
         &mut self,
         refresh_frame_flags: u32,
         frame_index: usize,
-        ordering: u32,
+        ordering: u64,
         implicit: bool,
         is_key_or_switch: bool,
     ) {
@@ -253,6 +286,8 @@ impl OutputScheduler {
 
     pub(super) fn forget(&mut self, frame_index: usize) {
         self.emitted.retain(|&emitted| emitted != frame_index);
+        self.suppressed
+            .retain(|&suppressed| suppressed != frame_index);
     }
 
     pub(super) fn already_emitted(&self, frame_index: usize) -> bool {
@@ -268,7 +303,7 @@ impl OutputScheduler {
 
     pub(super) fn flush_all(&mut self) -> Vec<usize> {
         let mut newly = Vec::new();
-        self.flush_lower_than(u32::MAX, &mut newly);
+        self.flush_lower_than(u64::MAX, &mut newly);
         newly
     }
 
@@ -289,7 +324,7 @@ impl OutputScheduler {
                 .iter()
                 .flatten()
                 .filter(|(_, ordering)| limit.is_none_or(|limit| *ordering < limit))
-                .min_by_key(|(_, ordering)| *ordering)
+                .min_by_key(|&&(frame_index, ordering)| (ordering, frame_index))
                 .copied();
             let Some((frame_index, _)) = next else {
                 return newly;
@@ -302,7 +337,7 @@ impl OutputScheduler {
         &mut self,
         obu_type: ObuType,
         first_picture_in_tu: bool,
-        order_hint: u32,
+        order_hint: u64,
         immediate: bool,
         implicit: bool,
     ) {
@@ -324,7 +359,7 @@ impl OutputScheduler {
             let next = slots
                 .iter()
                 .filter_map(|&slot| self.pending.get(slot).copied().flatten())
-                .min_by_key(|(_, ordering)| *ordering);
+                .min_by_key(|&(frame_index, ordering)| (ordering, frame_index));
             let Some((frame_index, ordering)) = next else {
                 break;
             };
@@ -341,6 +376,7 @@ impl OutputScheduler {
     pub(super) fn start_new_sequence(&mut self, num_slots: usize) -> Vec<usize> {
         let newly = self.flush_all();
         self.pending = vec![None; num_slots];
+        self.suppressed.clear();
         self.open_loop_active = false;
         self.open_loop_order_hint = None;
         newly
@@ -458,6 +494,69 @@ mod open_loop_tests {
         assert_eq!(emitted, vec![11, 10, 12]);
         assert!(scheduler.pending.iter().all(Option::is_none));
     }
+
+    #[test]
+    fn open_loop_tu_limit_flushes_all_embedded_layers_below_tu_hint_only() {
+        let max_mlayer = EmbeddedLayerId::from_bits(1);
+        let ml0 = EmbeddedLayerId::from_bits(0);
+        let ml1 = EmbeddedLayerId::from_bits(1);
+        let mut scheduler = OutputScheduler::new(3);
+        scheduler.pending[0] = Some((10, output_ordering(4, ml1, max_mlayer)));
+        scheduler.pending[1] = Some((11, output_ordering(5, ml0, max_mlayer)));
+        scheduler.pending[2] = Some((12, output_ordering(6, ml0, max_mlayer)));
+        scheduler.note_frame(
+            ObuType::OpenLoopKey,
+            true,
+            output_ordering(5, ml0, max_mlayer),
+            false,
+            true,
+        );
+
+        let emitted = scheduler.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+        assert_eq!(emitted, vec![10]);
+        assert_eq!(
+            scheduler.pending[1],
+            Some((11, output_ordering(5, ml0, max_mlayer)))
+        );
+        assert_eq!(
+            scheduler.pending[2],
+            Some((12, output_ordering(6, ml0, max_mlayer)))
+        );
+    }
+
+    #[test]
+    fn derived_sef_uses_reference_layer_when_releasing_implicit_output() {
+        let base = EmbeddedLayerId::BASE;
+        let enhancement = EmbeddedLayerId::from_bits(1);
+        for (derived, expected) in [(true, &[1][..]), (false, &[1, 2][..])] {
+            let mut scheduler = OutputScheduler::new(2);
+            scheduler.refresh(1, 2, output_ordering(3, base, enhancement), true, false);
+            let output_mlayer = show_existing_output_layer(derived, enhancement, base);
+            let ordering = output_ordering(2, output_mlayer, enhancement);
+
+            scheduler.on_immediate(1, ordering);
+
+            assert_eq!(scheduler.newly(), expected);
+        }
+    }
+
+    #[test]
+    fn layered_output_ordering_holds_future_tu_across_embedded_layers() {
+        let max_mlayer = EmbeddedLayerId::from_bits(1);
+        let ml0 = EmbeddedLayerId::from_bits(0);
+        let ml1 = EmbeddedLayerId::from_bits(1);
+        let mut scheduler = OutputScheduler::new(8);
+
+        scheduler.refresh(1 << 1, 2, output_ordering(3, ml0, max_mlayer), true, false);
+        scheduler.refresh(1 << 3, 4, output_ordering(3, ml1, max_mlayer), true, false);
+
+        scheduler.on_immediate(6, output_ordering(2, ml0, max_mlayer));
+        assert_eq!(scheduler.newly(), &[6]);
+
+        scheduler.on_immediate(7, output_ordering(2, ml1, max_mlayer));
+        assert_eq!(scheduler.newly(), &[7, 2, 4]);
+    }
 }
 
 pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
@@ -469,10 +568,9 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use crate::pipeline::FrameCdfSubset;
+    use crate::bitstream::tile_payload::FrameCdfSubset;
     use crate::pipeline::frame_lifecycle::PipelineDecodedFrame;
     use crate::pipeline::inflight::PipelineFrameSlot;
     use crate::pipeline::output_effects::FrameOutputEffects;
@@ -508,9 +606,15 @@ mod tests {
                 crate::bitstream::tile_payload::FrameSegmentIdMap::new(1, width.div_ceil(4))
                     .unwrap(),
             )),
-            frame_rate_numerator: 1,
-            frame_rate_denominator: 1,
+            frame_rate: crate::pipeline::PipelineFrameRate {
+                numerator: 1,
+                denominator: 1,
+            },
+            extended_layer_id: splot_core::types::ExtendedLayerId::from_bits(0),
+            embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
+            temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
             props: crate::DataProps::default(),
+            provenance: crate::PictureProvenance::TEST,
         })
     }
 
@@ -546,7 +650,7 @@ mod tests {
         let result = charge_emitted_outputs(
             &options,
             &frames,
-            &scheduler,
+            scheduler.emitted_count,
             &mut queue,
             &[0, 1],
             &mut |frame| {
@@ -629,6 +733,19 @@ mod tests {
         }
     }
 
+    struct SingleLayerRetention<'a> {
+        reference: &'a crate::reference::buffer::RuntimeReferenceBuffer,
+        scheduler: &'a mut OutputScheduler,
+    }
+    impl crate::pipeline::FrameRetention for SingleLayerRetention<'_> {
+        fn retains(&self, frame_index: usize) -> bool {
+            self.reference.retains(frame_index) || self.scheduler.retains(frame_index)
+        }
+        fn forget(&mut self, frame_index: usize) {
+            self.scheduler.forget(frame_index);
+        }
+    }
+
     #[test]
     fn emitted_sample_aliases_retire_without_losing_live_byte_accounting() {
         let source = settled_frame(8, FrameOutputEffects::empty()).unwrap();
@@ -651,10 +768,13 @@ mod tests {
                 PipelineFrameSlot::completed(frames.get(0).unwrap().frame.ready().unwrap());
             assert_eq!(retained_decoded_frame_bytes(&alias).unwrap(), 0);
             frames.entries[1].frame = Some(alias);
-            crate::pipeline::reclaim_unowned_frames(
+            let mut retention = SingleLayerRetention {
+                reference: &reference,
+                scheduler: &mut scheduler,
+            };
+            crate::pipeline::reclaim_unowned_frames_with(
                 &mut frames,
-                &reference,
-                &mut scheduler,
+                &mut retention,
                 &queue,
                 &mut ring,
                 &mut retained_bytes,
@@ -664,10 +784,13 @@ mod tests {
             assert_eq!(retained_bytes, source_bytes);
         }
         scheduler.pending[0] = None;
-        crate::pipeline::reclaim_unowned_frames(
+        let mut retention = SingleLayerRetention {
+            reference: &reference,
+            scheduler: &mut scheduler,
+        };
+        crate::pipeline::reclaim_unowned_frames_with(
             &mut frames,
-            &reference,
-            &mut scheduler,
+            &mut retention,
             &queue,
             &mut ring,
             &mut retained_bytes,
@@ -678,10 +801,9 @@ mod tests {
             "external samples still need accounting"
         );
         drop(external);
-        crate::pipeline::reclaim_unowned_frames(
+        crate::pipeline::reclaim_unowned_frames_with(
             &mut frames,
-            &reference,
-            &mut scheduler,
+            &mut retention,
             &queue,
             &mut ring,
             &mut retained_bytes,

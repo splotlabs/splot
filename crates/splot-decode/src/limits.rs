@@ -9,6 +9,10 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
+use crate::{
+    EmbeddedLayerSelection, ExtendedLayerSelection, OperatingPointSelection, TemporalLayerSelection,
+};
+
 const MAX_HOST_ALLOCATION_LEN: u64 = isize::MAX as u64;
 
 macro_rules! decode_limit_accessors {
@@ -38,6 +42,10 @@ pub struct DecodeOptions {
     output_frame_limit: Option<NonZeroU64>,
     y4m_frame_rate_override: Option<Y4mFrameRate>,
     skip_film_grain: bool,
+    temporal_layer_selection: TemporalLayerSelection,
+    embedded_layer_selection: EmbeddedLayerSelection,
+    extended_layer_selection: ExtendedLayerSelection,
+    operating_point_selection: OperatingPointSelection,
 }
 
 impl DecodeOptions {
@@ -47,6 +55,10 @@ impl DecodeOptions {
         output_frame_limit: None,
         y4m_frame_rate_override: None,
         skip_film_grain: false,
+        temporal_layer_selection: TemporalLayerSelection::All,
+        embedded_layer_selection: EmbeddedLayerSelection::All,
+        extended_layer_selection: ExtendedLayerSelection::All,
+        operating_point_selection: OperatingPointSelection::None,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -57,6 +69,10 @@ impl DecodeOptions {
             output_frame_limit: None,
             y4m_frame_rate_override: None,
             skip_film_grain: false,
+            temporal_layer_selection: TemporalLayerSelection::All,
+            embedded_layer_selection: EmbeddedLayerSelection::All,
+            extended_layer_selection: ExtendedLayerSelection::All,
+            operating_point_selection: OperatingPointSelection::None,
         }
     }
 
@@ -107,6 +123,81 @@ impl DecodeOptions {
         self.skip_film_grain = skip;
         self
     }
+
+    /// Returns the caller-requested temporal-layer selection policy.
+    #[must_use]
+    pub const fn temporal_layer_selection(self) -> TemporalLayerSelection {
+        self.temporal_layer_selection
+    }
+
+    /// Returns a copy with the requested temporal-layer selection policy.
+    #[must_use]
+    pub const fn with_temporal_layer_selection(
+        mut self,
+        selection: TemporalLayerSelection,
+    ) -> Self {
+        self.temporal_layer_selection = selection;
+        self
+    }
+
+    /// Returns the caller-requested embedded-layer selection policy.
+    #[must_use]
+    pub const fn embedded_layer_selection(self) -> EmbeddedLayerSelection {
+        self.embedded_layer_selection
+    }
+
+    /// Returns a copy with the requested embedded-layer selection policy.
+    #[must_use]
+    pub const fn with_embedded_layer_selection(
+        mut self,
+        selection: EmbeddedLayerSelection,
+    ) -> Self {
+        self.embedded_layer_selection = selection;
+        self
+    }
+
+    /// Returns the caller-requested extended-layer selection policy.
+    #[must_use]
+    pub const fn extended_layer_selection(self) -> ExtendedLayerSelection {
+        self.extended_layer_selection
+    }
+
+    /// Returns a copy with the requested extended-layer selection policy.
+    #[must_use]
+    pub const fn with_extended_layer_selection(
+        mut self,
+        selection: ExtendedLayerSelection,
+    ) -> Self {
+        self.extended_layer_selection = selection;
+        self
+    }
+
+    /// Returns the caller-requested operating-point selection policy.
+    #[must_use]
+    pub const fn operating_point_selection(self) -> OperatingPointSelection {
+        self.operating_point_selection
+    }
+
+    /// Returns a copy with the requested operating-point selection policy.
+    #[must_use]
+    pub const fn with_operating_point_selection(
+        mut self,
+        selection: OperatingPointSelection,
+    ) -> Self {
+        self.operating_point_selection = selection;
+        self
+    }
+
+    pub(crate) fn validate_selections(self) -> crate::Result<()> {
+        self.temporal_layer_selection.validate()?;
+        self.embedded_layer_selection.validate()?;
+        self.extended_layer_selection.validate()?;
+        self.operating_point_selection.validate_with(
+            self.temporal_layer_selection,
+            self.embedded_layer_selection,
+            self.extended_layer_selection,
+        )
+    }
 }
 
 impl Default for DecodeOptions {
@@ -116,7 +207,7 @@ impl Default for DecodeOptions {
 }
 
 /// Caller-provided resource limits for decode planning and runtime.
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeLimits {
     max_input_bytes: DecodeLimitThreshold,
@@ -590,15 +681,23 @@ impl DecodeLimitCheck {
 }
 
 /// Typed local failure from a decode resource limit helper.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeLimitError {
     /// A measured value exceeded its configured threshold.
+    #[error(
+        "decode limit {} exceeded: actual {} {} is greater than {}",
+        .check.name(),
+        .check.actual(),
+        .check.unit(),
+        .check.threshold()
+    )]
     LimitExceeded {
         /// Failed check metadata.
         check: DecodeLimitCheck,
     },
     /// Checked arithmetic overflowed while deriving a measured value.
+    #[error("decode limit {name} overflow while deriving value with {op}: {left}, {right}")]
     ArithmeticOverflow {
         /// Limit being derived.
         name: DecodeLimitName,
@@ -610,6 +709,7 @@ pub enum DecodeLimitError {
         right: u64,
     },
     /// An accepted value cannot be represented as a host allocation length.
+    #[error("decode limit {name} value {actual} cannot fit in a host allocation length")]
     HostAllocationTooLarge {
         /// Limit being converted to a host allocation length.
         name: DecodeLimitName,
@@ -676,36 +776,6 @@ impl DecodeLimitError {
         }
     }
 }
-
-impl fmt::Display for DecodeLimitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::LimitExceeded { check } => write!(
-                f,
-                "decode limit {} exceeded: actual {} {} is greater than {}",
-                check.name(),
-                check.actual(),
-                check.unit(),
-                check.threshold()
-            ),
-            Self::ArithmeticOverflow {
-                name,
-                op,
-                left,
-                right,
-            } => write!(
-                f,
-                "decode limit {name} overflow while deriving value with {op}: {left}, {right}"
-            ),
-            Self::HostAllocationTooLarge { name, actual } => write!(
-                f,
-                "decode limit {name} value {actual} cannot fit in a host allocation length"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DecodeLimitError {}
 
 /// Result alias for decode limit helpers.
 pub type DecodeLimitResult<T> = Result<T, DecodeLimitError>;

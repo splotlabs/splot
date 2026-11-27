@@ -48,7 +48,7 @@ pub(in crate::validator::tests) struct FrameCoreSeq {
     /// takes the §5.18.2 refresh derivation OUT of the `OBU_RAS_FRAME && max_mlayer_id == 0`
     /// arm (mirror :4493) that derives refresh flags from RefValid/RefLongTermId. That arm
     /// reaches the reference region when the modeled §7.23 state is available and stops
-    /// honestly when it is not. A `max_mlayer_id != 0` RAS frame instead falls through to
+    /// when it is not. A `max_mlayer_id != 0` RAS frame instead falls through to
     /// the explicit SWITCH `refresh_frame_flags f(NumRefFrames)` arm (mirror :4507-4509).
     pub(in crate::validator::tests) max_mlayer_id: u32,
     /// `max_tlayer_id` (§ 5.4.1, mirror :385): the highest temporal layer the CVS may

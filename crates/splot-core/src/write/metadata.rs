@@ -18,8 +18,7 @@
 //! - [`write_metadata_payload`] — the typed § 5.17.4 – § 5.17.13 child payloads, selected by
 //!   `metadata_type`.
 //!
-//! Like the other writers this module is additive: it depends on the model/parser read-only and
-//! serializes a parsed structure back to bits via [`BitWriter`]. The composing writers
+//! Serializes a parsed structure back to bits via [`BitWriter`]. The composing writers
 //! (`metadata_short_obu()`, `metadata_group_obu()`, and each unit) draft into a local scratch
 //! [`BitWriter`] and only [`BitWriter::append`] to the caller on full success, so a mid-composition
 //! reject never touches the caller (reject-before-write: every reject path leaves
@@ -55,7 +54,7 @@ const MUH_HEADER_SIZE_MAX_PLUS_1: u8 = 128;
 /// `metadata_unit_cnt_minus_1` must be `< 16383` (AV2 § 5.17.3), the parser's bound.
 const METADATA_UNIT_CNT_MAX: u32 = 16383;
 
-/// Writes `value` as a `leb128()` (AV2 v1.0.0 § 4.11.6) occupying EXACTLY `len` bytes (`1..=8`),
+/// Writes `value` as a `leb128()` (AV2 v1.0.0 § 4.11.6) occupying exactly `len` bytes (`1..=8`),
 /// padding a minimal encoding with continuation groups so a non-minimal parsed encoding
 /// round-trips byte-exactly. Byte `i` (0-based) is `((value >> (7*i)) & 0x7f)`, OR'd with `0x80`
 /// for every byte but the last; [`crate::bitio::BitReader::read_leb128`] then reparses to `value`

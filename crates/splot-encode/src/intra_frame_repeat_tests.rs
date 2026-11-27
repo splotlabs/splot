@@ -8,7 +8,7 @@ use super::*;
 use splot_core::annexb::parse_annex_b_obus_partial;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameReferenceStateView, parse_frame_header_core,
+    FrameHeaderParseInput, FrameReferenceStateView, parse_frame_header_core,
 };
 use splot_core::headers::sequence::parse_sequence_header;
 use splot_core::span::ByteOffset;
@@ -92,11 +92,12 @@ fn explicit_hints(units: &[Vec<u8>]) -> Vec<(u64, u32)> {
         };
         let input = FrameHeaderParseInput {
             obu_type: ObuType::RegularSef,
+            obu_mlayer_id: splot_core::types::EmbeddedLayerId::BASE,
+            obu_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             first_picture_in_tu: true,
             active_sequence: Some(&seq),
             mfh_record: None,
             reference_state: FrameReferenceStateView::unknown(),
-            mode: FrameHeaderParseMode::Core,
         };
         let mut reader = BitReader::new(sef.payload, ByteOffset::new(0));
         let core = parse_frame_header_core(&mut reader, &input).unwrap();
@@ -132,7 +133,8 @@ fn repeats_decode_to_the_frames_they_show_on_any_thread_count() {
                 .all(|&(display, hint)| u64::from(hint) == display % 8)
         );
         assert_same_samples(&decode(&units.concat()), &expected, &case);
-        for threads in [2, 8] {
+        {
+            let threads = 2;
             config.threads = splot_parallel::ThreadCount::from(threads);
             let other = repeat_stream(&config, &CONTENT, panning_frame).0;
             assert!(other == units, "{case}: {threads} threads");

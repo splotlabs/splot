@@ -12,8 +12,8 @@ pub(crate) use tile::{
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
-    get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, RESTRICTED_ORDER_HINT,
+    TipFrameMode, TxMode, get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -26,10 +26,10 @@ use splot_recon::{
 };
 
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, INTRABC_REF_FRAME,
-    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode,
-    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
-    TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
+    BlockNeighbourContext, BlockPrecisionRecord, INTRABC_REF_FRAME, MotionMode, MvBlockContext,
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode, NeighbourMvGrid, TIP_REF_FRAME,
+    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
+    TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
     new_mv_ctx_from_neighbours, ref_count_ctx, warp_ctx_from_neighbours, warp_predicted_mv,
 };
@@ -40,7 +40,7 @@ use super::read_mv::{
 };
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, Mv, PlacedInterBlock,
+    InterResidualBlock, MotionFieldHandle, MotionFieldLayout, MotionVector, PlacedInterBlock,
     ReferenceMetadata, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO,
     SegmentIdMapHandle, mc,
 };
@@ -52,9 +52,9 @@ use crate::bitstream::tile_payload::{
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
-    TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
-    current_segment_lossless, decode_general_intra_plane_coeffs, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size, read_row, row_at,
+    TileSegmentIdStateError, TransformToolResidualPolicy, current_segment_lossless,
+    decode_general_intra_plane_coeffs, get_plane_residual_size, is_cctx_geometry_allowed,
+    neg_deinterleave, read_lossless_tx_size, read_row, row_at,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -99,7 +99,7 @@ fn global_motion_mv(
     logical_ref: i8,
     block: &MvBlockContext,
     precision: u8,
-) -> Mv {
+) -> MotionVector {
     warp_predicted_mv(
         global_motion_model(core, logical_ref).gm_params,
         block,
@@ -132,7 +132,7 @@ const WARP_DELTA_STEP_BITS: u32 = 10;
 pub(crate) const WARPEDMODEL_TRANS_CLAMP: i32 =
     1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
 #[doc = "AV2 § 9.2 `Size_Group[BLOCK_SIZES]`."]
-const SIZE_GROUP_LOOKUP: [usize; 29] = [
+const SIZE_GROUP_LOOKUP: [u8; 29] = [
     0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 1, 1, 2, 2, 1, 1, 2, 2,
 ];
 #[doc = "AV2 § 9.2 `Wedge_Bits[BLOCK_SIZES] != 0`."]
@@ -145,7 +145,7 @@ const H_WEDGE_ANGLES: u8 = 10;
 
 /// § 5.20.4 chroma subsampling as `(subsamplingX, subsamplingY)` in MI shifts.
 pub(super) fn block_chroma_subsampling(chroma: ChromaFormatIdc) -> (u32, u32) {
-    let (sub_x, sub_y) = chroma_subsampling(chroma);
+    let (sub_x, sub_y) = chroma.subsampling();
     (u32::from(sub_x), u32::from(sub_y))
 }
 const WEDGE_0: u8 = 0;
@@ -158,6 +158,8 @@ enum WarpInterMode {
 }
 
 pub(crate) struct InterFilterInputs {
+    #[cfg(feature = "block-evidence")]
+    pub(crate) stage_capture: Option<Arc<crate::block_evidence::BlockEvidenceState>>,
     pub(crate) records: crate::filters::wienerns_lr::FrameFilterRecords,
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
@@ -322,7 +324,7 @@ pub(crate) struct InterBlockFacts {
     pub(crate) residual_use_ddt: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn derive_inter_block_setup(
     work_units: &[DecodeTileWorkUnit],
     sequence: &SequenceHeader,
@@ -412,6 +414,13 @@ pub(crate) fn derive_inter_block_setup(
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
     let params = tile::TileWalkParams {
+        #[cfg(feature = "block-evidence")]
+        block_evidence: products.block_evidence.as_ref().map(|evidence| {
+            evidence.start_walk(
+                geometry.info().visible_luma_rect(),
+                sequence.general.chroma_format_idc.subsampling(),
+            )
+        }),
         filter_record_needs: crate::filters::wienerns_lr::FilterRecordNeeds::from_frame(core),
         limits: options.limits(),
         mi_rows,
@@ -430,6 +439,8 @@ pub(crate) fn derive_inter_block_setup(
         allow_bawp,
         allow_warpmv_mode,
         allow_intrabc: crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(core),
+        allow_local_intrabc:
+            crate::filters::wienerns_lr::intrabc_records::frame_allows_local_intrabc(core),
         frame_is_switch,
         current_order_hint,
         temporal_first_frame: frame_temporal_first(
@@ -525,8 +536,9 @@ fn finish_frame_cdfs(
     products.cdf_output()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
     sequence: &SequenceHeader,
@@ -564,7 +576,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     } = setup;
     let mut lease =
         crate::support::decode_buffers::DecodeBuffers::lend_temporal(scratch.buffers.as_deref());
-    let temporal_context = prelude.run(&mut lease.temporal, core, ref_frame_idx, reference)?;
+    let temporal_context =
+        prelude.run(backend, &mut lease.temporal, core, ref_frame_idx, reference)?;
     let mut tile_scratch = scratch.tile.take().unwrap_or_default();
     tile_scratch.buffers.clone_from(&scratch.buffers);
     let previous = final_segment_ids(
@@ -573,12 +586,19 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         params.mi_rows,
         params.mi_cols,
     );
+    #[cfg(feature = "block-evidence")]
+    let _capture_scope = products
+        .block_evidence
+        .as_ref()
+        .and_then(crate::block_evidence::BlockEvidenceState::stage_capture)
+        .map(crate::block_evidence::stages::ReconStageScope::install);
     let segment_ids = if previous.is_some() {
         None
     } else {
         products.segment_ids(params.mi_rows, params.mi_cols, segmentation_enabled(core))?
     };
     let (tile_scratch, workspace, walked) = tile::decode_tiles(
+        backend,
         tile_scratch,
         &mut records,
         payload,
@@ -598,12 +618,18 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         segment_ids,
     )?;
     scratch.tile = Some(tile_scratch);
+    validate_bru_regions(params.bru_modes.as_deref(), work_units)?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, products)?;
     let mut ccso_state = walked.ccso_state;
     let reused = super::reused_ccso_grids(core, sequence, reference);
     ccso_state.load_reused_blocks(super::reused_ccso_sources(&reused))?;
     let ccso_grid = products.finish_ccso(ccso_state)?;
     let filter_inputs = InterFilterInputs {
+        #[cfg(feature = "block-evidence")]
+        stage_capture: products
+            .block_evidence
+            .as_ref()
+            .and_then(crate::block_evidence::BlockEvidenceState::stage_capture),
         records,
         cdef_grid: walked.cdef_state.into_grid()?,
         ccso_grid,
@@ -621,6 +647,30 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         filter_inputs,
         segment_ids,
     })
+}
+
+fn validate_bru_regions(
+    modes: Option<&crate::filters::bru::BruModeMap>,
+    work_units: &[crate::bitstream::tile_payload::DecodeTileWorkUnit],
+) -> Result<()> {
+    if let Some(modes) = modes {
+        modes.validate_regions(|row, col| {
+            let Some(tile) = work_units.iter().find(|tile| {
+                let rows = tile.mi_row_range();
+                let cols = tile.mi_col_range();
+                (rows.start as usize..rows.end as usize).contains(&row)
+                    && (cols.start as usize..cols.end as usize).contains(&col)
+            }) else {
+                return invalid_inter_tile_scheduling_state();
+            };
+            crate::pipeline::malformed_tile_payload(
+                tile.tile_byte_span().start,
+                "7.2",
+                "The BRU superblock modes do not form a valid region.",
+            )
+        })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn segmentation_enabled(core: &FrameHeaderCore) -> bool {
@@ -711,14 +761,16 @@ pub(crate) struct TemporalPrelude {
 }
 
 impl TemporalPrelude {
-    fn run<'a>(
+    fn run<'a, B: splot_core::simd::SimdBackend>(
         &self,
+        backend: B,
         temporal_context: &'a mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         reference: &ReferenceMetadata,
     ) -> Result<&'a mut TemporalMvContext> {
         frame_temporal_context(
+            backend,
             temporal_context,
             core,
             self.geometry.sb_h4(),
@@ -814,8 +866,9 @@ fn scheduled_motion_field_inputs(
 ///
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
-#[allow(clippy::too_many_arguments)]
-fn frame_temporal_context<'a>(
+#[expect(clippy::too_many_arguments)]
+fn frame_temporal_context<'a, B: splot_core::simd::SimdBackend>(
+    backend: B,
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -828,6 +881,7 @@ fn frame_temporal_context<'a>(
 ) -> Result<&'a mut TemporalMvContext> {
     let ref_motion_fields = reference.resolve_motion_fields(ref_frame_idx)?;
     temporal_context.refresh_from_references(
+        backend,
         dimensions,
         current_order_hint,
         temporal_config,
@@ -836,7 +890,7 @@ fn frame_temporal_context<'a>(
         &reference.ref_order_hint,
         &ref_motion_fields,
     )?;
-    tip::prepare_motion_field(temporal_context, core, sb_h4, expected_tip_pair)?;
+    tip::prepare_motion_field(backend, temporal_context, core, sb_h4, expected_tip_pair)?;
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.
@@ -861,7 +915,7 @@ fn derived_tip_reference_pair(
 
 pub(super) use crate::tile::frame_superblock_h4;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn read_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -918,7 +972,7 @@ fn read_segment_id(
 }
 
 /// [`read_enabled_segment_id`], zero without a call when segmentation is off.
-#[allow(
+#[expect(
     clippy::too_many_arguments,
     clippy::inline_always,
     reason = "measured: per block"
@@ -961,7 +1015,7 @@ fn read_inter_segment_id(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
 fn read_enabled_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
@@ -985,9 +1039,9 @@ fn read_enabled_segment_id(
         return Ok(0);
     };
     let predicted_segment_id =
-        previous_segment_ids.map_or(0, |map| map.block_min(frontier.r, frontier.c, n4w, n4h));
+        || previous_segment_ids.map_or(0, |map| map.block_min(frontier.r, frontier.c, n4w, n4h));
     if !seg.segmentation_update_map {
-        return Ok(predicted_segment_id);
+        return Ok(predicted_segment_id());
     }
     if pre_skip && !seg.seg_id_pre_skip {
         return Ok(0);
@@ -1026,7 +1080,7 @@ fn read_enabled_segment_id(
         .get()
         != 0;
     let segment_id = if predicted {
-        predicted_segment_id
+        predicted_segment_id()
     } else {
         read_segment_id(
             work_unit,
@@ -1075,7 +1129,7 @@ fn skip_segment_reference(
         let Some(&hint) = ref_order_hint.get(slot as usize) else {
             continue;
         };
-        if hint == u32::MAX {
+        if hint == RESTRICTED_ORDER_HINT {
             continue;
         }
         let distance = super::get_relative_dist(
@@ -1190,7 +1244,7 @@ fn frame_temporal_first(
 fn references_on_one_side(hints: impl Iterator<Item = u32>, current_order_hint: u32) -> bool {
     let mut has_past = false;
     let mut has_future = false;
-    for hint in hints.filter(|&hint| hint != u32::MAX) {
+    for hint in hints.filter(|&hint| hint != RESTRICTED_ORDER_HINT) {
         let dist = super::get_relative_dist(
             current_order_hint as i32,
             i32::try_from(hint).unwrap_or(i32::MAX),
@@ -1213,6 +1267,8 @@ pub(super) struct BlockDecodeContext<'a> {
     pub(super) delta_q_state: &'a mut DeltaQState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
     entries: &'a mut Vec<tile::ReconRowEntry>,
+    #[cfg(feature = "block-evidence")]
+    evidence_parent: Option<crate::bitstream::tile_payload::TilePartitionCall>,
     sb_mask: usize,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
@@ -1232,10 +1288,10 @@ pub(super) struct InterLeafSink<'a> {
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     slots: &'a mut Vec<tile::LeafSlot>,
+    pub(super) sb_has_intrabc: bool,
 }
 
 /// Decodes one leaf and stores its record as the row's next entry.
-#[allow(clippy::too_many_arguments)]
 fn decode_block(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -1252,6 +1308,8 @@ fn decode_block(
         ref mut delta_q_state,
         ref mut segment_id_state,
         ref mut entries,
+        #[cfg(feature = "block-evidence")]
+        evidence_parent,
         sb_mask,
         ref mut arena,
     } = *context;
@@ -1369,6 +1427,7 @@ fn decode_block(
             ref mut mv_grid,
             ref mut filter_records,
             ref mut slots,
+            ref mut sb_has_intrabc,
             ..
         } = *sink;
         let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip::default());
@@ -1501,7 +1560,8 @@ fn decode_block(
                 non_inter_flag_syntax(Some(prelude.skip_flag), frame_mv_precision(core)?),
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
-            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+            *sb_has_intrabc = true;
+            let (sub_x, sub_y) = sequence.general.chroma_format_idc.subsampling();
             return Ok(store(
                 GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(
@@ -1531,6 +1591,16 @@ fn decode_block(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
+        #[cfg(feature = "block-evidence")]
+        let evidence = params.block_evidence.as_ref().and_then(|evidence| {
+            let tile = evidence.tile(work_unit.tile_num() as usize)?;
+            tile.wants_blocks()
+                .then_some(crate::block_evidence::BlockIntraEvidence {
+                    tile,
+                    frontier,
+                    parent: evidence_parent,
+                })
+        });
         let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             &mut crate::pipeline::general_intra::GeneralIntraLeafParse {
                 work_unit,
@@ -1551,6 +1621,8 @@ fn decode_block(
             frontier,
             &params.intra_tools,
             neighbours,
+            #[cfg(feature = "block-evidence")]
+            evidence.as_ref(),
         )?;
         let luma_tree = !frontier.is_chroma_part();
         if luma_tree {
@@ -1913,7 +1985,7 @@ fn decode_block(
             )?
         }
     } else {
-        Mv::ZERO
+        MotionVector::ZERO
     };
     let interp = if tip_ref {
         ReconInterpolationFilter::EightTapSharp
@@ -1985,8 +2057,8 @@ const fn parsed_inter_block(
     InterBlock {
         ref_frame0,
         ref_frame1,
-        mv: Mv::ZERO,
-        mv1: Mv::ZERO,
+        mv: MotionVector::ZERO,
+        mv1: MotionVector::ZERO,
         interp,
         warp_params: [None, None],
         bawp: BawpSyntax {
@@ -2009,7 +2081,7 @@ const fn parsed_inter_block(
 /// The part every inter leaf shares once its mode info is read: the residual,
 /// the filter, IntraBC and neighbour-flag records, then the leaf's command,
 /// written once into its row slot.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn finish_inter_leaf(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -2034,6 +2106,7 @@ fn finish_inter_leaf(
         ref mut mv_grid,
         ref mut filter_records,
         ref mut slots,
+        sb_has_intrabc: _,
     } = *sink;
     let lossless = work_unit
         .coeff_frame_facts()
@@ -2251,7 +2324,7 @@ fn read_inter_intra_syntax_enabled(
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(None);
     }
-    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
+    let bsize_group = usize::from(SIZE_GROUP_LOOKUP[b_size]);
     if read_row(
         symbols,
         row_at(cdfs.block_rows_mut().inter_intra(), bsize_group),

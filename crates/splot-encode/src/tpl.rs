@@ -412,7 +412,6 @@ fn spread(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use core::num::NonZeroU32;
 

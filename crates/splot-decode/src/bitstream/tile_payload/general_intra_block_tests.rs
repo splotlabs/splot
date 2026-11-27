@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -30,8 +28,8 @@ fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit {
     make_test_work_unit(payload, CdfUpdateMode::Disabled)
 }
 
-fn symbols_at_block_start<'payload>(work_unit: &DecodeTileWorkUnit) -> SymbolDecoder<'payload> {
-    let mut symbols = symbol_decoder(work_unit.tile_bytes());
+fn symbols_at_block_start(payload: &[u8]) -> SymbolDecoder<'_> {
+    let mut symbols = symbol_decoder(payload);
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     cdfs.with_row_mut(
         TileCdfSelector::DoSplit {
@@ -139,7 +137,7 @@ fn encode_luma_mode_path(path: LumaModeEofPath) -> Vec<u8> {
     encoder.finish().unwrap().into_bytes()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -163,7 +161,7 @@ fn decode_general_intra_luma_block_mode(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn decode_general_intra_block_modes(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
@@ -224,7 +222,7 @@ fn cfl_allowed_uses_the_chroma_plane_64_sample_limit() {
 #[test]
 fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&work_unit);
+    let mut symbols = symbols_at_block_start(&PAYLOAD);
     let facts = empty_edges();
 
     let modes = decode_general_intra_block_modes(
@@ -250,7 +248,7 @@ fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
 #[test]
 fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&work_unit);
+    let mut symbols = symbols_at_block_start(&PAYLOAD);
     let mut facts = empty_edges();
     record_luma(
         &mut facts,
@@ -279,7 +277,7 @@ fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
 #[test]
 fn directional_neighbour_ctx_reads_with_the_real_context() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&work_unit);
+    let mut symbols = symbols_at_block_start(&PAYLOAD);
     let symbol_count_before = symbols.symbol_count();
     let mut facts = empty_edges();
     record_luma(

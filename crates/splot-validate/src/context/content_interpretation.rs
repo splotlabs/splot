@@ -40,7 +40,7 @@ pub(super) struct ContentInterpretationRecord {
 /// layer unit of the sequence ... for a given embedded layer."
 ///
 /// The "first coded extended layer unit of the sequence" for an extended layer is its CELU
-/// in the coded video sequence's FIRST temporal unit (a CVS starts at the temporal unit
+/// in the coded video sequence's first temporal unit (a CVS starts at the temporal unit
 /// containing a CLK, § 7.3.6). This state records — scoped to the layer's CVS — the embedded
 /// layers whose first CELU carried a CI, so a later CELU that adds a CI for an embedded layer
 /// the first CELU lacked can be flagged. Reset per coded video sequence in
@@ -139,46 +139,6 @@ pub(super) fn compare_timing_across_embedded_layers(
         ));
     }
     diagnostics
-}
-
-/// Returns `true` if two content-interpretation OBUs carry different *information*
-/// (AV2 § 6.14: a repeated CI OBU must "contain the same information").
-///
-/// `ci_reserved_2bit` is excluded — it is decoder-ignored (§ 6.14) and surfaced
-/// separately as a warning. The color description and aspect ratio are compared by
-/// their *derived* values (§ 6.14 Table 6.13 / the § 5.15 aspect tables), resolving
-/// presets, reserved ids, and absence to their canonical (incl. unspecified)
-/// values: an alias-equivalent re-encoding (a preset vs. the equivalent explicit
-/// triple / SAR, or a reserved id vs. an explicit unspecified one) is not flagged,
-/// while genuinely different color/aspect information is — including a present value
-/// vs. an absent (unspecified) one. The aspect ratio is compared only when both
-/// derived SARs are decidable; a reserved `ci_aspect_ratio_idc` (already an
-/// out-of-range error) yields no derived SAR and is not double-reported here.
-pub(super) fn content_interpretation_information_differs(
-    a: &ContentInterpretation,
-    b: &ContentInterpretation,
-) -> bool {
-    a.scan_type_idc != b.scan_type_idc
-        || a.chroma_sample_position != b.chroma_sample_position
-        || a.timing_info != b.timing_info
-        || a.derived_color() != b.derived_color()
-        || aspect_ratio_information_differs(a, b)
-}
-
-/// Compares the derived sample aspect ratios (§ 5.15), resolving absence to the
-/// unspecified `(0, 0)`. Only flags when both SARs are decidable; a reserved
-/// `ci_aspect_ratio_idc` yields no derived SAR (it is already an out-of-range error).
-pub(super) fn aspect_ratio_information_differs(
-    a: &ContentInterpretation,
-    b: &ContentInterpretation,
-) -> bool {
-    match (
-        a.derived_sample_aspect_ratio(),
-        b.derived_sample_aspect_ratio(),
-    ) {
-        (Some(sar_a), Some(sar_b)) => sar_a != sar_b,
-        _ => false,
-    }
 }
 
 /// Builds a § 6.4.12 cross-embedded-layer timing-mismatch diagnostic located at `obu`.
@@ -387,10 +347,10 @@ impl ValidatorContext {
                 scan_type_recheck_suppressed,
                 timecode_recheck_suppressed,
             },
-        ) && content_interpretation_information_differs(
-            &existing.content,
-            &content_interpretation,
-        ) {
+        ) && existing
+            .content
+            .information_differs(&content_interpretation)
+        {
             let diagnostic = Diagnostic::error(
                 "content-interpretation/repeated-ci-not-identical",
                 format!(

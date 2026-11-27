@@ -3,8 +3,6 @@
 
 //! Exhaustive tests for AV2 § 5.20.7.26 `Subsampled_Size`.
 
-#![allow(clippy::unwrap_used)]
-
 use super::*;
 
 type SubsampledSizeTable = [[[usize; 2]; 2]; 29];

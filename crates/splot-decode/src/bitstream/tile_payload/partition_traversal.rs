@@ -38,6 +38,7 @@ pub(crate) use partition_children::{ChildCallSink, child_calls, child_calls_into
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
 pub(crate) use tree_walk::BRU_ACTIVE;
+pub(crate) use tree_walk::BRU_INACTIVE;
 use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
@@ -113,7 +114,7 @@ pub(crate) struct TilePartitionFrameFacts {
 }
 
 impl TilePartitionFrameFacts {
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -246,7 +247,7 @@ impl TilePartitionCall {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) const fn child(
         r: usize,
         c: usize,
@@ -379,7 +380,7 @@ impl TilePartitionCall {
     }
 }
 
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionBounds {
     mi_row_start: usize,

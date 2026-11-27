@@ -3,10 +3,8 @@
 
 //! What [`super::NeighbourMvGrid`] records for one leaf's motion.
 
-#![allow(clippy::unwrap_used)]
-
 use super::super::MvBlockContext;
-use super::{CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, warp_sub_mv_at};
+use super::{CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, MotionVector, warp_sub_mv_at};
 use super::{
     NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourGridMode, NeighbourMotionValues,
     NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
@@ -62,7 +60,7 @@ fn leaf_grid(motion_mode: MotionMode) -> NeighbourMvGrid {
 /// block MV.
 #[test]
 fn a_globalmv_single_records_its_mode_without_splatting_sub_mvs() {
-    let mv = Mv { row: -20, col: 36 };
+    let mv = MotionVector { row: -20, col: 36 };
     let mut grid = leaf_grid(MotionMode::Simple);
 
     grid.record_motion(
@@ -71,7 +69,7 @@ fn a_globalmv_single_records_its_mode_without_splatting_sub_mvs() {
         4,
         4,
         NeighbourMotionValues {
-            mv: [mv, Mv::ZERO],
+            mv: [mv, MotionVector::ZERO],
             cwp_weight: CWP_EQUAL,
             stored_warp: None,
             global_mv: [true, false],
@@ -101,7 +99,7 @@ fn a_globalmv_single_records_its_mode_without_splatting_sub_mvs() {
 #[test]
 fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
     let model = [131_072, 65_536, 69_632, 4_096, -4_096, 69_632];
-    let mv = Mv { row: -20, col: 36 };
+    let mv = MotionVector { row: -20, col: 36 };
     let mut grid = leaf_grid(MotionMode::LocalWarp);
 
     grid.record_motion(
@@ -110,7 +108,7 @@ fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
         4,
         4,
         NeighbourMotionValues {
-            mv: [mv, Mv::ZERO],
+            mv: [mv, MotionVector::ZERO],
             cwp_weight: CWP_EQUAL,
             stored_warp: Some(model),
             global_mv: [false, false],
@@ -136,7 +134,10 @@ fn a_warp_leaf_still_splats_per_cell_sub_mvs() {
 #[test]
 fn motion_resolves_only_its_own_leaf_and_keeps_per_list_models() {
     let model1 = [131_072, 65_536, 69_632, 4_096, -4_096, 69_632];
-    let mv = [Mv { row: -20, col: 36 }, Mv { row: 12, col: -8 }];
+    let mv = [
+        MotionVector { row: -20, col: 36 },
+        MotionVector { row: 12, col: -8 },
+    ];
     let values = NeighbourMotionValues {
         mv,
         cwp_weight: CWP_EQUAL,
@@ -194,7 +195,7 @@ fn the_window_drops_superblock_rows_two_above_the_current_one() {
 /// search does when it restores the best of several trials.
 #[test]
 fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
-    let publish = |grid: &mut NeighbourMvGrid, mv: Mv| {
+    let publish = |grid: &mut NeighbourMvGrid, mv: MotionVector| {
         grid.record_flags(
             0,
             0,
@@ -212,7 +213,7 @@ fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
             4,
             4,
             NeighbourMotionValues {
-                mv: [mv, Mv::ZERO],
+                mv: [mv, MotionVector::ZERO],
                 cwp_weight: CWP_EQUAL,
                 stored_warp: None,
                 global_mv: [false, false],
@@ -220,7 +221,10 @@ fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
             },
         );
     };
-    let (best, other) = (Mv { row: -20, col: 36 }, Mv { row: 8, col: -12 });
+    let (best, other) = (
+        MotionVector { row: -20, col: 36 },
+        MotionVector { row: 8, col: -12 },
+    );
     let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
     let start = grid.checkpoint((0, 0, 4, 4), None);
     publish(&mut grid, best);
@@ -237,7 +241,7 @@ fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
 fn publish(
     grid: &mut NeighbourMvGrid,
     (r, c, n4w, n4h): (usize, usize, usize, usize),
-    mv: Mv,
+    mv: MotionVector,
     model: Option<[i32; 6]>,
 ) {
     let motion_mode = if model.is_some() {
@@ -253,7 +257,7 @@ fn publish(
     };
     grid.record_flags(r, c, n4w, n4h, syntax);
     let values = NeighbourMotionValues {
-        mv: [mv, Mv::ZERO],
+        mv: [mv, MotionVector::ZERO],
         cwp_weight: CWP_EQUAL,
         stored_warp: model,
         global_mv: [false, false],
@@ -275,14 +279,19 @@ fn an_edge_imports_its_cells_leaves_and_models_into_another_grid() {
     publish(
         &mut source,
         (0, 0, 10, 4),
-        Mv { row: 2, col: -6 },
+        MotionVector { row: 2, col: -6 },
         Some(first),
     );
-    publish(&mut source, (4, 0, 4, 4), Mv { row: -3, col: 5 }, None);
+    publish(
+        &mut source,
+        (4, 0, 4, 4),
+        MotionVector { row: -3, col: 5 },
+        None,
+    );
     publish(
         &mut source,
         (4, 4, 6, 4),
-        Mv { row: 9, col: 1 },
+        MotionVector { row: 9, col: 1 },
         Some(second),
     );
     let edge = source.edge(6..8, 4..16);
@@ -290,7 +299,7 @@ fn an_edge_imports_its_cells_leaves_and_models_into_another_grid() {
     publish(
         &mut target,
         (0, 0, 4, 2),
-        Mv { row: 1, col: 1 },
+        MotionVector { row: 1, col: 1 },
         Some(first),
     );
     target.import_edge(&edge);

@@ -110,7 +110,7 @@ impl TransformCoeffBlockState {
         checked_mul_usize("width * height", width, height)
     }
 
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: an out-of-line return spills the state through memory"
     )]
@@ -176,7 +176,7 @@ impl TransformCoeffBlockState {
 
     /// Row stride of the padded level and sign grids.
     #[must_use]
-    #[allow(
+    #[expect(
         clippy::unused_self,
         reason = "callers stay agnostic of the fixed stride"
     )]
@@ -377,7 +377,7 @@ impl TileCoeffContextState {
 
     /// The above and left context lines of `plane` with the level grid and
     /// nonzero list of the coefficient passes, allocated on first use.
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub(crate) fn dc_lines_and_levels(
         &mut self,
         plane: usize,
@@ -493,7 +493,7 @@ impl TileCoeffContextState {
 
     /// The OR of the block's above and left context bytes; see
     /// [`DC_CATEGORY_SHIFT`].
-    #[allow(clippy::inline_always, reason = "measured: per-block context read")]
+    #[expect(clippy::inline_always, reason = "measured: per-block context read")]
     #[inline(always)]
     pub(crate) fn line_or(&self, lines: &CoeffBlockLines) -> [u8; 2] {
         let plane = lines.plane.min(PLANE_COUNT - 1);
@@ -508,7 +508,7 @@ impl TileCoeffContextState {
     }
 
     /// Records the block's `culLevel` and `dcCategory` in its spans.
-    #[allow(clippy::inline_always, reason = "measured: per-block context commit")]
+    #[expect(clippy::inline_always, reason = "measured: per-block context commit")]
     #[inline(always)]
     pub(crate) fn commit_block(&mut self, lines: &CoeffBlockLines, level: u8, dc_category: u8) {
         let plane = lines.plane.min(PLANE_COUNT - 1);

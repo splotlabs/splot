@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Write as _};
+use std::io::{self, BufReader, BufWriter, Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -14,12 +14,20 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context as _, Result};
 use clap::{Args, ValueEnum};
 use serde::Serialize;
+use splot_core::simd::SimdBackend;
+use splot_core::span::ByteOffset;
+use splot_core::stream_reader::DEFAULT_MAX_UNIT_BYTES;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOptions, DecodeOutputError,
-    DecodeOutputOperation, DecodeRuntimeConfig, Y4mFrameRate,
+    DecodeOutputOperation, DecodeRuntimeConfig, DecodeScope, EmbeddedLayerId,
+    EmbeddedLayerSelection, ExtendedLayerId, ExtendedLayerSelection, ExternalAtlases,
+    OperatingPointSelection, TemporalLayerId, TemporalLayerSelection, TypedDecodeContext,
+    Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
+
+use super::atlas::PictureAtlasView;
 
 static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -62,6 +70,9 @@ pub(crate) struct DecodeArgs {
         requires_if("raw", "output")
     )]
     output_format: Option<DecodeOutputFormat>,
+    /// Supply one length-framed atlas OBU from this file. Repeat for additional atlases.
+    #[arg(long, value_name = "FILE")]
+    external_atlas: Vec<PathBuf>,
     /// Input AV2 bitstream.
     input: PathBuf,
     /// Output path for the selected artifact; `-` writes to stdout.
@@ -85,6 +96,179 @@ pub(crate) struct DecodeArgs {
     /// Output frames without film grain synthesis. Hash output never has it.
     #[arg(long)]
     skip_film_grain: bool,
+    /// Temporal enhancement layers to decode and emit: `all` (default) or `0..=3`
+    /// (layers `0..=LAYER`).
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_temporal_layer,
+        conflicts_with = "temporal_output_mask"
+    )]
+    temporal_layer: Option<TemporalLayerSelection>,
+    /// Bitmask (`1..=15` or `0x1..=0xf`) of temporal layers to emit; transitive
+    /// dependencies still decode.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_temporal_output_mask,
+        conflicts_with = "temporal_layer"
+    )]
+    temporal_output_mask: Option<TemporalLayerSelection>,
+    /// Embedded layer to decode and emit: `all` (default) or `0..=7`.
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_embedded_layer,
+        conflicts_with = "embedded_output_mask"
+    )]
+    embedded_layer: Option<EmbeddedLayerSelection>,
+    /// Bitmask (`1..=255` or `0x1..=0xff`) of embedded layers to emit;
+    /// transitive dependencies still decode.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_embedded_output_mask,
+        conflicts_with = "embedded_layer"
+    )]
+    embedded_output_mask: Option<EmbeddedLayerSelection>,
+    /// Extended layer to decode and emit: `all` (default) or `0..=30`.
+    #[arg(
+        long,
+        value_name = "LAYER",
+        value_parser = parse_extended_layer,
+        conflicts_with = "extended_output_mask"
+    )]
+    extended_layer: Option<ExtendedLayerSelection>,
+    /// Bitmask (`1..=2147483647` or `0x1..=0x7fffffff`) of extended layers
+    /// to emit.
+    #[arg(
+        long,
+        value_name = "MASK",
+        value_parser = parse_extended_output_mask,
+        conflicts_with = "extended_layer"
+    )]
+    extended_output_mask: Option<ExtendedLayerSelection>,
+    /// Operating point to decode: `global:OPS_ID:OP_INDEX` or
+    /// `local:XLAYER:OPS_ID:OP_INDEX`.
+    #[arg(
+        long,
+        value_name = "SPEC",
+        value_parser = parse_operating_point,
+        conflicts_with_all = [
+            "temporal_layer",
+            "temporal_output_mask",
+            "embedded_layer",
+            "embedded_output_mask",
+            "extended_layer",
+            "extended_output_mask",
+        ]
+    )]
+    operating_point: Option<OperatingPointSelection>,
+}
+
+fn parse_layer_arg(value: &str, max: u8, name: &str) -> core::result::Result<Option<u8>, String> {
+    if value.eq_ignore_ascii_case("all") {
+        return Ok(None);
+    }
+    match value.parse::<u8>() {
+        Ok(id) if id <= max => Ok(Some(id)),
+        _ => Err(format!(
+            "{name} layer must be 'all' or an integer in 0..={max}"
+        )),
+    }
+}
+
+fn parse_temporal_layer(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    Ok(
+        parse_layer_arg(value, 3, "temporal")?.map_or(TemporalLayerSelection::All, |id| {
+            TemporalLayerSelection::Target(TemporalLayerId::from_bits(id))
+        }),
+    )
+}
+
+fn parse_embedded_layer(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
+    Ok(
+        parse_layer_arg(value, 7, "embedded")?.map_or(EmbeddedLayerSelection::All, |id| {
+            EmbeddedLayerSelection::Target(EmbeddedLayerId::from_bits(id))
+        }),
+    )
+}
+
+fn parse_extended_layer(value: &str) -> core::result::Result<ExtendedLayerSelection, String> {
+    Ok(
+        parse_layer_arg(value, 30, "extended")?.map_or(ExtendedLayerSelection::All, |id| {
+            ExtendedLayerSelection::Target(ExtendedLayerId::from_bits(id))
+        }),
+    )
+}
+
+fn parse_output_mask(value: &str, max: u32, name: &str) -> core::result::Result<u32, String> {
+    let mask = if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        u32::from_str_radix(hex, 16)
+    } else {
+        value.parse::<u32>()
+    }
+    .map_err(|_| format!("{name} output mask must be an integer in 1..={max}"))?;
+    if mask == 0 || mask > max {
+        return Err(format!(
+            "{name} output mask must be non-zero within 1..={max}"
+        ));
+    }
+    Ok(mask)
+}
+
+fn parse_temporal_output_mask(value: &str) -> core::result::Result<TemporalLayerSelection, String> {
+    Ok(TemporalLayerSelection::OutputMask(
+        parse_output_mask(value, 0x0F, "temporal")? as u8,
+    ))
+}
+
+fn parse_embedded_output_mask(value: &str) -> core::result::Result<EmbeddedLayerSelection, String> {
+    Ok(EmbeddedLayerSelection::OutputMask(
+        parse_output_mask(value, u32::from(u8::MAX), "embedded")? as u8,
+    ))
+}
+
+fn parse_extended_output_mask(value: &str) -> core::result::Result<ExtendedLayerSelection, String> {
+    Ok(ExtendedLayerSelection::OutputMask(parse_output_mask(
+        value,
+        0x7FFF_FFFF,
+        "extended",
+    )?))
+}
+
+fn parse_u8_bounded(value: &str, max: u8, name: &str) -> core::result::Result<u8, String> {
+    match value.parse::<u8>() {
+        Ok(parsed) if parsed <= max => Ok(parsed),
+        _ => Err(format!("{name} must be an integer in 0..={max}")),
+    }
+}
+
+fn parse_operating_point(value: &str) -> core::result::Result<OperatingPointSelection, String> {
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        [scope, ops_id, op_index] if scope.eq_ignore_ascii_case("global") => {
+            Ok(OperatingPointSelection::Global {
+                ops_id: parse_u8_bounded(ops_id, 15, "ops_id")?,
+                op_index: parse_u8_bounded(op_index, 6, "op_index")?,
+            })
+        }
+        [scope, xlayer, ops_id, op_index] if scope.eq_ignore_ascii_case("local") => {
+            let xlayer_id = parse_u8_bounded(xlayer, 30, "extended layer")?;
+            Ok(OperatingPointSelection::Local {
+                xlayer_id: ExtendedLayerId::from_bits(xlayer_id),
+                ops_id: parse_u8_bounded(ops_id, 15, "ops_id")?,
+                op_index: parse_u8_bounded(op_index, 6, "op_index")?,
+            })
+        }
+        _ => Err(
+            "operating point must be 'global:OPS_ID:OP_INDEX' or 'local:XLAYER:OPS_ID:OP_INDEX'"
+                .to_owned(),
+        ),
+    }
 }
 
 fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
@@ -357,6 +541,8 @@ struct DecodeHashFrameJson<'a> {
     chroma_height: Option<u32>,
     bit_depth: u8,
     pixel_format: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    atlas: Option<PictureAtlasView<'a>>,
     hashes: Vec<DecodeHashEntryJson<'a>>,
 }
 
@@ -374,6 +560,7 @@ impl<'a> DecodeHashFrameJson<'a> {
             chroma_height: frame.chroma_height,
             bit_depth: frame.bit_depth,
             pixel_format: frame.pixel_format.as_str(),
+            atlas: PictureAtlasView::of(frame),
             hashes: frame.hashes.iter().map(DecodeHashEntryJson::new).collect(),
         }
     }
@@ -423,6 +610,9 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
         );
         println!("frame.pixel_format: {}", frame.pixel_format.as_str());
         println!("frame.bit_depth: {}", frame.bit_depth);
+        if let Some(atlas) = PictureAtlasView::of(frame) {
+            println!("frame.atlas: {}", serde_json::to_string(&atlas)?);
+        }
         for hash in &frame.hashes {
             println!(
                 "frame.hash: {} {} {} {}",
@@ -453,43 +643,49 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
         anyhow::bail!("--frame-rate is only valid with Y4M output");
     }
 
+    let temporal_layer_selection = args
+        .temporal_layer
+        .or(args.temporal_output_mask)
+        .unwrap_or_default();
+    let embedded_layer_selection = args
+        .embedded_layer
+        .or(args.embedded_output_mask)
+        .unwrap_or_default();
+    let extended_layer_selection = args
+        .extended_layer
+        .or(args.extended_output_mask)
+        .unwrap_or_default();
     let options = DecodeOptions::default()
         .with_output_frame_limit(args.limit)
         .with_y4m_frame_rate_override(args.frame_rate)
-        .with_skip_film_grain(args.skip_film_grain);
+        .with_skip_film_grain(args.skip_film_grain)
+        .with_temporal_layer_selection(temporal_layer_selection)
+        .with_embedded_layer_selection(embedded_layer_selection)
+        .with_extended_layer_selection(extended_layer_selection)
+        .with_operating_point_selection(args.operating_point.unwrap_or_default());
     let input = open_decode_input(&args.input)
         .with_context(|| format!("failed to read input file: {}", args.input.display()))?;
     let context = DecodeContext::new(
         DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
     )?;
+    let context = if args.external_atlas.is_empty() {
+        context
+    } else {
+        context.with_external_atlases(read_external_atlases(&args.external_atlas)?)
+    };
     let stdout_carries_output = matches!(
         target,
         DecodeOutputTarget::Y4m { path } | DecodeOutputTarget::Raw { path } if is_stdout_path(path)
     );
-    let report = match target {
-        DecodeOutputTarget::Null => match context.decode_discard_reader(input, options) {
-            Ok(()) => return Ok(ExitCode::SUCCESS),
-            Err(error) => decode_report_from_error(&error, &args.input)?,
-        },
-        DecodeOutputTarget::Hash => match context.decode_hash_report_reader(input, options) {
-            Ok(report) => {
-                render_hash_report(&report, args.json)?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            Err(error) => decode_report_from_error(&error, &args.input)?,
-        },
-        DecodeOutputTarget::Y4m { path } => {
-            match decode_y4m_to_file(&context, input, &options, path) {
-                Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error, &args.input)?,
-            }
-        }
-        DecodeOutputTarget::Raw { path } => {
-            match decode_raw_to_file(&context, input, &options, path) {
-                Ok(()) => return Ok(ExitCode::SUCCESS),
-                Err(error) => decode_report_from_error(&error, &args.input)?,
-            }
-        }
+    let Some(report) = context.with_typed_backend(CliDecodeScope {
+        target,
+        input,
+        input_path: &args.input,
+        options,
+        json: args.json,
+    })?
+    else {
+        return Ok(ExitCode::SUCCESS);
     };
 
     if args.json {
@@ -507,9 +703,54 @@ pub(crate) fn run(args: &DecodeArgs) -> Result<ExitCode> {
     Ok(ExitCode::from(1))
 }
 
-fn decode_y4m_to_file(
-    context: &DecodeContext,
-    input: Box<dyn DecodeInput>,
+struct CliDecodeScope<'a> {
+    target: DecodeOutputTarget<'a>,
+    input: BufReader<File>,
+    input_path: &'a Path,
+    options: DecodeOptions,
+    json: bool,
+}
+
+impl DecodeScope<Result<Option<DecodeDiagnosticReport>>> for CliDecodeScope<'_> {
+    fn run<B: SimdBackend>(
+        self,
+        context: &TypedDecodeContext<'_, B>,
+    ) -> Result<Option<DecodeDiagnosticReport>> {
+        match self.target {
+            DecodeOutputTarget::Null => {
+                match context.decode_discard_reader(self.input, self.options) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Hash => {
+                match context.decode_hash_report_reader(self.input, self.options) {
+                    Ok(report) => {
+                        render_hash_report(&report, self.json)?;
+                        Ok(None)
+                    }
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Y4m { path } => {
+                match decode_y4m_to_file(context, self.input, &self.options, path) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+            DecodeOutputTarget::Raw { path } => {
+                match decode_raw_to_file(context, self.input, &self.options, path) {
+                    Ok(()) => Ok(None),
+                    Err(error) => decode_report_from_error(&error, self.input_path).map(Some),
+                }
+            }
+        }
+    }
+}
+
+fn decode_y4m_to_file<B: SimdBackend>(
+    context: &TypedDecodeContext<'_, B>,
+    input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -518,9 +759,9 @@ fn decode_y4m_to_file(
     })
 }
 
-fn decode_raw_to_file(
-    context: &DecodeContext,
-    input: Box<dyn DecodeInput>,
+fn decode_raw_to_file<B: SimdBackend>(
+    context: &TypedDecodeContext<'_, B>,
+    input: BufReader<File>,
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
@@ -577,25 +818,51 @@ fn publish_output(
     artifact: OutputArtifact,
     write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
+    publish_output_with(path, artifact, write, |error| {
+        matches!(error, DecodeError::Output {
+            source: DecodeOutputError::Io { source, .. },
+        } if source.kind() == io::ErrorKind::BrokenPipe)
+    })
+}
+
+pub(super) fn publish_composite(
+    path: &Path,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<()>,
+) -> Result<()> {
+    publish_output_with(path, RAW_OUTPUT, write, |error| {
+        error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe)
+        })
+    })
+}
+
+fn publish_output_with<E: From<DecodeError>>(
+    path: &Path,
+    artifact: OutputArtifact,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<(), E>,
+    ignore_stream_error: impl FnOnce(&E) -> bool,
+) -> Result<(), E> {
     if is_stdout_path(path) {
-        return write_stream_output(io::stdout(), artifact, write);
+        return write_stream_output(io::stdout(), artifact, write, ignore_stream_error);
     }
     if fs::metadata(path).is_ok_and(|metadata| !metadata.is_file() && !metadata.is_dir()) {
         let file = OpenOptions::new()
             .write(true)
             .open(path)
             .map_err(|source| output_io(artifact.write_stream_operation, source))?;
-        return write_stream_output(file, artifact, write);
+        return write_stream_output(file, artifact, write, ignore_stream_error);
     }
 
     let (parent, final_name) = output_parent_and_name(path, artifact)?;
     let mut output = AtomicOutput::new(parent, final_name, artifact);
 
     if let Err(error) = write(&mut output) {
-        let error = output.take_write_error().unwrap_or(error);
+        let error = output.take_write_error().map_or(error, E::from);
         return Err(output.cleanup(error));
     }
-    output.finish()
+    output.finish().map_err(E::from)
 }
 
 struct AtomicOutput<'a> {
@@ -638,7 +905,7 @@ impl<'a> AtomicOutput<'a> {
         self.write_error.take()
     }
 
-    fn cleanup(mut self, error: DecodeError) -> DecodeError {
+    fn cleanup<E: From<DecodeError>>(mut self, error: E) -> E {
         self.file.take();
         match self.temp_path.take() {
             Some(path) => cleanup_temp_file(&path, self.artifact, error),
@@ -707,21 +974,20 @@ impl io::Write for AtomicOutput<'_> {
     }
 }
 
-fn write_stream_output(
+fn write_stream_output<E: From<DecodeError>>(
     output: impl io::Write + Send,
     artifact: OutputArtifact,
-    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
-) -> core::result::Result<(), DecodeError> {
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> Result<(), E>,
+    ignore_error: impl FnOnce(&E) -> bool,
+) -> Result<(), E> {
     let mut output = BufWriter::new(output);
     let result = write(&mut output).and_then(|()| {
         output
             .flush()
-            .map_err(|source| output_io(artifact.write_stream_operation, source))
+            .map_err(|source| E::from(output_io(artifact.write_stream_operation, source)))
     });
     match result {
-        Err(DecodeError::Output {
-            source: DecodeOutputError::Io { source, .. },
-        }) if source.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(error) if ignore_error(&error) => Ok(()),
         result => result,
     }
 }
@@ -817,11 +1083,11 @@ fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsS
     .into()
 }
 
-fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) -> DecodeError {
+fn cleanup_temp_file<E: From<DecodeError>>(path: &Path, artifact: OutputArtifact, error: E) -> E {
     match fs::remove_file(path) {
         Ok(()) => error,
         Err(source) if source.kind() == io::ErrorKind::NotFound => error,
-        Err(source) => output_io(artifact.cleanup_temp_operation, source),
+        Err(source) => output_io(artifact.cleanup_temp_operation, source).into(),
     }
 }
 
@@ -836,14 +1102,32 @@ fn output_io(operation: DecodeOutputOperation, source: io::Error) -> DecodeError
     DecodeOutputError::io(operation, source).into()
 }
 
-trait DecodeInput: io::Read + Send {}
+pub(super) fn read_external_atlases(paths: &[PathBuf]) -> Result<ExternalAtlases> {
+    let mut atlases = ExternalAtlases::default();
+    let mut bytes = Vec::new();
+    for path in paths {
+        bytes.clear();
+        File::open(path)
+            .and_then(|file| {
+                file.take(DEFAULT_MAX_UNIT_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+            })
+            .with_context(|| format!("Cannot read external atlas {}.", path.display()))?;
+        anyhow::ensure!(
+            bytes.len() <= DEFAULT_MAX_UNIT_BYTES,
+            "External atlas {} exceeds the unit size limit of {DEFAULT_MAX_UNIT_BYTES} bytes.",
+            path.display(),
+        );
+        atlases
+            .insert(&bytes, ByteOffset::new(0))
+            .with_context(|| format!("Invalid external atlas {}.", path.display()))?;
+    }
+    Ok(atlases)
+}
 
-impl<T: io::Read + Send> DecodeInput for T {}
-
-/// Streams the input file, a pipe or FIFO included: decode reads it forward
-/// once.
-fn open_decode_input(path: &Path) -> io::Result<Box<dyn DecodeInput>> {
-    Ok(Box::new(BufReader::new(File::open(path)?)))
+/// Read the input once in stream order, including pipes and FIFOs.
+fn open_decode_input(path: &Path) -> io::Result<BufReader<File>> {
+    Ok(BufReader::new(File::open(path)?))
 }
 
 fn decode_report_from_error(error: &DecodeError, input: &Path) -> Result<DecodeDiagnosticReport> {

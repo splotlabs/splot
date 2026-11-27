@@ -31,7 +31,7 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 /// Only the reference-state subset required for later frame-header parsing and conformance
 /// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
     /// modeled run, or a frame whose refresh mask could not be parsed may have written
@@ -66,8 +66,8 @@ pub(crate) struct SlotFacts {
     pub(crate) implicit_output_frame: bool,
     /// `RefImmediateOutputFrame[ i ]` (§ 7.23).
     pub(crate) immediate_output_frame: bool,
-    /// Whether `RefFrameType[ i ] == INTER_FRAME` (§ 7.23).
-    pub(crate) frame_is_inter: bool,
+    /// `RefFrameType[ i ]` (§ 7.23).
+    pub(crate) frame_type: FrameType,
     /// `RefLongTermId[ i ]` (§ 7.23 :14113), the slot's modeled long-term id. `None` models
     /// the spec's `-1` sentinel ("not a long-term reference frame"); `Some(id)` is a KEY
     /// frame's `LongTermId = long_term_id_plus_1 - 1` (§ 5.18.2 mirror :4231-4239), the only
@@ -77,9 +77,20 @@ pub(crate) struct SlotFacts {
     pub(crate) long_term_id: Option<u32>,
     /// Per-plane retained Wiener-NS class counts used by the § 5.18 filter dictionary.
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
+    /// `RefMLayerId[ i ]` (§ 7.23).
+    pub(crate) mlayer_id: u8,
+    /// `RefTLayerId[ i ]` (§ 7.23).
+    pub(crate) tlayer_id: u8,
     /// `RefNumTotalRefs[ i ]`, `SavedOrderHints[ i ]` and `SavedGmParams[ i ]` (§ 7.23),
     /// read by the § 5.18.9.1 `global_motion_params()` base-warp selection.
     pub(crate) global_motion: (u32, SavedGlobalMotionOrderHints, SavedGlobalMotionParams),
+}
+
+impl SlotFacts {
+    /// AV2 § 7.9 `is_ref_motion_field_eligible_by_frame_type`.
+    pub(crate) const fn is_motion_field_eligible_by_frame_type(&self) -> bool {
+        !matches!(self.frame_type, FrameType::Key | FrameType::IntraOnly)
+    }
 }
 
 /// One extended layer's reference buffer, matching its CVS reset scope (§ 7.3.6).
@@ -244,6 +255,8 @@ pub(crate) struct ReferenceStateScratch {
     implicit_output_frame: [bool; NUM_REF_FRAMES],
     immediate_output_frame: [bool; NUM_REF_FRAMES],
     lr_frame_filter_class_counts: [[u8; 3]; NUM_REF_FRAMES],
+    mlayer_id: [u8; NUM_REF_FRAMES],
+    tlayer_id: [u8; NUM_REF_FRAMES],
     num_total_refs: [u32; NUM_REF_FRAMES],
     saved_gm_order_hints: [SavedGlobalMotionOrderHints; NUM_REF_FRAMES],
     saved_gm_params: [SavedGlobalMotionParams; NUM_REF_FRAMES],
@@ -263,6 +276,8 @@ impl ReferenceStateScratch {
         .with_primary_reference_state(&self.counter, &self.frame_is_inter)
         .with_long_term_id_state(&self.long_term_id)
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
+        .with_mlayer_id_state(&self.mlayer_id)
+        .with_tlayer_id_state(&self.tlayer_id)
         .with_global_motion_state(
             &self.num_total_refs,
             &self.saved_gm_order_hints,
@@ -320,8 +335,8 @@ impl ReferenceStateTracker {
     /// Applies a completed frame's § 7.23 update to its extended layer's buffer.
     ///
     /// Called at the **grounded decode point** of a frame (the segmenter's coded-frame
-    /// boundary, with the no-trailing-delimiter end-of-bitstream flush), AFTER the
-    /// frame's facts are known and BEFORE any later frame's reference checks consult the
+    /// boundary, with the no-trailing-delimiter end-of-bitstream flush), after the
+    /// frame's facts are known and before any later frame's reference checks consult the
     /// buffer — matching § 7.23's "final step in decoding a frame" ordering.
     pub(crate) fn apply(&mut self, xlayer: ExtendedLayerId, update: &FrameRefUpdate) {
         let layer = self.layers.entry(xlayer).or_default();
@@ -386,7 +401,7 @@ impl ReferenceStateTracker {
     /// a proven-valid non-long-term slot (the spec's `-1`). Returns `None` when the slot is
     /// `Unknown` or `ProvenInvalid` — the long-term id is then undecidable, so a dependent
     /// judgment must drop to silence (the Unknown invariant).
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub(crate) fn slot_long_term_id(
         &self,
         xlayer: ExtendedLayerId,
@@ -403,7 +418,7 @@ impl ReferenceStateTracker {
     /// writing them into the caller-provided scratch buffers. Returns `None` when the
     /// layer has no buffer yet, or when any slot below `NumRefFrames` is `Unknown`: the
     /// § 5.18 reference loops read every such slot, so a parse against a partial buffer
-    /// could read later syntax at wrong bit positions. The parser then stops honestly.
+    /// could read later syntax at wrong bit positions. The parser then stops.
     ///
     /// A `ProvenInvalid` slot (and an `Unknown` slot at or above `NumRefFrames`)
     /// contributes `RefValid[i] = false`; a `Valid` slot contributes `true` plus its stored
@@ -429,12 +444,14 @@ impl ReferenceStateTracker {
                     scratch.base_q_idx[i] = facts.base_q_idx;
                     scratch.chroma_ac_deltas[i] = [facts.delta_q_u_ac, facts.delta_q_v_ac];
                     scratch.counter[i] = layer.counters[i];
-                    scratch.frame_is_inter[i] = facts.frame_is_inter;
+                    scratch.frame_is_inter[i] = facts.frame_type == FrameType::Inter;
                     scratch.long_term_id[i] = facts.long_term_id;
                     scratch.order_hint_lsbs[i] = facts.order_hint_lsb;
                     scratch.implicit_output_frame[i] = facts.implicit_output_frame;
                     scratch.immediate_output_frame[i] = facts.immediate_output_frame;
                     scratch.lr_frame_filter_class_counts[i] = facts.lr_frame_filter_class_counts;
+                    scratch.mlayer_id[i] = facts.mlayer_id;
+                    scratch.tlayer_id[i] = facts.tlayer_id;
                     (
                         scratch.num_total_refs[i],
                         scratch.saved_gm_order_hints[i],
@@ -455,6 +472,8 @@ impl ReferenceStateTracker {
                     scratch.implicit_output_frame[i] = false;
                     scratch.immediate_output_frame[i] = false;
                     scratch.lr_frame_filter_class_counts[i] = [0; 3];
+                    scratch.mlayer_id[i] = 0;
+                    scratch.tlayer_id[i] = 0;
                     (
                         scratch.num_total_refs[i],
                         scratch.saved_gm_order_hints[i],
@@ -482,7 +501,7 @@ impl ReferenceStateTracker {
 /// frame" sentinel, mapped to `None`; `>= 0` is a KEY frame's `long_term_id_plus_1 - 1`).
 /// A `None` for `long_term_id` (the frame's parse never reached the long-term field) is
 /// treated as the `-1` sentinel — the slot is then modeled as not a long-term frame — so a
-/// missing `LongTermId` does NOT poison: a frame's reference-state facts (order hint, dims)
+/// missing `LongTermId` does not poison: a frame's reference-state facts (order hint, dims)
 /// can be fully grounded while its `LongTermId` defaults to "not long-term", which is the
 /// only conformant value when `long_term_frame_id_bits == 0`.
 pub(crate) fn slot_facts(
@@ -504,9 +523,11 @@ pub(crate) fn slot_facts(
         delta_q_v_ac: quantizer_deltas.1?,
         implicit_output_frame: output_flags.0?,
         immediate_output_frame: output_flags.1?,
-        frame_is_inter: frame_type? == FrameType::Inter,
+        frame_type: frame_type?,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
         lr_frame_filter_class_counts: [0; 3],
+        mlayer_id: 0,
+        tlayer_id: 0,
         global_motion: IDENTITY_GLOBAL_MOTION,
     })
 }
@@ -525,7 +546,6 @@ pub(crate) fn is_key_or_switch(frame_type: FrameType) -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -544,9 +564,11 @@ mod tests {
             delta_q_v_ac: 0,
             implicit_output_frame: false,
             immediate_output_frame: false,
-            frame_is_inter: false,
+            frame_type: FrameType::Key,
             long_term_id: None,
             lr_frame_filter_class_counts: [0; 3],
+            mlayer_id: 0,
+            tlayer_id: 0,
             global_motion: IDENTITY_GLOBAL_MOTION,
         }
     }
@@ -556,6 +578,22 @@ mod tests {
         SlotFacts {
             long_term_id: Some(long_term_id),
             ..facts(order_hint)
+        }
+    }
+
+    #[test]
+    fn motion_field_eligibility_excludes_key_and_intra_only() {
+        for (frame_type, expected) in [
+            (FrameType::Key, false),
+            (FrameType::IntraOnly, false),
+            (FrameType::Inter, true),
+            (FrameType::Switch, true),
+        ] {
+            let slot = SlotFacts {
+                frame_type,
+                ..facts(1)
+            };
+            assert_eq!(slot.is_motion_field_eligible_by_frame_type(), expected);
         }
     }
 

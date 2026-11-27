@@ -163,33 +163,23 @@ impl PendingTimecodeInference {
 /// `metadata_timecode()` set (AV2 § 6.16.7). A field present in the previous set in
 /// decoding order satisfies the inference's "such a previous \[element\] shall have
 /// been present" requirement for the next set that omits it.
+///
+/// Indexed in step with [`TIMECODE_FIELDS`].
 #[derive(Debug, Clone, Copy)]
-pub(super) struct TimecodeFieldPresence {
-    pub(super) seconds: bool,
-    pub(super) minutes: bool,
-    pub(super) hours: bool,
-}
+pub(super) struct TimecodeFieldPresence([bool; 3]);
+
+/// The clock-timestamp fields of a [`TimecodeFieldPresence`].
+const TIMECODE_FIELDS: [&str; 3] = ["seconds_value", "minutes_value", "hours_value"];
 
 impl TimecodeFieldPresence {
     /// Records the present fields of a parsed timecode (each `Option` is `Some` when
     /// the field was coded, per the § 5.17.7 presence flags).
     pub(super) fn of(timecode: &MetadataTimecode) -> Self {
-        Self {
-            seconds: timecode.seconds_value.is_some(),
-            minutes: timecode.minutes_value.is_some(),
-            hours: timecode.hours_value.is_some(),
-        }
-    }
-
-    /// Whether the named clock-timestamp field (`"seconds_value"`,
-    /// `"minutes_value"`, or `"hours_value"`) carried a present value.
-    pub(super) fn field(self, name: &str) -> bool {
-        match name {
-            "seconds_value" => self.seconds,
-            "minutes_value" => self.minutes,
-            "hours_value" => self.hours,
-            _ => false,
-        }
+        Self([
+            timecode.seconds_value.is_some(),
+            timecode.minutes_value.is_some(),
+            timecode.hours_value.is_some(),
+        ])
     }
 }
 
@@ -303,7 +293,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         let scope_xlayer = obu.header.extended_layer_id;
-        // TODO(spec: AV2-5.17.7-METADATA-TIMECODE): a group-form LAYER_VALUES timecode
+        // TODO(spec: AV2-5.17.7-METADATA-TIMECODE): key inference per target set, not per carrier.
         let inference_key = (scope_xlayer, obu.header.embedded_layer_id);
         let tu_index = self.cvs.tu_index;
 
@@ -317,12 +307,8 @@ impl ValidatorContext {
                 targeting: targeting.clone(),
             },
         );
-        for (present, field) in [
-            (timecode.seconds_value.is_some(), "seconds_value"),
-            (timecode.minutes_value.is_some(), "minutes_value"),
-            (timecode.hours_value.is_some(), "hours_value"),
-        ] {
-            if present {
+        for (index, field) in TIMECODE_FIELDS.into_iter().enumerate() {
+            if this.0[index] {
                 continue;
             }
             let diagnostic = Diagnostic::error(
@@ -337,7 +323,7 @@ impl ValidatorContext {
             .with_byte_offset(obu.offset);
             match &prev {
                 None => report.push(diagnostic),
-                Some(entry) if !entry.presence.field(field) => report.push(diagnostic),
+                Some(entry) if !entry.presence.0[index] => report.push(diagnostic),
                 Some(entry) if entry.prev_tu == tu_index => {}
                 Some(_) => self
                     .timecode

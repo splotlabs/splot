@@ -14,15 +14,19 @@
 //! the scaled noise fits `i16` lanes: a table value is at most 255 and the
 //! grain lies in `GrainMin..=GrainMax`, so `|scale * noise| <= 32640`.
 
-use fearless_simd::{Simd, i16x16, i32x8, prelude::*, u8x16, u8x32, u16x16};
+use fearless_simd::{Simd, i16x16, i16x32, i32x8, prelude::*, u8x16, u8x32, u16x16};
 
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
+use splot_core::simd::SelectedBackend;
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, OutputIndex, Plane, PlaneId,
-    PlaneRect, PlaneSize, ReconError, ReconSample, Result,
+    DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, Plane, PlaneId, PlaneRect,
+    PlaneSize, ReconError, ReconSample, Result,
 };
+
+mod wide_luma;
+use wide_luma::add_luma_noise;
 
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
@@ -33,6 +37,8 @@ struct ActiveFilmGrain<'a> {
     model: &'a FilmGrainModel,
     grain_seed: u16,
 }
+
+type PackedLumaNoise = fn(&mut [u8], &[u8; 256], &[i16], NoiseParams);
 
 /// Applies AV2 § 7.21.7 display film grain to a decoded frame.
 ///
@@ -59,7 +65,64 @@ pub fn apply_film_grain_into<T: ReconSample>(
     frame: &DecodedFrame<T>,
     model: &FilmGrainModel,
     grain_seed: u16,
+    spare: FramePlaneSamples<T>,
+) -> Result<DecodedFrame<T>> {
+    baseline_simd!(simd => apply_film_grain_simd(
+        simd,
+        frame,
+        model,
+        grain_seed,
+        spare,
+        |row, scale, noise, params| add_noise_row::<_, _, false>(simd, row, scale, noise, params),
+        None::<PackedLumaNoise>,
+    ))
+}
+
+/// [`apply_film_grain_into`] using the caller's startup-selected static
+/// SIMD backend `backend`.
+///
+/// # Errors
+///
+/// See [`apply_film_grain`].
+pub fn apply_film_grain_into_with<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    frame: &DecodedFrame<T>,
+    model: &FilmGrainModel,
+    grain_seed: u16,
+    spare: FramePlaneSamples<T>,
+) -> Result<DecodedFrame<T>> {
+    let narrow = backend.narrow();
+    let wide = B::KIND == SelectedBackend::Avx512 && frame.bit_depth().bits() <= 10;
+    splot_core::with_simd!(narrow, simd => {
+        let add_noise = |row: &mut [T], scale: &[i16], noise: &[i16], params| {
+            if wide && row.len() >= 32 {
+                return backend.vectorize(
+                    #[inline(always)]
+                    || add_noise_row::<_, _, true>(backend.token(), row, scale, noise, params),
+                );
+            }
+            add_noise_row::<_, _, false>(simd, row, scale, noise, params)
+        };
+        let wide_luma = (wide && frame.bit_depth().bits() == 8).then_some(
+            |row: &mut [u8], table: &[u8; 256], noise: &[i16], params| {
+                backend.vectorize(
+                    #[inline(always)]
+                    || add_luma_noise(backend.token(), row, table, noise, params),
+                );
+            },
+        );
+        apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise, wide_luma)
+    })
+}
+
+fn apply_film_grain_simd<S: Simd, T: ReconSample>(
+    simd: S,
+    frame: &DecodedFrame<T>,
+    model: &FilmGrainModel,
+    grain_seed: u16,
     mut spare: FramePlaneSamples<T>,
+    add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
+    wide_luma: Option<impl Fn(&mut [u8], &[u8; 256], &[i16], NoiseParams)>,
 ) -> Result<DecodedFrame<T>> {
     let grain = ActiveFilmGrain { model, grain_seed };
     let visible = frame.visible_luma_rect();
@@ -98,10 +161,13 @@ pub fn apply_film_grain_into<T: ReconSample>(
             });
         }
     }
-    let mut outputs = synthesize(&sources, &geometry, &grain, &mut spare)?.into_iter();
+    let mut outputs = synthesize(
+        simd, &sources, &geometry, &grain, &mut spare, add_noise, wide_luma,
+    )?
+    .into_iter();
 
     let info = DecodedFrameInfo::new(
-        OutputIndex::new(frame.output_index().get()),
+        frame.output_index(),
         frame.bit_depth(),
         pixel_format,
         PlaneSize::new(width, height)?,
@@ -204,11 +270,14 @@ struct RowScratch {
     scale: Vec<i16>,
 }
 
-fn synthesize<T: ReconSample>(
+fn synthesize<S: Simd, T: ReconSample>(
+    simd: S,
     sources: &[Vec<&[T]>],
     geometry: &GrainGeometry,
     grain: &ActiveFilmGrain<'_>,
     spare: &mut FramePlaneSamples<T>,
+    add_noise: impl Fn(&mut [T], &[i16], &[i16], NoiseParams) -> Result<()>,
+    wide_luma: Option<impl Fn(&mut [u8], &[u8; 256], &[i16], NoiseParams)>,
 ) -> Result<Vec<GrainDestination<T>>> {
     let model = grain.model;
     let bit_depth = geometry.bit_depth;
@@ -253,6 +322,10 @@ fn synthesize<T: ReconSample>(
     );
     let luma_size = if model.film_grain_block_size { 32 } else { 16 };
     let width = geometry.widths[0];
+    let packed_luma = wide_luma.filter(|_| width >= 64).and_then(|apply| {
+        let table = noise.first()?.as_ref()?.lut.exact.as_deref()?;
+        Some((apply, core::array::from_fn(|index| table[index] as u8)))
+    });
     let widths = &geometry.widths[..num_planes];
     let mut stripes = [
         Stripe::new(widths, luma_size, geometry.sub_x, geometry.sub_y),
@@ -317,12 +390,19 @@ fn synthesize<T: ReconSample>(
                             _ => [23, 22],
                         };
                         let blended = &mut scratch.noise[..plane_width];
-                        blend_noise_row(blended, old, fresh, weights, grain_range);
+                        blend_noise_row(simd, blended, old, fresh, weights, grain_range);
                         blended
                     } else {
                         fresh
                     };
                 let output = outputs[plane].push_row(sources[plane][row]);
+                if plane == 0
+                    && let Some((apply, table)) = &packed_luma
+                    && let Some(output) = T::u8_slice_mut(output)
+                {
+                    apply(output, table, noise_row, params);
+                    continue;
+                }
                 let luma = sources[0][row << if plane > 0 { geometry.sub_y } else { 0 }];
                 let lut = &plane_noise.lut;
                 let Some(table) = lut.exact.as_deref() else {
@@ -349,6 +429,7 @@ fn synthesize<T: ReconSample>(
                 } else {
                     let index = &mut scratch.index[..plane_width];
                     chroma_index_row(
+                        simd,
                         index,
                         output,
                         luma,
@@ -360,7 +441,7 @@ fn synthesize<T: ReconSample>(
                         *scale = table[usize::from(index as u16).min(SCALE_TABLE_LEN - 1)];
                     }
                 }
-                add_noise_row(output, scale, noise_row, params)?;
+                add_noise(output, scale, noise_row, params)?;
             }
         }
     }
@@ -497,7 +578,8 @@ fn merged_index<T: ReconSample>(
 }
 
 /// § 7.21.7.5 `merged` scaling index of each chroma sample of a row.
-fn chroma_index_row<T: ReconSample>(
+fn chroma_index_row<S: Simd, T: ReconSample>(
+    simd: S,
     index: &mut [i16],
     chroma: &[T],
     luma: &[T],
@@ -507,9 +589,9 @@ fn chroma_index_row<T: ReconSample>(
 ) {
     let max_index = (1_i32 << bit_depth) - 1;
     let done = if let (Some(chroma), Some(luma)) = (T::u8_slice(chroma), T::u8_slice(luma)) {
-        crate::lr_madd::lr_simd!(simd => chroma_index_lanes(simd, index, chroma, luma, sub_x, mix, max_index))
+        chroma_index_lanes(simd, index, chroma, luma, sub_x, mix, max_index)
     } else if let (Some(chroma), Some(luma)) = (T::u16_slice(chroma), T::u16_slice(luma)) {
-        crate::lr_madd::lr_simd!(simd => chroma_index_lanes(simd, index, chroma, luma, sub_x, mix, max_index))
+        chroma_index_lanes(simd, index, chroma, luma, sub_x, mix, max_index)
     } else {
         0
     };
@@ -555,21 +637,18 @@ impl GrainLanes for u16 {
 
     #[inline]
     fn load32<S: Simd>(simd: S, samples: &[Self; 32]) -> (i16x16<S>, i16x16<S>) {
-        let (low, high) = samples.split_at(16);
-        let load = |half: &[u16]| {
-            half.first_chunk::<16>()
-                .map_or_else(|| i16x16::splat(simd, 0), |half| Self::load16(simd, half))
-        };
-        (load(low), load(high))
+        let (halves, _) = samples.as_chunks::<16>();
+        (
+            Self::load16(simd, &halves[0]),
+            Self::load16(simd, &halves[1]),
+        )
     }
 
     #[inline]
     fn store32<S: Simd>(low: i16x16<S>, high: i16x16<S>, samples: &mut [Self; 32]) {
-        let (first, second) = samples.split_at_mut(16);
-        if let (Some(first), Some(second)) = (first.first_chunk_mut(), second.first_chunk_mut()) {
-            low.bitcast::<u16x16<S>>().store_array(first);
-            high.bitcast::<u16x16<S>>().store_array(second);
-        }
+        let (halves, _) = samples.as_chunks_mut::<16>();
+        low.bitcast::<u16x16<S>>().store_array(&mut halves[0]);
+        high.bitcast::<u16x16<S>>().store_array(&mut halves[1]);
     }
 }
 
@@ -639,7 +718,13 @@ struct NoiseParams {
 }
 
 /// Adds the scaled noise to one output row in place.
-fn add_noise_row<T: ReconSample>(
+#[expect(
+    clippy::inline_always,
+    reason = "keep the row in the selected SIMD scope"
+)]
+#[inline(always)]
+fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
+    simd: S,
     row: &mut [T],
     scale: &[i16],
     noise: &[i16],
@@ -648,9 +733,9 @@ fn add_noise_row<T: ReconSample>(
     let done = if i32::from(T::MAX_VALUE) < params.max {
         0
     } else if let Some(row) = T::u8_slice_mut(row) {
-        crate::lr_madd::lr_simd!(simd => add_noise_lanes(simd, row, scale, noise, params))
+        add_noise_lanes::<_, _, WIDE>(simd, row, scale, noise, params)
     } else if let Some(row) = T::u16_slice_mut(row) {
-        crate::lr_madd::lr_simd!(simd => add_noise_lanes(simd, row, scale, noise, params))
+        add_noise_lanes::<_, _, WIDE>(simd, row, scale, noise, params)
     } else {
         0
     };
@@ -662,53 +747,73 @@ fn add_noise_row<T: ReconSample>(
     Ok(())
 }
 
-/// Lane-group [`add_noise_row`]; returns the columns done. The narrow
-/// `Round2` is `((p >> (shift - 1)) + 1) >> 1`, which never leaves `i16`.
-#[inline]
-fn add_noise_lanes<S: Simd, L: GrainLanes>(
+/// Adds grain using the same rounding and saturation for a half or full group.
+/// The 8-bit path shifts the product before rounding so the sum stays in i16.
+#[expect(clippy::inline_always, reason = "shared vector noise arithmetic")]
+#[inline(always)]
+fn add_noise_vector<S, V>(simd: S, orig: V, scale: V, noise: V, params: NoiseParams) -> V
+where
+    S: Simd,
+    V: SimdIntWiden<S, Element = i16, Widened: SimdInt<S, Element = i32>>,
+{
+    let shift = u32::from(params.shift);
+    if params.narrow {
+        let delta = (((scale * noise) >> (shift - 1)) + V::splat(simd, 1)) >> 1;
+        return (orig + delta).clamp(
+            V::splat(simd, params.min as i16),
+            V::splat(simd, params.max as i16),
+        );
+    }
+    let (low, high) = scale.widening_mul(noise);
+    let (orig_low, orig_high) = orig.widen();
+    let half = V::Widened::splat(simd, (1 << shift) >> 1);
+    let (min, max) = (
+        V::Widened::splat(simd, params.min),
+        V::Widened::splat(simd, params.max),
+    );
+    let add = |product: V::Widened, orig: V::Widened| {
+        (orig + ((product + half) >> shift)).clamp(min, max)
+    };
+    add(low, orig_low).narrow(add(high, orig_high))
+}
+
+/// Lane-group [`add_noise_row`]; returns the columns done. The wide backend
+/// processes all 32 samples in the group together.
+#[expect(
+    clippy::inline_always,
+    reason = "keep the row in the selected SIMD scope"
+)]
+#[inline(always)]
+fn add_noise_lanes<S: Simd, L: GrainLanes, const WIDE: bool>(
     simd: S,
     row: &mut [L],
     scale: &[i16],
     noise: &[i16],
     params: NoiseParams,
 ) -> usize {
-    let shift = u32::from(params.shift);
-    let (min16, max16) = (
-        i16x16::splat(simd, params.min as i16),
-        i16x16::splat(simd, params.max as i16),
-    );
-    let (min32, max32) = (
-        i32x8::splat(simd, params.min),
-        i32x8::splat(simd, params.max),
-    );
-    let half = i32x8::splat(simd, (1 << shift) >> 1);
-    let lanes = |values: &[i16; 32], part: usize| {
-        values[16 * part..].first_chunk::<16>().map_or_else(
-            || i16x16::splat(simd, 0),
-            |values| i16x16::load_array_ref(simd, values),
-        )
-    };
     let mut col = 0;
     while let (Some(samples), Some(scale), Some(noise)) = (
         row.get_mut(col..).and_then(<[L]>::first_chunk_mut::<32>),
         scale.get(col..).and_then(<[i16]>::first_chunk::<32>),
         noise.get(col..).and_then(<[i16]>::first_chunk::<32>),
     ) {
-        let noisy = |orig: i16x16<S>, part: usize| {
-            let (scale, noise) = (lanes(scale, part), lanes(noise, part));
-            if params.narrow {
-                let delta = (((scale * noise) >> (shift - 1)) + 1) >> 1;
-                return (orig + delta).clamp(min16, max16);
-            }
-            let (low, high) = scale.widening_mul(noise);
-            let (orig_low, orig_high) = orig.widen();
-            let add = |product: i32x8<S>, orig: i32x8<S>| {
-                (orig + ((product + half) >> shift)).clamp(min32, max32)
-            };
-            add(low, orig_low).narrow(add(high, orig_high))
-        };
         let (orig_low, orig_high) = L::load32(simd, samples);
-        L::store32(noisy(orig_low, 0), noisy(orig_high, 1), samples);
+        let (low, high) = if WIDE {
+            let orig = simd.combine_i16x16(orig_low, orig_high);
+            let scale = i16x32::load_array_ref(simd, scale);
+            let noise = i16x32::load_array_ref(simd, noise);
+            simd.split_i16x32(add_noise_vector(simd, orig, scale, noise, params))
+        } else {
+            let split =
+                |values: &[i16; 32]| simd.split_i16x32(i16x32::load_array_ref(simd, values));
+            let (scale_low, scale_high) = split(scale);
+            let (noise_low, noise_high) = split(noise);
+            (
+                add_noise_vector(simd, orig_low, scale_low, noise_low, params),
+                add_noise_vector(simd, orig_high, scale_high, noise_high, params),
+            )
+        };
+        L::store32(low, high, samples);
         col += 32;
     }
     col
@@ -716,7 +821,8 @@ fn add_noise_lanes<S: Simd, L: GrainLanes>(
 
 /// The § 7.21.7.5 vertical overlap of two noise rows, exact in `i16` lanes
 /// since `|grain| <= 512` and the weights sum to at most 45.
-fn blend_noise_row(
+fn blend_noise_row<S: Simd>(
+    simd: S,
     output: &mut [i16],
     old: &[i16],
     new: &[i16],
@@ -724,8 +830,7 @@ fn blend_noise_row(
     (grain_min, grain_max): (i32, i32),
 ) {
     let range = [grain_min as i16, grain_max as i16];
-    let done =
-        crate::lr_madd::lr_simd!(simd => blend_noise_lanes(simd, output, old, new, weights, range));
+    let done = blend_noise_lanes(simd, output, old, new, weights, range);
     for ((slot, &old), &new) in output.iter_mut().zip(old).zip(new).skip(done) {
         let sample = round2(
             i32::from(old) * i32::from(weights[0]) + i32::from(new) * i32::from(weights[1]),
@@ -884,7 +989,7 @@ fn fill_chroma_white_noise(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn apply_chroma_ar(
     model: &FilmGrainModel,
     luma: &[i32],
@@ -1016,7 +1121,7 @@ fn stripe_row_slice(stripe: &[i16], stripe_width: usize, row: usize, width: usiz
     &stripe[row * stripe_width..row * stripe_width + width]
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fill_stripe(
     stripe: &mut Stripe,
     luma_num: usize,
@@ -1061,7 +1166,7 @@ fn fill_stripe(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn fill_stripe_plane(
     stripe: &mut Stripe,
     plane: usize,
@@ -1243,5 +1348,4 @@ impl GrainRng {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests;

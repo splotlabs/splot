@@ -157,7 +157,7 @@ pub(crate) enum CoeffBaseRow<'a> {
 /// once per block so the per-coefficient reads index them directly.
 pub(crate) struct CoeffLevelRows<'a> {
     pub(crate) cdf: &'a mut CoeffCdfRows,
-    tx_size: usize,
+    pub(crate) tx_size: usize,
 }
 
 type BaseRows = [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS];

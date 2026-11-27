@@ -8,9 +8,8 @@
 
 use splot_recon::{PlaneId, PlaneRect};
 
-use super::inter::MotionVector;
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
-use crate::prediction::inter::{EncoderMotion, EncoderWarpMotion, EncoderWarpSource, Mv};
+use crate::prediction::inter::{EncoderMotion, EncoderWarpMotion, EncoderWarpSource, MotionVector};
 
 /// `MAX_WARP_REF_CANDIDATES` (§ 3): the `RefWarpIdx` values.
 pub const WARP_CANDIDATES: usize = 4;
@@ -92,17 +91,10 @@ impl IntraTileSyntax {
             return Ok(None);
         }
         let ref_frame = self.list_reference(ref_frame)?;
-        Ok(self
-            .inter_ref()?
+        self.inter_ref()?
             .tile
             .warp_options(&leaf.frontier, ref_frame)
-            .map_err(rule("warp options"))?
-            .map(|options| WarpOptions {
-                newmv: options.newmv,
-                local: options.local,
-                extend: options.extend,
-                six_param: options.six_param,
-            }))
+            .map_err(rule("warp options"))
     }
 
     /// The vector a difference of `modes` at `leaf` adds to: the DRL
@@ -113,14 +105,13 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
     pub fn warp_base(&mut self, leaf: &LeafBlock, modes: WarpModes) -> Result<MotionVector> {
         let motion = EncoderMotion::Warp(EncoderWarpMotion {
-            mvd: Some(Mv::default()),
+            mvd: Some(MotionVector::default()),
             ..self.warp_choice(leaf, modes)?
         });
         let tile = &mut self.inter_state()?.tile;
         Ok(tile
             .motion_vectors(&leaf.frontier, motion)
-            .map_err(rule("warp vector"))?[0]
-            .into())
+            .map_err(rule("warp vector"))?[0])
     }
 
     /// The difference step of `modes` in `1/8` samples: the frame step of a
@@ -168,9 +159,13 @@ impl IntraTileSyntax {
         let state = self.inter.as_mut().ok_or(EncoderSyntaxError::Unsupported(
             "inter syntax in an intra frame",
         ))?;
-        state
-            .tile
-            .predict_warp_luma(&leaf.frontier, motion, &mut self.recon.workspace)
+        self.backend
+            .enter(WarpPredictScope {
+                tile: &mut state.tile,
+                frontier: &leaf.frontier,
+                motion,
+                workspace: &mut self.recon.workspace,
+            })
             .map_err(rule("warp prediction"))?;
         out.clear();
         for row in self
@@ -194,7 +189,7 @@ impl IntraTileSyntax {
         if let Some(target) = modes.mv {
             let base = self.warp_base(leaf, modes)?;
             let step = self.warp_step(&modes);
-            let mvd = Mv {
+            let mvd = MotionVector {
                 row: target.row - base.row,
                 col: target.col - base.col,
             };
@@ -232,7 +227,7 @@ impl IntraTileSyntax {
             source,
             ref_mv_idx: modes.drl,
             ref_warp_idx: modes.warp_idx,
-            mvd: (newmv || modes.mv.is_some()).then_some(Mv::default()),
+            mvd: (newmv || modes.mv.is_some()).then_some(MotionVector::default()),
             precision: modes.precision,
             interintra: modes
                 .interintra
@@ -254,5 +249,19 @@ impl IntraTileSyntax {
             .ok()
             .filter(|_| ref_frame < self.reference_count())
             .ok_or(EncoderSyntaxError::Unsupported("reference index"))
+    }
+}
+
+struct WarpPredictScope<'a> {
+    tile: &'a mut crate::prediction::inter::EncoderInterTile,
+    frontier: &'a crate::bitstream::tile_payload::DecodeBlockFrontier,
+    motion: EncoderWarpMotion,
+    workspace: &'a mut splot_recon::CurrentFrameWorkspace<u16>,
+}
+
+impl splot_core::simd::SimdScope<crate::Result<()>> for WarpPredictScope<'_> {
+    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<()> {
+        self.tile
+            .predict_warp_luma(backend.narrow(), self.frontier, self.motion, self.workspace)
     }
 }

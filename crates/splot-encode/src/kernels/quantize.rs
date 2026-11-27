@@ -308,10 +308,7 @@ pub(super) fn quantize_error_simd(
 /// `(|c| - |dq|)²` of eight lanes, summed into `acc`.
 #[inline]
 fn add_error<S: Simd>(acc: &mut u64x4<S>, c: i32x8<S>, dq: i32x8<S>) {
-    let (a, b) = (
-        c.abs().bitcast::<u32x8<S>>(),
-        dq.abs().bitcast::<u32x8<S>>(),
-    );
+    let (a, b) = (c.unsigned_abs(), dq.unsigned_abs());
     let e = a.max(b) - a.min(b);
     let (lo, hi) = e.widening_mul(e);
     *acc = *acc + lo + hi;
@@ -347,11 +344,7 @@ fn quantize_kernel<S: Simd, const ERROR: bool>(
             &rest
         };
         let c = i32x8::load_array_ref(simd, c);
-        if c.abs()
-            .bitcast::<u32x8<S>>()
-            .simd_lt(steps.zero_below)
-            .all_true()
-        {
+        if c.unsigned_abs().simd_lt(steps.zero_below).all_true() {
             (*l, *d) = ([0; LANES], [0; LANES]);
             if ERROR {
                 add_error(&mut error, c, zero);
@@ -393,7 +386,7 @@ fn quantize_kernel<S: Simd, const ERROR: bool>(
     (count, error.reduce_sum())
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "two callers; out of line it is a call per vector"
 )]
@@ -403,7 +396,7 @@ fn quantize_lanes<S: Simd>(
     steps: &StepLanes<S>,
     c: i32x8<S>,
 ) -> (i32x8<S>, i32x8<S>) {
-    let a = c.abs().bitcast::<u32x8<S>>();
+    let a = c.unsigned_abs();
     let estimate =
         u32x8::truncate_from(f32x8::float_from(a) * steps.reciprocal).min(steps.max_level);
     let base = estimate.saturating_sub(2);

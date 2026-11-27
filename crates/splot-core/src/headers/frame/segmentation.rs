@@ -28,7 +28,10 @@
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::sequence::SequenceSegmentConfig;
-use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo, parse_seg_info};
+use crate::segment::{
+    MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature, SegmentInfo, parse_seg_info_with_reader,
+};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `SEG_LVL_SKIP`: index of the skip segment feature (AV2 v1.0.0 § 3,
 /// `docs/spec/av2/1.0.0/03-symbols.md`), the `SegIdPreSkip` threshold in
@@ -137,10 +140,23 @@ pub fn parse_segmentation_params(
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
 ) -> Result<SegmentationParams> {
-    let segmentation_enabled = reader.read_flag()?;
-    parse_segmentation_params_body(reader, seg, mfh, segmentation_enabled, true, false)
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_segmentation_params_with_reader(&mut sr, seg, mfh)
 }
 
+pub(crate) fn parse_segmentation_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    seg: &CoreSeqSegView,
+    mfh: Option<&MfhSegView>,
+) -> Result<SegmentationParams> {
+    sr.in_struct("segmentation_params", Some("5.18.7.1"), |sr| {
+        let segmentation_enabled = sr.read_flag("segmentation_enabled")?;
+        parse_segmentation_params_body(sr, seg, mfh, segmentation_enabled, true, false)
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn parse_inter_segmentation_params(
     reader: &mut BitReader<'_>,
     seg: &CoreSeqSegView,
@@ -148,25 +164,45 @@ pub(crate) fn parse_inter_segmentation_params(
     derived_primary_is_none: Option<bool>,
     frame_is_switch: bool,
 ) -> Result<Option<SegmentationParams>> {
-    let segmentation_enabled = reader.read_flag()?;
-    let Some(derived_primary_is_none) =
-        derived_primary_is_none.or((!segmentation_enabled).then_some(true))
-    else {
-        return Ok(None);
-    };
-    parse_segmentation_params_body(
-        reader,
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_inter_segmentation_params_with_reader(
+        &mut sr,
         seg,
         mfh,
-        segmentation_enabled,
         derived_primary_is_none,
         frame_is_switch,
     )
-    .map(Some)
 }
 
-fn parse_segmentation_params_body(
-    reader: &mut BitReader<'_>,
+pub(crate) fn parse_inter_segmentation_params_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+    seg: &CoreSeqSegView,
+    mfh: Option<&MfhSegView>,
+    derived_primary_is_none: Option<bool>,
+    frame_is_switch: bool,
+) -> Result<Option<SegmentationParams>> {
+    sr.in_struct("segmentation_params", Some("5.18.7.1"), |sr| {
+        let segmentation_enabled = sr.read_flag("segmentation_enabled")?;
+        let Some(derived_primary_is_none) =
+            derived_primary_is_none.or((!segmentation_enabled).then_some(true))
+        else {
+            return Ok(None);
+        };
+        parse_segmentation_params_body(
+            sr,
+            seg,
+            mfh,
+            segmentation_enabled,
+            derived_primary_is_none,
+            frame_is_switch,
+        )
+        .map(Some)
+    })
+}
+
+fn parse_segmentation_params_body<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     seg: &CoreSeqSegView,
     mfh: Option<&MfhSegView>,
     segmentation_enabled: bool,
@@ -193,8 +229,9 @@ fn parse_segmentation_params_body(
         };
 
         reuse_seg_info = if allow_change {
-            reader.read_flag()?
+            sr.read_flag("reuse_seg_info")?
         } else {
+            sr.inferred_bool("reuse_seg_info", "!allow_change", have_seg_params);
             have_seg_params
         };
 
@@ -203,15 +240,26 @@ fn parse_segmentation_params_body(
                 features = info.features;
             }
         } else {
-            features = parse_seg_info(reader, seg.max_segments)?.features;
+            features = parse_seg_info_with_reader(sr, seg.max_segments)?.features;
         }
 
         if derived_primary_is_none {
+            sr.inferred_bool(
+                "segmentation_update_map",
+                "primary_ref_frame == PRIMARY_REF_NONE",
+                true,
+            );
             segmentation_update_map = true;
         } else {
-            segmentation_update_map = reader.read_flag()?;
+            segmentation_update_map = sr.read_flag("segmentation_update_map")?;
             if segmentation_update_map && !frame_is_switch {
-                segmentation_temporal_update = reader.read_flag()?;
+                segmentation_temporal_update = sr.read_flag("segmentation_temporal_update")?;
+            } else {
+                sr.inferred_bool(
+                    "segmentation_temporal_update",
+                    "!(segmentation_update_map && !frame_is_switch)",
+                    false,
+                );
             }
         }
     }
@@ -242,7 +290,6 @@ fn parse_segmentation_params_body(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;

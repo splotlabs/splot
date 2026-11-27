@@ -12,7 +12,9 @@
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
-use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
+use crate::pipeline::reconstruct::{
+    IntraEdgeAvailability, OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct IntraEdgeCtx {
@@ -180,25 +182,13 @@ pub(crate) enum UnitEdgeRole {
     IbpSecondary,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct UnitEdges {
-    pub(crate) above: bool,
-    pub(crate) left: bool,
-}
-
-impl UnitEdges {
-    const fn read_edge_available(self, above: bool) -> bool {
-        if above { self.above } else { self.left }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: i32,
     role: UnitEdgeRole,
-    edges: UnitEdges,
+    edges: IntraEdgeAvailability,
     x: usize,
     y: usize,
     w: u32,
@@ -207,14 +197,14 @@ pub(crate) fn unit_edge_filter<T: ReconSample>(
     unit_edge_filter_for_plane(ctx, workspace, PlaneId::Y, p_angle, role, edges, x, y, w, h)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     p_angle: i32,
     role: UnitEdgeRole,
-    edges: UnitEdges,
+    edges: IntraEdgeAvailability,
     x: usize,
     y: usize,
     w: u32,
@@ -237,14 +227,14 @@ pub(crate) fn unit_edge_filter_for_plane<T: ReconSample>(
     assemble_unit_edge_filter(workspace, plane_id, &spec, x, y, w, h)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn unit_middle_edge_filters<T: ReconSample>(
     ctx: IntraEdgeCtx,
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     p_angle: i32,
     apply_ibp: bool,
-    edges: UnitEdges,
+    edges: IntraEdgeAvailability,
     x: usize,
     y: usize,
     w: u32,

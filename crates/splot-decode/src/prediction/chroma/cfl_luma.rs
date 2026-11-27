@@ -8,10 +8,7 @@
 
 use super::cfl::{CFL_FILTERS_420, gathered_q3};
 #[cfg(target_arch = "aarch64")]
-pub(super) use neon::{
-    cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8, cfl_predict_u16, luma_420_pairs_f0,
-    luma_420_pairs_f1, luma_420_rows_f0, luma_420_rows_f1, luma_420_rows_f2,
-};
+pub(super) use neon::{cfl_predict_pair_u8, cfl_predict_pair_u16, cfl_predict_u8, cfl_predict_u16};
 
 /// The token of this target's kernels.
 #[cfg(target_arch = "x86_64")]
@@ -20,14 +17,24 @@ pub(super) type LumaToken = fearless_simd::Avx2;
 #[cfg(target_arch = "aarch64")]
 pub(super) type LumaToken = fearless_simd::Neon;
 
-/// The [`LumaToken`] of this machine, if it has one.
-#[allow(clippy::inline_always, reason = "a token read in hot CfL paths")]
+#[cfg(test)]
+#[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
 #[inline(always)]
 pub(super) fn luma_token() -> Option<LumaToken> {
     #[cfg(target_arch = "x86_64")]
     return fearless_simd::Level::baseline().as_avx2();
     #[cfg(target_arch = "aarch64")]
     return fearless_simd::Level::baseline().as_neon();
+}
+
+/// The [`LumaToken`] carried by `backend`, if it has one.
+#[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
+#[inline(always)]
+pub(super) fn luma_token_for<B: splot_core::simd::SimdBackend>(backend: B) -> Option<LumaToken> {
+    #[cfg(target_arch = "x86_64")]
+    return backend.avx2_token();
+    #[cfg(target_arch = "aarch64")]
+    return backend.neon_token();
 }
 
 /// A block whose every luma tap lies inside the stored plane, so no tap
@@ -58,7 +65,7 @@ pub(super) struct Luma420Block {
 impl Luma420Block {
     /// Whether every load of a block of `height` rows below any
     /// [`Self::above`] row stays inside `len` samples.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: out of line it costs more than its body"
     )]
@@ -129,19 +136,34 @@ const fn pair_taps(weights: &[[i32; 3]; 3], clamped: bool) -> [(i16, i16); 3] {
     taps
 }
 
-/// `LANE_TAPS[filter][variant][pair][row]`: the 16 `pmaddubsw` lanes of the
+#[cfg(target_arch = "x86_64")]
+type LaneTaps = [[[i16; 16]; 3]; 2];
+
+#[cfg(target_arch = "x86_64")]
+const fn lane_tap_index(filter: usize, variant: usize) -> usize {
+    if filter == 0 {
+        0
+    } else {
+        1 + (filter - 1) * 3 + variant
+    }
+}
+
+/// `LANE_TAPS[lane_tap_index(filter, variant)][pair][row]`: 16 `pmaddubsw` lanes of the
 /// [`pair_taps`] (centre, right) (`pair` 0) and (left, centre) (`pair` 1)
 /// weights of each tap row: unclamped (`variant` 0), or with the left tap of
-/// lane 0 (`variant` 1) or lane 8 (`variant` 2) clamped.
+/// lane 0 (`variant` 1) or lane 8 (`variant` 2) clamped. Filter 0 has no
+/// left taps, so all three variants share a single entry.
 #[cfg(target_arch = "x86_64")]
-static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
-    let mut table = [[[[[0i16; 16]; 3]; 2]; 3]; 3];
+static LANE_TAPS: [LaneTaps; 7] = {
+    let mut table = [[[[0i16; 16]; 3]; 2]; 7];
     let mut filter = 0;
     while filter < 3 {
         let plain = pair_taps(&CFL_FILTERS_420[filter], false);
         let clamped = pair_taps(&CFL_FILTERS_420[filter], true);
         let mut variant = 0;
-        while variant < 3 {
+        let variants = if filter == 0 { 1 } else { 3 };
+        while variant < variants {
+            let index = lane_tap_index(filter, variant);
             let mut row = 0;
             while row < 3 {
                 let mut lane = 0;
@@ -151,8 +173,8 @@ static LANE_TAPS: [[[[[i16; 16]; 3]; 2]; 3]; 3] = {
                     } else {
                         plain[row]
                     };
-                    table[filter][variant][0][row][lane] = taps.0;
-                    table[filter][variant][1][row][lane] = taps.1;
+                    table[index][0][row][lane] = taps.0;
+                    table[index][1][row][lane] = taps.1;
                     lane += 1;
                 }
                 row += 1;
@@ -235,6 +257,9 @@ pub(super) fn luma_420<const F: usize>(
             && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros())
             && let Some(left) = left.as_deref_mut()
         {
+            #[cfg(target_arch = "aarch64")]
+            neon::luma_420_pairs::<F>(token, clamp_groups, rows, block, left, out);
+            #[cfg(target_arch = "x86_64")]
             if F == 0 {
                 luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
             } else {
@@ -244,6 +269,9 @@ pub(super) fn luma_420<const F: usize>(
         }
 
         let lane_out = left.as_deref_mut().filter(|_| lane_left);
+        #[cfg(target_arch = "aarch64")]
+        neon::luma_420_rows::<F>(token, clamp_groups, luma, block, lane_out, out);
+        #[cfg(target_arch = "x86_64")]
         match F {
             0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
             1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
@@ -251,7 +279,7 @@ pub(super) fn luma_420<const F: usize>(
         }
     }
     if let Some(left) = left.filter(|_| !lane_left) {
-        left_420(luma, &block, weights, left);
+        left_420(token, luma, &block, weights, left);
     }
     true
 }
@@ -287,8 +315,8 @@ fearless_simd::kernel!(
         use core::arch::x86_64::{__m128i, _mm_add_epi16, _mm_maddubs_epi16, _mm_set1_epi16};
         use fearless_simd::{SimdBase as _, i16x8, u8x16};
         let [mid_centre, mid_left] = [
-            &LANE_TAPS[2][usize::from(clamp_first)][0][1],
-            &LANE_TAPS[2][usize::from(clamp_first)][1][1],
+            &LANE_TAPS[lane_tap_index(2, usize::from(clamp_first))][0][1],
+            &LANE_TAPS[lane_tap_index(2, usize::from(clamp_first))][1][1],
         ]
         .map(|weights| -> __m128i { i16x8::from_slice(token, &weights[..8]).into() });
         let vertical = |row: __m128i| _mm_maddubs_epi16(row, _mm_set1_epi16(1));
@@ -333,7 +361,13 @@ fearless_simd::kernel!(
 
 /// The downsampled luma left of each block row into `left`: each row's taps
 /// (clamped only on the block's first row) gathered, then summed in lanes.
-fn left_420(luma: &[u8], block: &Luma420Block, weights: [[i32; 3]; 3], left: &mut [i16]) {
+fn left_420(
+    token: impl fearless_simd::Simd,
+    luma: &[u8],
+    block: &Luma420Block,
+    weights: [[i32; 3]; 3],
+    left: &mut [i16],
+) {
     let first = usize::from(block.above.is_some());
     let clamp_left = usize::from(block.luma_x != 2);
     for (g, group) in left.chunks_mut(8).enumerate() {
@@ -351,7 +385,7 @@ fn left_420(luma: &[u8], block: &Luma420Block, weights: [[i32; 3]; 3], left: &mu
                 }
             }
         }
-        let lanes = gathered_q3(&taps, weights);
+        let lanes = gathered_q3(token, &taps, weights);
         group.copy_from_slice(&lanes[..group.len()]); // splot-copy-ok: publish CfL lumaLeft samples
     }
 }
@@ -376,7 +410,6 @@ macro_rules! luma_420_rows {
                 out: &mut [i16],
             ) {
                 let mut left = left;
-                let taps = &LANE_TAPS[$filter];
                 use core::arch::x86_64::{
                     __m128i, __m256i, _mm_add_epi16, _mm_maddubs_epi16, _mm256_add_epi16,
                     _mm256_castsi256_si128, _mm256_extract_epi16, _mm256_extracti128_si256,
@@ -385,9 +418,10 @@ macro_rules! luma_420_rows {
                 use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u8x16, u8x32};
                 let width = block.width;
                 let lanes = |clamped: usize, pair: usize, row: usize| -> __m256i {
-                    i16x16::from_slice(token, &taps[clamped][pair][row]).into()
+                    let taps = &LANE_TAPS[lane_tap_index($filter, clamped)];
+                    i16x16::from_slice(token, &taps[pair][row]).into()
                 };
-                let [[plain_centre, plain_left], ..] = taps;
+                let [plain_centre, plain_left] = &LANE_TAPS[lane_tap_index($filter, 0)];
                 let used = |pair: &[[i16; 16]; 3], row: usize| pair[row][1] != 0;
                 let first = usize::from(clamp_groups & 1);
                 let skip = usize::from(block.above.is_some());
@@ -523,7 +557,7 @@ macro_rules! luma_420_pairs {
                 if stride < 64 {
                     return;
                 }
-                let taps = &LANE_TAPS[$filter][2 * usize::from(clamp_groups & 1)];
+                let taps = &LANE_TAPS[lane_tap_index($filter, 2 * usize::from(clamp_groups & 1))];
                 let lanes = |pair: usize, row: usize| -> __m256i {
                     i16x16::from_slice(token, &taps[pair][row]).into()
                 };
@@ -924,99 +958,77 @@ mod neon {
         }
     }
 
-    /// The NEON `luma_420_rows_f*` of filter `F`.
-    #[target_feature(enable = "neon")]
-    #[inline]
-    fn rows<const F: usize>(
-        token: Neon,
-        clamp_groups: u8,
-        luma: &[u8],
-        block: Luma420Block,
-        mut left: Option<&mut [i16]>,
-        out: &mut [i16],
-    ) {
-        let weights = &WEIGHTS[F];
-        let width = block.width;
-        let first = usize::from(clamp_groups & 1);
-        let skip = usize::from(block.above.is_some());
-        for (r, out) in out.chunks_exact_mut(width).enumerate() {
-            let rows = tap_rows(&block, r);
-            if width > 8 {
-                for g in (0..width).step_by(16) {
-                    let clamped = usize::from(clamp_groups >> (g / 16) & 1);
-                    let at = rows.map(|row| row + 2 * g);
-                    let acc = taps::<F, true>(token, luma, at, &weights[clamped]);
-                    store_row16(token, acc, &mut out[g..]);
+    fearless_simd::kernel!(
+        /// Applies luma filter `F` to each row of a 4:2:0 block.
+        #[inline]
+        pub(in super::super) fn luma_420_rows<const F: usize>(
+            token: Neon,
+            clamp_groups: u8,
+            luma: &[u8],
+            block: Luma420Block,
+            left: Option<&mut [i16]>,
+            out: &mut [i16],
+        ) {
+            let mut left = left;
+            let weights = &WEIGHTS[F];
+            let width = block.width;
+            let first = usize::from(clamp_groups & 1);
+            let skip = usize::from(block.above.is_some());
+            for (r, out) in out.chunks_exact_mut(width).enumerate() {
+                let rows = tap_rows(&block, r);
+                if width > 8 {
+                    for g in (0..width).step_by(16) {
+                        let clamped = usize::from(clamp_groups >> (g / 16) & 1);
+                        let at = rows.map(|row| row + 2 * g);
+                        let acc = taps::<F, true>(token, luma, at, &weights[clamped]);
+                        store_row16(token, acc, &mut out[g..]);
+                    }
+                } else if let Some(left) = left.as_deref_mut() {
+                    let at = rows.map(|row| row - 16);
+                    let [low, high] = taps::<F, true>(token, luma, at, &weights[2 * first]);
+                    if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                        *slot = vgetq_lane_u16::<7>(low) as i16;
+                    }
+                    store_row8(token, high, out);
+                } else {
+                    let [low, _] = taps::<F, false>(token, luma, rows, &weights[first]);
+                    store_row8(token, low, out);
                 }
-            } else if let Some(left) = left.as_deref_mut() {
-                let at = rows.map(|row| row - 16);
-                let [low, high] = taps::<F, true>(token, luma, at, &weights[2 * first]);
+            }
+        }
+    );
+
+    fearless_simd::kernel!(
+        /// Applies luma filter `F` without top taps from consecutive row pairs.
+        #[inline]
+        pub(in super::super) fn luma_420_pairs<const F: usize>(
+            token: Neon,
+            clamp_groups: u8,
+            rows: &[u8],
+            block: Luma420Block,
+            left: &mut [i16],
+            out: &mut [i16],
+        ) {
+            let stride = block.stride;
+            if stride < 64 {
+                return;
+            }
+            let weights = &WEIGHTS[F][2 * usize::from(clamp_groups & 1)];
+            let skip = usize::from(block.above.is_some());
+            let mut rest = rows;
+            for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
+                let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
+                    return;
+                };
+                rest = tail;
+                let [low, high] = taps::<F, true>(token, pair, [1, 1, stride + 1], weights);
                 if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
                     *slot = vgetq_lane_u16::<7>(low) as i16;
                 }
                 store_row8(token, high, out);
-            } else {
-                let [low, _] = taps::<F, false>(token, luma, rows, &weights[first]);
-                store_row8(token, low, out);
             }
         }
-    }
-
-    /// The NEON `luma_420_pairs_f*` of filter `F`, without top taps.
-    #[target_feature(enable = "neon")]
-    #[inline]
-    fn pairs<const F: usize>(
-        token: Neon,
-        clamp_groups: u8,
-        rows: &[u8],
-        block: Luma420Block,
-        left: &mut [i16],
-        out: &mut [i16],
-    ) {
-        let stride = block.stride;
-        if stride < 64 {
-            return;
-        }
-        let weights = &WEIGHTS[F][2 * usize::from(clamp_groups & 1)];
-        let skip = usize::from(block.above.is_some());
-        let mut rest = rows;
-        for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
-            let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
-                return;
-            };
-            rest = tail;
-            let [low, high] = taps::<F, true>(token, pair, [1, 1, stride + 1], weights);
-            if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
-                *slot = vgetq_lane_u16::<7>(low) as i16;
-            }
-            store_row8(token, high, out);
-        }
-    }
-
-    /// Defines a `luma_420` kernel entry for one constant filter.
-    macro_rules! luma_420_kernel {
-        ($name:ident, $kernel:ident, $filter:literal, $left:ty) => {
-            fearless_simd::kernel!(
-                /// The NEON kernel of this name for one filter.
-                #[inline]
-                pub(in super::super) fn $name(
-                    token: Neon,
-                    clamp_groups: u8,
-                    luma: &[u8],
-                    block: Luma420Block,
-                    left: $left,
-                    out: &mut [i16],
-                ) {
-                    $kernel::<$filter>(token, clamp_groups, luma, block, left, out);
-                }
-            );
-        };
-    }
-    luma_420_kernel!(luma_420_rows_f0, rows, 0, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_rows_f1, rows, 1, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_rows_f2, rows, 2, Option<&mut [i16]>);
-    luma_420_kernel!(luma_420_pairs_f0, pairs, 0, &mut [i16]);
-    luma_420_kernel!(luma_420_pairs_f1, pairs, 1, &mut [i16]);
+    );
 
     /// The broadcast `lumaAvg`, `alpha` sign mask, `16 * |alpha|` and `dc`
     /// of a `[dc, alpha, lumaAvg, max]` model.

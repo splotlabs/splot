@@ -141,7 +141,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
 
@@ -234,7 +234,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
-        if !matches!(options.external_hls, ExternalHlsMode::Disabled) {
+        if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
         let Some((seq_header_id, general)) = self.agreement_activation_for(xlayer) else {
@@ -324,17 +324,19 @@ impl ValidatorContext {
                 obu.offset,
             );
             if br_ops_cnt != record_ops_cnt {
+                let definition = record_offset.map_or_else(
+                    || "supplied externally".to_owned(),
+                    |offset| format!("defined at byte {offset}"),
+                );
                 report.push(
                     Diagnostic::error(
                         "brt/ops-count-mismatch",
                         format!(
                             "OBU_BUFFER_REMOVAL_TIMING references ops_id {} for obu_xlayer_id \
-                             {} with br_ops_cnt {}, but the active operating point set (defined \
-                             at byte {}) has ops_cnt {}",
+                             {} with br_ops_cnt {}, but the active operating point set ({definition}) has ops_cnt {}",
                             br_ops_id,
                             xlayer.get(),
                             br_ops_cnt,
-                            record_offset,
                             record_ops_cnt
                         ),
                     )
@@ -347,7 +349,7 @@ impl ValidatorContext {
                 ExternalHlsMode::Provided(set) => {
                     set.has_operating_point_set(xlayer.get(), br_ops_id)
                 }
-                ExternalHlsMode::Disabled => false,
+                ExternalHlsMode::Disabled | ExternalHlsMode::Objects(_) => false,
             };
             if !external_ops_declared {
                 report.push(

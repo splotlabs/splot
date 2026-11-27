@@ -228,7 +228,7 @@ impl Search<'_> {
                 .collect())
         };
         let pc_delta = deltas(pc, &units, 0, LrUnitType::PcWiener)?;
-        let luma_options = |kinds: &[(LrUnitType, &Vec<i64>)]| -> Options {
+        let luma_options = |kinds: &[(LrUnitType, &[i64])]| -> Options {
             (0..units.units.len())
                 .map(|index| {
                     core::iter::once((None, 0))
@@ -353,7 +353,7 @@ impl Search<'_> {
             let shift = format.subsampling_x().max(format.subsampling_y());
             let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
             let size = (luma_size >> shift).max(64 >> format.subsampling_y());
-            let base = best.clone();
+            let base = best;
             best = self.chroma(base.clone(), &off, (preset, off_bits), size)?;
             for size in (1..preset.lr_chroma_unit_sizes)
                 .map(|k| size << k)

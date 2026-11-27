@@ -3,7 +3,9 @@
 
 use splot_core::headers::frame::{FrameHeaderCore, IntrabcParams};
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+use splot_recon::{
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample,
+};
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, FrameQmSegmentScope};
 use crate::filters::wienerns_lr::intrabc_records::{
@@ -11,14 +13,14 @@ use crate::filters::wienerns_lr::intrabc_records::{
     derive_intrabc_luma_prediction_geometry,
 };
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use crate::prediction::inter::{InterResidual, InterResidualBlock, Mv, mc};
+use crate::prediction::inter::{InterResidual, InterResidualBlock, MotionVector, mc};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
     luma_target: PlaneRect,
     luma_source: IntrabcLumaSource,
     chroma: Option<IntrabcChromaPrediction>,
-    morph_mv: Option<Mv>,
+    morph_mv: Option<MotionVector>,
     /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
     morph_avail: (bool, bool),
 }
@@ -35,7 +37,7 @@ struct IntrabcChromaPrediction {
 }
 
 impl IntrabcReconPrediction {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn derive(
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,
@@ -62,7 +64,7 @@ impl IntrabcReconPrediction {
         } else {
             None
         };
-        let morph_mv = info.morph_pred.then_some(Mv {
+        let morph_mv = info.morph_pred.then_some(MotionVector {
             row: info.block_mv.row,
             col: info.block_mv.col,
         });
@@ -77,6 +79,14 @@ impl IntrabcReconPrediction {
             morph_mv,
             morph_avail,
         })
+    }
+
+    #[cfg(feature = "block-evidence")]
+    pub(super) const fn direct_luma_source(&self) -> Option<PlaneRect> {
+        match self.luma_source {
+            IntrabcLumaSource::Copy(source) => Some(source),
+            IntrabcLumaSource::Subpel(_) => None,
+        }
     }
 
     fn derive_chroma(
@@ -160,8 +170,9 @@ impl IntrabcReconCommand {
         }
     }
 
-    pub(super) fn reconstruct<T: ReconSample>(
+    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         &self,
+        backend: B,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -170,6 +181,7 @@ impl IntrabcReconCommand {
         let prediction = &self.prediction;
         match prediction.luma_source {
             IntrabcLumaSource::Subpel(scaling) => mc::intrabc_predict_subpel_plane_into(
+                backend,
                 workspace,
                 PlaneId::Y,
                 prediction.luma_target,
@@ -181,6 +193,7 @@ impl IntrabcReconCommand {
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
+                backend,
                 workspace,
                 prediction.luma_target,
                 prediction.morph_avail,
@@ -190,6 +203,7 @@ impl IntrabcReconCommand {
         if let Some(chroma) = prediction.chroma {
             for plane in [PlaneId::U, PlaneId::V] {
                 mc::intrabc_predict_subpel_plane_into(
+                    backend,
                     workspace,
                     plane,
                     chroma.target,
@@ -199,7 +213,8 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
-                &mut mc::WorkspaceSink::Frame(workspace),
+                backend,
+                &mut CurrentFrameSurface::Frame(workspace),
                 residual,
                 residual_blocks,
                 residual_coeffs,

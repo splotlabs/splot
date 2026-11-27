@@ -23,7 +23,7 @@
 //!    leaves the frame boundary (`mvref_common.c:1828`-`1832`).
 //! 3. The default-BVP extra search (§ 7.12.2.20, the `use_intrabc` `add_to_ref_bv`
 //!    tail, `mvref_common.c:2711`-`2732`): the four default block vectors fill the
-//!    remaining slots with NO dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
+//!    remaining slots with no dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
 //!
 //! The bank itself is maintained by AV2 § 7.12.2 `av2_update_ref_mv_bank`:
 //! intra-only frames zero it at each superblock row, while inter frames seed up
@@ -35,8 +35,10 @@
 //! parser carries a bounded selection, and the four default BVPs make every
 //! reachable selection total.
 
+use splot_core::headers::sequence::DrlReorder;
+
 use super::intrabc_records::IntrabcRefSelection;
-use crate::prediction::inter::{FixedStack, Mv};
+use crate::prediction::inter::{FixedStack, MotionVector};
 
 const REF_MV_BANK_SIZE: usize = 4;
 const MAX_SMVP_AXIS_MI: usize = 16;
@@ -67,7 +69,7 @@ pub(crate) type SpatialBvStack = FixedStack<WeightedBv, MAX_SPATIAL_INTRABC_CAND
 
 fn merge_or_push_weighted(
     candidates: &mut SpatialBvStack,
-    mv: Mv,
+    mv: MotionVector,
     weight: u16,
     comparisons: &mut u32,
 ) {
@@ -90,7 +92,7 @@ fn merge_or_push_weighted(
     }
 }
 
-fn budgeted_dedup_finds(stack: &[Mv], cand: Mv, comparisons: &mut u32) -> bool {
+fn budgeted_dedup_finds(stack: &[MotionVector], cand: MotionVector, comparisons: &mut u32) -> bool {
     if *comparisons >= MAX_PR_NUM {
         return false;
     }
@@ -104,7 +106,12 @@ fn budgeted_dedup_finds(stack: &[Mv], cand: Mv, comparisons: &mut u32) -> bool {
     false
 }
 
-fn check_rmb_cand(cand: Mv, stack: &[Mv], bounds: RmbCandBounds, comparisons: &mut u32) -> bool {
+fn check_rmb_cand(
+    cand: MotionVector,
+    stack: &[MotionVector],
+    bounds: RmbCandBounds,
+    comparisons: &mut u32,
+) -> bool {
     if budgeted_dedup_finds(stack, cand, comparisons) {
         return false;
     }
@@ -143,7 +150,7 @@ const OTHER_SMVP_WEIGHT: u16 = 0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct WeightedBv {
-    pub(crate) mv: Mv,
+    pub(crate) mv: MotionVector,
     pub(crate) weight: u16,
 }
 
@@ -171,7 +178,7 @@ pub(crate) struct SpatialIntrabcProbes {
 impl SpatialIntrabcProbes {
     pub(crate) fn resolve(
         &self,
-        lookup: impl Fn(usize, usize) -> Option<Mv>,
+        lookup: impl Fn(usize, usize) -> Option<MotionVector>,
     ) -> SpatialIntrabcScan {
         let mut candidates = SpatialBvStack::new();
         let mut nearest_len = 0;
@@ -203,7 +210,7 @@ impl SpatialIntrabcProbes {
 const PROBE_SERIAL_SHIFT: u32 = 16;
 const PROBE_COL_MASK: i32 = (1 << PROBE_SERIAL_SHIFT) - 1;
 
-fn decode_probe_position(encoded: Mv) -> Option<(usize, usize)> {
+fn decode_probe_position(encoded: MotionVector) -> Option<(usize, usize)> {
     let row = usize::try_from(encoded.row).ok()?;
     let col = usize::try_from(encoded.col & PROBE_COL_MASK).ok()?;
     Some((row, col))
@@ -224,7 +231,7 @@ pub(crate) fn capture_spatial_intrabc_probes(
             }
             let tag = serial.get();
             serial.set(tag.wrapping_add(1));
-            Some(Mv {
+            Some(MotionVector {
                 row: i32::try_from(row).ok()?,
                 col: i32::try_from(col)
                     .ok()
@@ -243,7 +250,7 @@ pub(crate) fn capture_spatial_intrabc_probes(
 
 pub(crate) fn spatial_intrabc_scan_with_base_col(
     geometry: SpatialScanGeometry,
-    lookup: impl Fn(usize, usize) -> Option<Mv>,
+    lookup: impl Fn(usize, usize) -> Option<MotionVector>,
     is_coded: impl Fn(usize, usize) -> bool,
     block_base_col: impl Fn(usize, usize) -> Option<usize>,
 ) -> SpatialIntrabcScan {
@@ -456,7 +463,7 @@ fn sb_border_above_col(geometry: &SpatialScanGeometry, raw: i32) -> Option<usize
 
 fn push_above_probe(
     geometry: &SpatialScanGeometry,
-    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    lookup: &impl Fn(usize, usize) -> Option<MotionVector>,
     candidates: &mut SpatialBvStack,
     col: Option<usize>,
     comparisons: &mut u32,
@@ -486,7 +493,7 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
 
 fn push_deduped(
     geometry: &SpatialScanGeometry,
-    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    lookup: &impl Fn(usize, usize) -> Option<MotionVector>,
     candidates: &mut SpatialBvStack,
     row_offset: usize,
     left_col: usize,
@@ -500,7 +507,7 @@ fn push_deduped(
 
 fn push_scan_col(
     geometry: &SpatialScanGeometry,
-    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    lookup: &impl Fn(usize, usize) -> Option<MotionVector>,
     block_base_col: &impl Fn(usize, usize) -> Option<usize>,
     candidates: &mut SpatialBvStack,
     comparisons: &mut u32,
@@ -535,7 +542,7 @@ fn push_scan_col(
 
 fn push_scan_col_point(
     geometry: &SpatialScanGeometry,
-    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    lookup: &impl Fn(usize, usize) -> Option<MotionVector>,
     block_base_col: &impl Fn(usize, usize) -> Option<usize>,
     candidates: &mut SpatialBvStack,
     mv_row: usize,
@@ -579,10 +586,10 @@ fn push_scan_col_point(
 
 fn lookup_in_grid(
     geometry: &SpatialScanGeometry,
-    lookup: &impl Fn(usize, usize) -> Option<Mv>,
+    lookup: &impl Fn(usize, usize) -> Option<MotionVector>,
     row: usize,
     col: usize,
-) -> Option<Mv> {
+) -> Option<MotionVector> {
     if row >= geometry.mi_rows || col >= geometry.mi_cols {
         return None;
     }
@@ -591,12 +598,12 @@ fn lookup_in_grid(
 
 #[cfg(test)]
 pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
-    bank_candidates: &[Mv],
+    bank_candidates: &[MotionVector],
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
-    spatial: &[Mv],
+    spatial: &[MotionVector],
     spatial_comparisons: u32,
-) -> Vec<Mv> {
+) -> Vec<MotionVector> {
     build_intrabc_ref_mv_stack(
         bank_candidates,
         geometry,
@@ -610,30 +617,30 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
 }
 
 struct IntrabcRefMvStack {
-    entries: [Mv; REF_MV_BANK_SIZE],
+    entries: [MotionVector; REF_MV_BANK_SIZE],
     len: usize,
 }
 
 impl IntrabcRefMvStack {
     const fn new() -> Self {
         Self {
-            entries: [Mv { row: 0, col: 0 }; REF_MV_BANK_SIZE],
+            entries: [MotionVector { row: 0, col: 0 }; REF_MV_BANK_SIZE],
             len: 0,
         }
     }
 
-    fn push(&mut self, mv: Mv, max_count: usize) {
+    fn push(&mut self, mv: MotionVector, max_count: usize) {
         if self.len < max_count {
             self.entries[self.len] = mv;
             self.len += 1;
         }
     }
 
-    fn as_slice(&self) -> &[Mv] {
+    fn as_slice(&self) -> &[MotionVector] {
         &self.entries[..self.len]
     }
 
-    const fn selected(&self, selection: IntrabcRefSelection) -> Mv {
+    const fn selected(&self, selection: IntrabcRefSelection) -> MotionVector {
         match selection.index() {
             0 => self.entries[0],
             1 => self.entries[1],
@@ -644,10 +651,10 @@ impl IntrabcRefMvStack {
 }
 
 fn build_intrabc_ref_mv_stack(
-    bank_candidates: &[Mv],
+    bank_candidates: &[MotionVector],
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
-    spatial: impl IntoIterator<Item = Mv>,
+    spatial: impl IntoIterator<Item = MotionVector>,
     spatial_comparisons: u32,
     max_count: usize,
 ) -> IntrabcRefMvStack {
@@ -703,20 +710,11 @@ fn build_intrabc_ref_mv_stack(
     stack
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DrlReorderMode {
-    Disabled,
-    Constraint,
-    Always,
-}
-
-impl DrlReorderMode {
-    pub(crate) const fn use_sort(self, nearest: usize) -> bool {
-        match self {
-            Self::Disabled => false,
-            Self::Constraint => nearest >= 4,
-            Self::Always => true,
-        }
+const fn use_sort(drl_reorder: DrlReorder, nearest: usize) -> bool {
+    match drl_reorder {
+        DrlReorder::Disabled => false,
+        DrlReorder::Constraint => nearest >= 4,
+        DrlReorder::Always => true,
     }
 }
 
@@ -738,16 +736,16 @@ pub(crate) fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
 }
 
 pub(crate) fn select_intrabc_ref_mv_from_candidates(
-    bank_candidates: &[Mv],
+    bank_candidates: &[MotionVector],
     geometry: IntrabcStackGeometry,
     spatial: &SpatialIntrabcScan,
     enable_refmvbank: bool,
-    drl_reorder: DrlReorderMode,
+    drl_reorder: DrlReorder,
     selection: IntrabcRefSelection,
-) -> Mv {
+) -> MotionVector {
     let mut ordered = spatial.candidates;
     let nearest_len = spatial.nearest_len.min(ordered.len());
-    if drl_reorder.use_sort(nearest_len) && nearest_len > 1 {
+    if use_sort(drl_reorder, nearest_len) && nearest_len > 1 {
         sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
     }
     build_intrabc_ref_mv_stack(
@@ -763,8 +761,8 @@ pub(crate) fn select_intrabc_ref_mv_from_candidates(
 
 const INTRABC_DELAY_PIXELS: i32 = 256;
 
-const fn add_to_ref_bv(dx: i32, dy: i32) -> Mv {
-    Mv {
+const fn add_to_ref_bv(dx: i32, dy: i32) -> MotionVector {
+    MotionVector {
         row: dy * 8,
         col: dx * 8,
     }

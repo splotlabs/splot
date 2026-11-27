@@ -3,7 +3,7 @@
 
 //! Golden default and header-only text output (CONF-CLI-SNAPSHOT-COVERAGE).
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::path::Path;
 use std::process::Command;

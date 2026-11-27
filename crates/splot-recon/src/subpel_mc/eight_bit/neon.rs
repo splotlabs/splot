@@ -418,18 +418,13 @@ pub(in crate::subpel_mc) struct Windows<'a, 'b>(
     usize,
 );
 
-/// The NEON token, which the AArch64 baseline always has.
-#[inline(always)]
-pub(in crate::subpel_mc) fn token() -> Option<Neon> {
-    fearless_simd::Level::baseline().as_neon()
-}
-
 /// Stores the COMPOUND_AVERAGE of the 4x4 or 8x8 cell of `windows` within
 /// `bounds` read from `views`, in place or by clamped rows and columns, or
 /// returns `false` without writing when a clamped row cannot load 16
 /// samples or the output cannot hold the cell.
 #[inline]
 pub(in crate::subpel_mc) fn compound_windows(
+    t: Neon,
     views: [&ReferencePlaneView<'_, u8>; 2],
     windows: &[Window; 2],
     bounds: [[i32; 4]; 2],
@@ -440,7 +435,7 @@ pub(in crate::subpel_mc) fn compound_windows(
     let references = views.map(|view| (view.samples, view.geometry()));
     let windows = [&windows[0], &windows[1]];
     let job = Windows(references, windows, bounds, forward, output, stride);
-    token().is_some_and(|t| dot::run(t, job))
+    dot::run(t, job)
 }
 
 /// The kernels of a [`Program`] of `size`-square cells.
@@ -451,13 +446,14 @@ pub(in crate::subpel_mc) struct Programs<'a, 'b>(Program<'a, 'b>, usize, &'a mut
 /// `planes`, and returns their bits.
 #[inline]
 pub(in crate::subpel_mc) fn program(
+    t: Neon,
     planes: &mut [Option<Plane<'_, '_, u8>>; 2],
     (filter, size): (usize, usize),
     cells: &[Cell],
     (forward, _): (i32, u16),
 ) -> Written {
     let mut written = [[0; 4]; 2];
-    let (Some(t), Some((views, ..))) = (token(), &planes[0]) else {
+    let Some((views, ..)) = &planes[0] else {
         return written;
     };
     let geometry = views.each_ref().map(ReferencePlaneView::geometry);
@@ -478,8 +474,7 @@ pub(in crate::subpel_mc) fn program(
 
 /// Predicts `block` into an eight-bit `sink`, as [`super::predict`] admits.
 #[inline]
-pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) {
-    let Some(t) = token() else { return };
+pub(in crate::subpel_mc) fn predict(t: Neon, block: &Block<'_, u8>, sink: &mut Sink<'_>) -> bool {
     let w = block.w;
     match sink {
         Sink::Put { output, stride } => {
@@ -574,28 +569,28 @@ pub(in crate::subpel_mc) fn predict(block: &Block<'_, u8>, sink: &mut Sink<'_>) 
         }
         Sink::AverageWide { .. } => {}
     }
+    true
 }
 
 /// Stores the `Clip1` single-reference prediction of `block`.
 #[inline]
-pub(in crate::subpel_mc) fn put(block: &Block<'_, u8>, output: &mut [u8], stride: usize) {
-    run(Strip(block, &mut Put { output, stride }));
-}
-
-/// Runs `job` in the kernel family [`dot::run`] picks.
-#[inline(always)]
-fn run<J: dot::Job<Output = ()>>(job: J) {
-    if let Some(t) = token() {
-        dot::run(t, job);
-    }
+pub(in crate::subpel_mc) fn put(
+    t: Neon,
+    block: &Block<'_, u8>,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    dot::run(t, Strip(block, &mut Put { output, stride }));
+    true
 }
 
 /// [`put`] of two blocks of one window into `outputs`.
 #[inline]
 pub(in crate::subpel_mc) fn put_pair(
+    t: Neon,
     blocks: [&Block<'_, u8>; 2],
     [(first, first_stride), (second, second_stride)]: [(&mut [u8], usize); 2],
-) {
+) -> bool {
     let first = &mut Put {
         output: first,
         stride: first_stride,
@@ -604,31 +599,37 @@ pub(in crate::subpel_mc) fn put_pair(
         output: second,
         stride: second_stride,
     };
-    run(Strips([Strip(blocks[0], first), Strip(blocks[1], second)]));
+    dot::run(
+        t,
+        Strips([Strip(blocks[0], first), Strip(blocks[1], second)]),
+    );
+    true
 }
 
 /// The COMPOUND_AVERAGE of each of `P` 4x4 or 8x8 register cell pairs into
 /// its output.
 #[inline]
 pub(in crate::subpel_mc) fn compound_cell<const P: usize>(
+    t: Neon,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
-) {
-    run(Compound::<true, P>(pairs, forward, outputs));
+) -> bool {
+    dot::run(t, Compound::<true, P>(pairs, forward, outputs));
+    true
 }
 
 /// The COMPOUND_AVERAGE of two full-sample blocks into `output`.
 #[inline]
 pub(in crate::subpel_mc) fn compound_fullpel(
+    t: Neon,
     blocks: [&Block<'_, u8>; 2],
     forward: i32,
     output: &mut [u8],
     stride: usize,
-) {
-    if let Some(t) = token() {
-        fullpel_pair(t, blocks, forward, output, stride);
-    }
+) -> bool {
+    fullpel_pair(t, blocks, forward, output, stride);
+    true
 }
 
 fearless_simd::kernel!(
@@ -649,11 +650,13 @@ fearless_simd::kernel!(
 /// first predictor staged for the second.
 #[inline]
 pub(in crate::subpel_mc) fn compound_strips<const P: usize>(
+    t: Neon,
     pairs: [[&Block<'_, u8>; 2]; P],
     forward: i32,
     outputs: [(&mut [u8], usize); P],
-) {
-    run(Compound::<false, P>(pairs, forward, outputs));
+) -> bool {
+    dot::run(t, Compound::<false, P>(pairs, forward, outputs));
+    true
 }
 
 fearless_simd::kernel!(

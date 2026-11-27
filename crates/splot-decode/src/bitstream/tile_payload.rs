@@ -39,9 +39,9 @@ use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 pub(crate) use block_decoded_state::{TileBlockDecodedState, TileBlockDecodedStateError};
 #[cfg(test)]
 pub(crate) use cdf::block_context::IntraJointMode;
+pub use cdf::block_context::SupportedChromaMode;
 pub(crate) use cdf::block_context::{
-    IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode,
+    IntraYMode, IntraYModeClass, MrlSelection, SupportedDirectionalLumaMode,
 };
 pub(crate) use cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 pub(crate) use cdf::{
@@ -66,23 +66,31 @@ pub(crate) use general_intra_block::{
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
     read_lossless_luma_tx_size, read_lossless_tx_size,
 };
+#[cfg(not(feature = "block-evidence"))]
+pub(crate) use general_intra_residual::decode_general_intra_plane_coeffs;
+#[cfg(feature = "block-evidence")]
+pub(crate) use general_intra_residual::decode_general_intra_plane_coeffs_observed as decode_general_intra_plane_coeffs;
 #[cfg(test)]
 pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
-#[cfg(test)]
-pub(crate) use general_intra_residual::tx_size_from_dimensions;
 pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
     LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock, PositionedLumaCoeffBlock,
-    ResidualScratch, TransformToolResidualPolicy, add_cctx_pair_residual_in_place,
-    add_general_intra_coeff_block_residual_in_place, current_segment_lossless,
-    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
+    ResidualScratch, TransformToolResidualPolicy, add_cctx_pair_residual_in_place_with,
+    add_general_intra_coeff_block_residual_in_place_with, current_segment_lossless,
+    is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
     read_intra_luma_tx_partition, read_luma_tx_partition_type,
-    reconstruct_general_intra_coeff_block_rect_into_frame,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
+    reconstruct_general_intra_coeff_block_rect_into_frame_with,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into_with,
+    reconstruct_inter_coeff_block_residual_rect_into_with, with_residual_scratch,
+};
+#[cfg(feature = "block-evidence")]
+pub(crate) use general_intra_residual::{CoefficientCoding, evidence_dequant_params};
+#[cfg(test)]
+pub(crate) use general_intra_residual::{
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into, tx_size_from_dimensions,
 };
 #[cfg(test)]
 pub(crate) use input::plan_derived_tile_payload_boundary;
@@ -101,19 +109,24 @@ pub(crate) use intra_joint_modes::{
 pub(crate) use mi_size_state::{PartitionNeighbours, UvEdges};
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
+#[cfg(any(test, feature = "block-evidence"))]
+pub(crate) use partition_allowed::PartitionTreeType;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::BRU_ACTIVE;
+pub(crate) use partition_traversal::BRU_INACTIVE;
 pub(crate) use partition_traversal::LrUnitRestorationType;
-#[cfg(test)]
+#[cfg(any(test, feature = "block-evidence"))]
 pub(crate) use partition_traversal::TilePartitionCall;
 pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
+#[cfg(test)]
+pub(crate) use partition_traversal::tests::make_work_unit_at as make_test_work_unit_at;
 pub(crate) use partition_traversal::{
     ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication,
-    GeneralIntraLeafMode, GeneralIntraTreeWalkError, LeafDecoder, LeafNeighbours,
-    TileTraversalStorage,
+    GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError, LeafDecoder,
+    LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -121,8 +134,7 @@ pub(crate) use partition_traversal::{
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
-    TilePartitionFrontierError, chroma_subsampling,
+    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, TilePartitionFrontierError,
 };
 
 #[derive(Clone, Debug)]
@@ -435,8 +447,6 @@ pub(crate) struct DecodeTileWorkUnit {
     mi_col_range: core::ops::Range<u32>,
     payload_range: core::ops::Range<usize>,
     payload_index: usize,
-    #[cfg(test)]
-    test_tile_bytes: &'static [u8],
     tile_byte_span: ByteSpan,
     tile_size: u64,
     coeff_frame_facts: TileCoeffFrameFacts,
@@ -444,6 +454,8 @@ pub(crate) struct DecodeTileWorkUnit {
     /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
     /// when `use_bru == 0`.
     bru_tile_active: Option<bool>,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) entropy_transform: Option<crate::block_evidence::BlockTransformId>,
 }
 
 impl DecodeTileWorkUnit {
@@ -452,9 +464,11 @@ impl DecodeTileWorkUnit {
     }
 
     #[cfg(test)]
-    pub(crate) const fn tile_bytes(&self) -> &'static [u8] {
-        self.test_tile_bytes
+    pub(crate) fn with_bru_tile_active(mut self, active: bool) -> Self {
+        self.bru_tile_active = Some(active);
+        self
     }
+
     pub(crate) const fn payload_index(&self) -> usize {
         self.payload_index
     }
@@ -772,13 +786,13 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             mi_col_range,
             payload_range: payload_start..payload_end,
             payload_index: 0,
-            #[cfg(test)]
-            test_tile_bytes: Box::leak(tile_bytes.to_vec().into_boxed_slice()),
             tile_byte_span,
             tile_size: tile.tile_size,
             coeff_frame_facts: input.frame.coeff_frame_facts,
             cdf,
             bru_tile_active: None,
+            #[cfg(feature = "block-evidence")]
+            entropy_transform: None,
         });
     }
     Ok(DecodeTilePayloadPlan {

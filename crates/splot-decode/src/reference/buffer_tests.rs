@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use super::*;
 use crate::pipeline::frame_store::FrameStore;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
@@ -31,6 +29,7 @@ fn key_update() -> FrameRefUpdate<'static> {
         lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
     }
 }
 
@@ -55,6 +54,7 @@ fn inter_update() -> FrameRefUpdate<'static> {
         lr_banks: [None; 3],
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
     }
 }
 
@@ -98,9 +98,15 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
             )
             .unwrap(),
         )),
-        frame_rate_numerator: 1,
-        frame_rate_denominator: 1,
+        frame_rate: crate::pipeline::PipelineFrameRate {
+            numerator: 1,
+            denominator: 1,
+        },
+        extended_layer_id: splot_core::types::ExtendedLayerId::from_bits(0),
+        embedded_layer_id: splot_core::types::EmbeddedLayerId::BASE,
+        temporal_layer_id: splot_core::types::TemporalLayerId::BASE,
         props: crate::DataProps::default(),
+        provenance: crate::PictureProvenance::TEST,
     }
 }
 

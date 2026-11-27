@@ -174,7 +174,7 @@ pub(in crate::validator::tests) fn qm_default_level_obu_chroma_at_layer(
 }
 
 /// A `quantizer_matrix_obu()` with `qm_bit_map == 0` (the § 5.13 reset/default path)
-/// and `qm_chroma_info_present_flag == 1` (`QmNumPlanes == 3`). This makes EVERY custom
+/// and `qm_chroma_info_present_flag == 1` (`QmNumPlanes == 3`). This makes every custom
 /// level available as a default record with `QmMLayerId == -1` (the validator's
 /// `mlayer_id == None`), which is the arm the § 5.18.2 SWITCH / RAS `reset_qm()` can
 /// PROVABLY reset (mirror :5351, `needsReset = QmMLayerId[level] == -1`). It also sets
@@ -361,7 +361,7 @@ pub(in crate::validator::tests) fn ras_frame_confirmed_reset() -> Vec<u8> {
     annex_b_obu(RAS_HEADER, &fb.into_bytes())
 }
 
-/// A RAS frame (`OBU_RAS_FRAME`) truncated BEFORE the § 5.18.2 `reset_qm()` call site
+/// A RAS frame (`OBU_RAS_FRAME`) truncated before the § 5.18.2 `reset_qm()` call site
 /// (mirror :4283): it reads `restricted_prediction_switch` and `num_key_ref_frames`, then
 /// the payload runs out inside the `ref_long_term_id[i]` loop (mirror :4252) — before the
 /// reset is reached. The core parse fails (`Err` propagates -> resolves to `None`), so the
@@ -381,7 +381,7 @@ pub(in crate::validator::tests) fn ras_frame_truncated_before_reset() -> Vec<u8>
 
 /// An INTRA_ONLY regular-tile-group frame whose `setup_qm_params()` references custom
 /// `qm_y[0] == level` (the same § 5.18.6.2 reference as
-/// [`clk_frame_with_qm_reference`]), but as an INTRA_ONLY frame it triggers NO
+/// [`clk_frame_with_qm_reference`]), but as an INTRA_ONLY frame it triggers no
 /// `reset_qm()` (§ 5.18.2 mirror :4279-4283 resets only on CLK / OLK / SWITCH / RAS).
 /// This isolates the QM-availability judgment from the referencing frame's own reset,
 /// so a stale / poisoned availability state is the only thing that can flip the

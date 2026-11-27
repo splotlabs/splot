@@ -18,6 +18,7 @@
 
 use crate::bitio::BitReader;
 use crate::error::{Error, Result};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `NUM_CUSTOM_QMS`: number of custom quantizer-matrix levels (AV2 v1.0.0 § 3).
 pub const NUM_CUSTOM_QMS: usize = 15;
@@ -152,42 +153,68 @@ pub struct UserDefinedQmPlane {
 /// [`Error::InvalidQuantizerMatrix`] when a
 /// `quant_delta` is outside the conformant `-128..=127` range (AV2 § 6.4.11).
 pub fn parse_quantizer_matrix(reader: &mut BitReader<'_>) -> Result<QuantizerMatrixObu> {
-    let qm_bit_map = reader.read_bits(QM_BIT_MAP_BITS)? as u16;
-    let chroma_info_present = reader.read_flag()?;
-    let num_planes: u8 = if chroma_info_present { 3 } else { 1 };
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_quantizer_matrix_with_reader(&mut sr)
+}
 
-    let mut levels = Vec::new();
-    if qm_bit_map != 0 {
-        for level in 0..NUM_CUSTOM_QMS {
-            if qm_bit_map & (1 << level) == 0 {
-                continue;
+/// Parses a `quantizer_matrix_obu()` (AV2 v1.0.0 § 5.13) while reporting syntax
+/// fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors, [`Error::UnexpectedEof`], or
+/// [`Error::InvalidQuantizerMatrix`].
+pub fn parse_quantizer_matrix_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<QuantizerMatrixObu> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_quantizer_matrix_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_quantizer_matrix_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<QuantizerMatrixObu> {
+    sr.in_struct("quantizer_matrix_obu", Some("5.13"), |sr| {
+        let qm_bit_map = sr.read_bits("qm_bit_map", QM_BIT_MAP_BITS)? as u16;
+        let chroma_info_present = sr.read_flag("qm_chroma_info_present_flag")?;
+        let num_planes: u8 = if chroma_info_present { 3 } else { 1 };
+
+        let mut levels = Vec::new();
+        if qm_bit_map != 0 {
+            for level in 0..NUM_CUSTOM_QMS {
+                if qm_bit_map & (1 << level) == 0 {
+                    continue;
+                }
+                let entry = sr.in_loop_item("level", level, |sr| {
+                    let is_default = sr.read_flag("is_default_qm")?;
+                    let matrices = if is_default {
+                        None
+                    } else {
+                        Some(parse_user_defined_qm_level(sr, num_planes)?)
+                    };
+                    Ok(QuantizerMatrixLevel {
+                        level: level as u8,
+                        is_default,
+                        matrices,
+                    })
+                })?;
+                levels.push(entry);
             }
-            let is_default = reader.read_flag()?;
-            let matrices = if is_default {
-                None
-            } else {
-                Some(parse_user_defined_qm_level(reader, num_planes)?)
-            };
-            levels.push(QuantizerMatrixLevel {
-                level: level as u8,
-                is_default,
-                matrices,
-            });
         }
-    }
 
-    Ok(QuantizerMatrixObu {
-        qm_bit_map,
-        chroma_info_present,
-        num_planes,
-        levels,
+        Ok(QuantizerMatrixObu {
+            qm_bit_map,
+            chroma_info_present,
+            num_planes,
+            levels,
+        })
     })
 }
 
-/// Parses the `for t { for plane { user_defined_qm(level, t, plane) } }` loop of a
-/// single non-default level (AV2 v1.0.0 § 5.13 / § 5.4.11).
-fn parse_user_defined_qm_level(
-    reader: &mut BitReader<'_>,
+fn parse_user_defined_qm_level<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     num_planes: u8,
 ) -> Result<Vec<UserDefinedQmTransform>> {
     let mut transforms: Vec<UserDefinedQmTransform> =
@@ -197,111 +224,114 @@ fn parse_user_defined_qm_level(
             transform: FundamentalQmTransform::ALL[t],
             planes: Vec::with_capacity(num_planes as usize),
         });
-        for plane in 0..num_planes as usize {
-            user_defined_qm(reader, &mut transforms, t, plane)?;
-        }
+        sr.in_loop_item("t", t, |sr| {
+            for plane in 0..num_planes as usize {
+                sr.in_loop_item("plane", plane, |sr| {
+                    user_defined_qm(sr, &mut transforms, t, plane)
+                })?;
+            }
+            Ok(())
+        })?;
     }
     Ok(transforms)
 }
 
-/// Parses one `user_defined_qm(level, t, plane)` matrix and appends it to
-/// `transforms[t].planes` (AV2 v1.0.0 § 5.4.11).
-///
-/// `transforms[t]` must already exist (with `planes[0..plane]` filled), and for the
-/// `TX_4X8` transpose path `transforms[1]` (`TX_8X4`) must be fully populated for this
-/// plane — both invariants hold under the § 5.13 / [`parse_user_defined_qm_level`]
-/// loop order (`t` ascending, `plane` ascending).
-///
-/// # Errors
-/// Propagates [`BitReader`] descriptor errors when the input is truncated or an
-/// `svlc()` coefficient delta is malformed.
-fn user_defined_qm(
-    reader: &mut BitReader<'_>,
+fn user_defined_qm<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
     transforms: &mut [UserDefinedQmTransform],
     t: usize,
     plane: usize,
 ) -> Result<()> {
-    let transform = FundamentalQmTransform::ALL[t];
-    let (width, height) = transform.dimensions();
-    let (w, h) = (width as usize, height as usize);
+    sr.in_struct("user_defined_qm", Some("5.4.11"), |sr| {
+        let transform = FundamentalQmTransform::ALL[t];
+        let (width, height) = transform.dimensions();
+        let (w, h) = (width as usize, height as usize);
 
-    if plane > 0 {
-        let copy_from_previous_plane = reader.read_flag()?;
-        if copy_from_previous_plane {
-            let values = transforms[t].planes[plane - 1].values.clone();
-            transforms[t].planes.push(UserDefinedQmPlane {
-                width,
-                height,
-                values,
-            });
-            return Ok(());
-        }
-    }
-
-    let mut symmetric = false;
-    if t == 0 {
-        symmetric = reader.read_flag()?;
-    } else if t == 2 {
-        let is_transpose_of_8x4 = reader.read_flag()?;
-        if is_transpose_of_8x4 {
-            let source = &transforms[1].planes[plane];
-            let source_width = source.width as usize;
-            let mut values = vec![0u8; w * h];
-            for i in 0..h {
-                for j in 0..w {
-                    values[i * w + j] = source.values[j * source_width + i];
-                }
-            }
-            transforms[t].planes.push(UserDefinedQmPlane {
-                width,
-                height,
-                values,
-            });
-            return Ok(());
-        }
-    }
-
-    let scan = diagonal_scan_2d(w, h);
-    let mut values = vec![0u8; w * h];
-    let mut quant = INITIAL_QM_QUANT;
-    let mut coef_repeat = false;
-    for pos in scan {
-        let row = pos / w;
-        let col = pos % w;
-        if t == 0 && symmetric && col > row {
-            quant = values[col * w + row];
-            values[pos] = quant;
-        } else if coef_repeat {
-            values[pos] = quant;
-        } else {
-            let delta_offset = reader.byte_offset();
-            let delta_bit_offset = reader.bit_offset();
-            let quant_delta = reader.read_svlc()?;
-            if !(QUANT_DELTA_MIN..=QUANT_DELTA_MAX).contains(&quant_delta) {
-                return Err(Error::InvalidQuantizerMatrix {
-                    offset: delta_offset,
-                    bit_offset: delta_bit_offset,
-                    message: format!(
-                        "quant_delta {quant_delta} must be in {QUANT_DELTA_MIN}..={QUANT_DELTA_MAX}"
-                    ),
+        if plane > 0 {
+            let copy_from_previous_plane = sr.read_flag("copy_from_previous_plane")?;
+            if copy_from_previous_plane {
+                let values = transforms[t].planes[plane - 1].values.clone();
+                transforms[t].planes.push(UserDefinedQmPlane {
+                    width,
+                    height,
+                    values,
                 });
+                return Ok(());
             }
-            let quant2 = (i32::from(quant) + quant_delta) & 0xFF;
-            if quant2 == 0 {
-                coef_repeat = true;
-            } else {
-                quant = quant2 as u8;
-            }
-            values[pos] = quant;
+        } else {
+            sr.inferred_bool("copy_from_previous_plane", "plane == 0", false);
         }
-    }
 
-    transforms[t].planes.push(UserDefinedQmPlane {
-        width,
-        height,
-        values,
-    });
-    Ok(())
+        let mut symmetric = false;
+        if t == 0 {
+            symmetric = sr.read_flag("symmetric")?;
+        } else if t == 2 {
+            let is_transpose_of_8x4 = sr.read_flag("is_transpose_of_8x4")?;
+            if is_transpose_of_8x4 {
+                let source = &transforms[1].planes[plane];
+                let source_width = source.width as usize;
+                let mut values = vec![0u8; w * h];
+                for i in 0..h {
+                    for j in 0..w {
+                        values[i * w + j] = source.values[j * source_width + i];
+                    }
+                }
+                transforms[t].planes.push(UserDefinedQmPlane {
+                    width,
+                    height,
+                    values,
+                });
+                return Ok(());
+            }
+        }
+
+        let scan = diagonal_scan_2d(w, h);
+        let mut values = vec![0u8; w * h];
+        let mut quant = INITIAL_QM_QUANT;
+        let mut coef_repeat = false;
+        for pos in scan {
+            let row = pos / w;
+            let col = pos % w;
+            if t == 0 && symmetric && col > row {
+                quant = values[col * w + row];
+                values[pos] = quant;
+            } else if coef_repeat {
+                values[pos] = quant;
+            } else {
+                let delta_start = sr.rel_bit();
+                let delta_offset = sr.byte_offset();
+                let delta_bit_offset = sr.bit_offset();
+                let quant_delta = sr.read_svlc("quant_delta")?;
+                if !(QUANT_DELTA_MIN..=QUANT_DELTA_MAX).contains(&quant_delta) {
+                    return sr.fail(
+                        delta_start,
+                        Some("quant_delta"),
+                        Error::InvalidQuantizerMatrix {
+                            offset: delta_offset,
+                            bit_offset: delta_bit_offset,
+                            message: format!(
+                                "quant_delta {quant_delta} must be in {QUANT_DELTA_MIN}..={QUANT_DELTA_MAX}"
+                            ),
+                        },
+                    );
+                }
+                let quant2 = (i32::from(quant) + quant_delta) & 0xFF;
+                if quant2 == 0 {
+                    coef_repeat = true;
+                } else {
+                    quant = quant2 as u8;
+                }
+                values[pos] = quant;
+            }
+        }
+
+        transforms[t].planes.push(UserDefinedQmPlane {
+            width,
+            height,
+            values,
+        });
+        Ok(())
+    })
 }
 
 /// Builds the AV2 2D (up-right diagonal) coefficient scan for a `width`-by-`height`
@@ -310,7 +340,7 @@ fn user_defined_qm(
 /// Returns the raster positions `row * width + col` in scan order. The fundamental
 /// quantizer-matrix transforms are at most 8x8, so the spec's `Min(.., 32)` width/
 /// height clamps never apply.
-#[allow(clippy::many_single_char_names)]
+#[expect(clippy::many_single_char_names)]
 pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
     let (w, h) = (width as i32, height as i32);
@@ -330,7 +360,6 @@ pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::span::ByteOffset;

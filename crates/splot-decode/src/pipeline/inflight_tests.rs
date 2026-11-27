@@ -3,8 +3,6 @@
 
 //! Unit tests for completion-backed frame handles and the in-flight ring.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use super::*;
 
 use splot_recon::ReferenceSlot;

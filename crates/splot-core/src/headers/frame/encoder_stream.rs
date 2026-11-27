@@ -77,7 +77,6 @@ pub(super) const MAX_REDUCED_TX_SET: u8 = 3;
 /// `Default` disables every tool. TX64 and quantizer matrices have no sequence-level
 /// enable flag in § 5.4, so they are not listed.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct EncoderToolFlags {
     /// `enable_cdef`.
     pub cdef: bool,

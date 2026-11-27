@@ -89,11 +89,12 @@ pub(super) fn parse_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type,
+        obu_mlayer_id: obu.header.embedded_layer_id,
+        obu_tlayer_id: obu.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,
         reference_state: *reference_state,
-        mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map(Some)
 }
@@ -105,9 +106,14 @@ impl ValidatorContext {
         first_picture_in_tu: bool,
         seq_id: SequenceHeaderId,
     ) -> Option<FrameHeaderCore> {
-        let active_sequence = self.sequence_headers.get(&seq_id)?;
+        let active_sequence = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, seq_id)?;
 
-        let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
+        let mfh_record = parse_frame_prefix(obu, first_picture_in_tu).and_then(|prefix| {
+            self.hls
+                .frame_mfh_record(obu.header.extended_layer_id, prefix.cur_mfh_id, seq_id)
+        });
 
         let mut reference_scratch = ReferenceStateScratch::default();
         let reference_state = self
@@ -174,7 +180,9 @@ impl ValidatorContext {
         let seq_id = self
             .active_sequence_by_xlayer
             .get(&obu.header.extended_layer_id)?;
-        let seq = self.sequence_headers.get(seq_id)?;
+        let seq = self
+            .hls
+            .sequence_header(obu.header.extended_layer_id, *seq_id)?;
         Some(seq.general.single_picture_header_flag)
     }
 
@@ -186,22 +194,6 @@ impl ValidatorContext {
         }
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         reader.read_bit().ok().map(|bit| bit != 0)
-    }
-
-    /// Resolves the frame prefix’s multi-frame-header reference against available in-band
-    /// HLS. Missing or incomplete prefixes and unavailable records return `None`.
-    pub(super) fn resolve_frame_mfh_record(
-        &self,
-        obu: &ObuEnvelope<'_>,
-        first_picture_in_tu: bool,
-        seq_id: SequenceHeaderId,
-    ) -> Option<&MultiFrameHeaderRecord> {
-        let prefix = parse_frame_prefix(obu, first_picture_in_tu)?;
-        if prefix.cur_mfh_id.is_zero() || !prefix.cur_mfh_id.in_range() {
-            return None;
-        }
-        let record = self.hls.multi_frame_header(prefix.cur_mfh_id)?;
-        (record.mfh_seq_header_id == seq_id).then_some(record)
     }
 
     pub(super) fn frame_core_against_referenced_header(
@@ -242,7 +234,7 @@ impl ValidatorContext {
     /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
     /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
     /// shared parse + resolution; if one reaches here it is treated as transparent padding.
-    #[allow(clippy::match_same_arms)]
+    #[expect(clippy::match_same_arms)]
     pub(super) fn celu_role_for(obu: &ObuEnvelope<'_>) -> CeluRole {
         match obu.header.obu_type {
             ObuType::Padding => CeluRole::Padding,
@@ -299,7 +291,10 @@ impl ValidatorContext {
                 let bits = self
                     .active_sequence_by_xlayer
                     .get(&obu.header.extended_layer_id)
-                    .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                    .and_then(|seq_id| {
+                        self.hls
+                            .sequence_header(obu.header.extended_layer_id, *seq_id)
+                    })
                     .and_then(|seq| seq.inter.as_ref())
                     .map(|inter| u32::from(inter.order_hint_bits));
                 (flag_output, core.order_hint_lsb, bits)

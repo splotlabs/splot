@@ -15,7 +15,7 @@
 //! motion publication lands in the fused walk's order even though symbol
 //! decode has already run ahead to the end of the unit.
 
-use super::super::compound::CompoundYMode;
+use super::super::compound::CompoundMode;
 use super::super::find_mv_stack::{
     ALL_CANDIDATES, CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack,
     NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank,
@@ -29,8 +29,11 @@ use super::tile::{EntryState, LeafSlot, ReconRow};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
-#[allow(clippy::wildcard_imports)]
 use super::*;
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{
+    BlockCopyMotion, BlockEvidenceTile, BlockEvidenceTree, BlockMotion, BlockMotionPrecision,
+};
 
 impl LeafSlot {
     /// The neighbour flags the parser published for this leaf.
@@ -87,44 +90,122 @@ pub(super) fn resolve_parsed_leaves(
     row: &mut ReconRow,
     state: &mut MvResolutionState<'_>,
 ) -> Result<()> {
+    let local_ibc_end = row.local_ibc_sb_end().min(row.superblocks.len());
+    if state.ibc_local.is_some() && local_ibc_end > 0 {
+        resolve_parsed_leaves_inner::<true>(
+            &row.superblocks[..local_ibc_end],
+            &mut row.entries,
+            &mut row.slots,
+            state,
+        )?;
+        if local_ibc_end < row.superblocks.len() {
+            resolve_parsed_leaves_inner::<false>(
+                &row.superblocks[local_ibc_end..],
+                &mut row.entries,
+                &mut row.slots,
+                state,
+            )?;
+        }
+        return Ok(());
+    }
+    resolve_parsed_leaves_inner::<false>(&row.superblocks, &mut row.entries, &mut row.slots, state)
+}
+
+fn resolve_parsed_leaves_inner<const LOCAL_IBC: bool>(
+    superblocks: &[super::tile::ReconSuperblock],
+    entries: &mut [super::tile::ReconRowEntry],
+    slots: &mut [LeafSlot],
+    state: &mut MvResolutionState<'_>,
+) -> Result<()> {
     let sb_h4 = state.sb_h4;
     let is_intra = state.core.frame_is_intra == Some(true);
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, is_intra);
     debug_assert_eq!(intrabc_sb_h4, sb_h4);
-    for superblock in &row.superblocks {
+    for superblock in superblocks {
         let [r, c] = superblock.origin;
+        if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+            ibc.begin_superblock(r, superblock.bru_inactive);
+        }
         if let Some(bank) = state.ref_mv_bank.as_mut() {
             bank.reset_for_leaf(state.grid, r, c, intrabc_sb_h4, !is_intra);
         }
         state
             .warp_param_bank
             .reset_for_leaf(state.grid, r, c, sb_h4);
-        let entries = row
-            .entries
+        let sb_entries = entries
             .get_mut(superblock.entries.clone())
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        for entry in entries {
+        for entry in sb_entries {
+            if LOCAL_IBC && matches!(entry.state, EntryState::OutOfFrame) {
+                if let Some(ibc) = state.ibc_local.as_mut() {
+                    let (mi_row, mi_col, n4w, n4h) = entry
+                        .publication
+                        .tree_block(superblock.origin)
+                        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+                    ibc.record_out_of_frame(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                }
+                continue;
+            }
             if let EntryState::Intra(_) = entry.state {
-                if let Some((mi_row, mi_col, n4w, n4h)) =
-                    entry.publication.luma_tree_block(superblock.origin)
-                {
+                let luma_block = entry.publication.luma_tree_block(superblock.origin);
+                if let Some((mi_row, mi_col, n4w, n4h)) = luma_block {
                     state.grid.record_zero_motion(mi_row, mi_col, n4w, n4h);
                     if let Some(bank) = state.ref_mv_bank.as_mut() {
                         bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
                     }
                 }
+                if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+                    let (mi_row, mi_col, n4w, n4h) = luma_block
+                        .or_else(|| entry.publication.tree_block(superblock.origin))
+                        .ok_or_else(invalid_inter_tile_scheduling_state)?;
+                    ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                }
                 continue;
             }
-            let Some(slot) = entry.slot_mut(&mut row.slots) else {
+            let Some(slot) = entry.slot_mut(slots) else {
                 continue;
             };
             match slot {
-                LeafSlot::PendingInter(command) => *slot = LeafSlot::Inter(command.resolve(state)?),
+                LeafSlot::PendingInter(command) => {
+                    let tree_block = if LOCAL_IBC {
+                        Some(
+                            entry
+                                .publication
+                                .tree_block(superblock.origin)
+                                .ok_or_else(invalid_inter_tile_scheduling_state)?,
+                        )
+                    } else {
+                        None
+                    };
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = tree_block
+                    {
+                        ibc.enter_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                    *slot = LeafSlot::Inter(command.resolve(state)?);
+                    if LOCAL_IBC
+                        && let Some(ibc) = state.ibc_local.as_mut()
+                        && let Some((mi_row, mi_col, n4w, n4h)) = tree_block
+                    {
+                        ibc.finish_large_leaf(mi_row, mi_col, n4w, n4h, superblock.bru_inactive);
+                    }
+                }
                 LeafSlot::PendingIntrabc(_) => {
                     let LeafSlot::PendingIntrabc(block) = core::mem::replace(slot, LeafSlot::Spent)
                     else {
                         return Err(invalid_inter_tile_scheduling_state());
                     };
+                    if LOCAL_IBC && let Some(ibc) = state.ibc_local.as_mut() {
+                        ibc.enter_leaf(
+                            block.frontier.r,
+                            block.frontier.c,
+                            block.n4w,
+                            block.n4h,
+                            superblock.bru_inactive,
+                        );
+                    }
                     *slot = LeafSlot::Intrabc(resolve_pending_intrabc(
                         block,
                         state,
@@ -151,7 +232,7 @@ fn resolve_pending_intrabc(
 ) -> Result<intrabc::IntrabcReconCommand> {
     use crate::filters::wienerns_lr::intrabc_records::resolve_pending_intrabc_info;
     use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
-        DrlReorderMode, IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
+        IntrabcStackGeometry, select_intrabc_ref_mv_from_candidates,
     };
 
     let PendingIntrabcBlock {
@@ -189,11 +270,6 @@ fn resolve_pending_intrabc(
         .ref_mv_bank
         .as_ref()
         .map(super::super::find_mv_stack::RefMvBank::intrabc_candidates);
-    let drl_reorder = match state.drl_reorder {
-        DrlReorder::Always => DrlReorderMode::Always,
-        DrlReorder::Constraint => DrlReorderMode::Constraint,
-        DrlReorder::Disabled => DrlReorderMode::Disabled,
-    };
     let stack_geometry = IntrabcStackGeometry {
         mi_row: frontier.r,
         mi_col: frontier.c,
@@ -208,11 +284,12 @@ fn resolve_pending_intrabc(
         stack_geometry,
         &spatial,
         state.ref_mv_bank.is_some(),
-        drl_reorder,
+        state.drl_reorder,
         info.ref_selection(),
     );
-    let info = resolve_pending_intrabc_info(info, pred_mv);
-    let mv = Mv {
+    let pending_info = info;
+    let info = resolve_pending_intrabc_info(pending_info, pred_mv);
+    let mv = MotionVector {
         row: info.block_mv.row,
         col: info.block_mv.col,
     };
@@ -226,14 +303,41 @@ fn resolve_pending_intrabc(
         subsampling,
         state.tile_offset,
     )?;
+    #[cfg(test)]
+    crate::filters::wienerns_lr::recon::record_bru_intrabc_block();
     crate::filters::wienerns_lr::intrabc_mv_valid::check_intrabc_block_vector(
         state.core,
         &frontier,
         (n4w, n4h),
         (sb_h4, allow_extra_ibc_range),
         info,
+        state.ibc_local.as_deref(),
         state.tile_offset,
     )?;
+    #[cfg(feature = "block-evidence")]
+    if let Some(evidence) = &state.evidence {
+        let tree = if frontier.is_luma_part() {
+            BlockEvidenceTree::Luma
+        } else {
+            BlockEvidenceTree::Shared
+        };
+        evidence.record_motion(
+            tree,
+            frontier.c * 4,
+            frontier.r * 4,
+            n4w * 4,
+            n4h * 4,
+            BlockMotion::IntraBlockCopy(BlockCopyMotion {
+                vector: mv,
+                precision: pending_info
+                    .difference()
+                    .and_then(|_| BlockMotionPrecision::from_decoder(pending_info.precision())),
+                difference: pending_info.difference(),
+                morph: info.morph_pred,
+                source: prediction.direct_luma_source(),
+            }),
+        );
+    }
     let command = intrabc::IntrabcReconCommand::new(
         prediction,
         residual,
@@ -248,7 +352,7 @@ fn resolve_pending_intrabc(
         n4w,
         n4h,
         NeighbourMotionValues {
-            mv: [mv, Mv::ZERO],
+            mv: [mv, MotionVector::ZERO],
             cwp_weight: mc::CWP_EQUAL,
             stored_warp: None,
             global_mv: [false, false],
@@ -312,7 +416,7 @@ pub(super) struct SingleMotionSyntax {
     pub(super) mode: u8,
     pub(super) tip_ref: bool,
     pub(super) ref_mv_idx: u8,
-    pub(super) mvd: Mv,
+    pub(super) mvd: MotionVector,
     pub(super) use_temporal_first: bool,
 }
 
@@ -321,7 +425,7 @@ pub(super) struct WarpMotionSyntax {
     pub(super) source: WarpModelSource,
     pub(super) ref_mv_idx: u8,
     pub(super) ref_warp_idx: u8,
-    pub(super) mvd: Option<Mv>,
+    pub(super) mvd: Option<MotionVector>,
     pub(super) extend_delta: (i32, i32),
     pub(super) derive_wrl: bool,
     pub(super) use_temporal_first: bool,
@@ -367,14 +471,14 @@ pub(super) struct CompoundJointMvProjection {
 /// § 5.20.7.6 compound and § 5.20.7.10 skip-mode syntax.
 #[derive(Clone, Copy)]
 pub(super) struct CompoundMotionSyntax {
-    pub(super) y_mode: CompoundYMode,
+    pub(super) y_mode: CompoundMode,
     pub(super) ref_frame1: i8,
     pub(super) skip_mode: bool,
     pub(super) use_optflow: bool,
     pub(super) local_warp: bool,
     pub(super) ref_mv_idx: u8,
     pub(super) independent_idx: Option<[u8; 2]>,
-    pub(super) mvd: [Mv; 2],
+    pub(super) mvd: [MotionVector; 2],
     pub(super) joint: Option<CompoundJointMvProjection>,
     pub(super) jmvd_scale_mode: u8,
     /// Whether the paired stack admits a temporal candidate: § 7.12.2 allows one
@@ -392,7 +496,7 @@ pub(super) struct CompoundMotionSyntax {
 
 /// § 7.12 resolution output consumed by the reconstruction command.
 pub(super) struct ResolvedInterBlock {
-    pub(super) mv: [Mv; 2],
+    pub(super) mv: [MotionVector; 2],
     pub(super) warp_params: [Option<[i32; 6]>; 2],
     pub(super) blend: mc::CompoundBlend,
 }
@@ -400,9 +504,13 @@ pub(super) struct ResolvedInterBlock {
 /// Mutable state the § 7.12 resolution chain owns, plus the frame-level facts
 /// its derivations read.
 pub(super) struct MvResolutionState<'a> {
+    #[cfg(feature = "block-evidence")]
+    pub(super) evidence: Option<BlockEvidenceTile<'a>>,
     pub(super) grid: &'a mut NeighbourMvGrid,
     pub(super) ref_mv_bank: &'a mut Option<RefMvBank>,
     pub(super) warp_param_bank: &'a mut WarpParamBank,
+    pub(super) ibc_local:
+        Option<&'a mut crate::filters::wienerns_lr::intrabc_mv_valid::TileLocalIbcState>,
     pub(super) core: &'a FrameHeaderCore,
     pub(super) temporal: Option<&'a TemporalMvContext>,
     pub(super) order_hints: OrderHintMvContext<'a>,
@@ -467,7 +575,7 @@ impl InterBlockSyntax {
 
 impl CompoundMotionSyntax {
     const fn is_global(&self) -> bool {
-        matches!(self.y_mode, CompoundYMode::GlobalGlobal)
+        matches!(self.y_mode, CompoundMode::GlobalGlobal)
     }
 }
 
@@ -562,7 +670,7 @@ fn resolve_bru(
     state: &mut MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
     let resolved = ResolvedInterBlock {
-        mv: [Mv::ZERO, Mv::ZERO],
+        mv: [MotionVector::ZERO, MotionVector::ZERO],
         warp_params: [None, None],
         blend: syntax.blend,
     };
@@ -594,7 +702,7 @@ impl ResolvedInterBlock {
 
 /// The § 7.12 motion of a single-reference block; the encoder facade calls
 /// it too.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]
@@ -629,7 +737,7 @@ pub(super) fn resolve_single(
         )
     };
     ResolvedInterBlock {
-        mv: [mv, Mv::ZERO],
+        mv: [mv, MotionVector::ZERO],
         warp_params: [
             (!single.tip_ref && single.mode == SINGLE_MODE_GLOBALMV)
                 .then(|| {
@@ -658,7 +766,7 @@ pub(super) fn single_mv_stack(
     need: usize,
 ) -> MvStack {
     let global_mv = if tip_ref {
-        Mv::ZERO
+        MotionVector::ZERO
     } else {
         global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision)
     };
@@ -666,7 +774,7 @@ pub(super) fn single_mv_stack(
         state.grid,
         block,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         state.bank(),
         state.warp_param_bank,
         false,
@@ -686,7 +794,7 @@ pub(super) fn single_mode_mv(
     (precision, use_amvd): (BlockPrecisionRecord, bool),
     block: &MvBlockContext,
     state: &MvResolutionState<'_>,
-) -> Mv {
+) -> MotionVector {
     let pred_mv = stack.candidate(usize::from(single.ref_mv_idx));
     match single.mode {
         SINGLE_MODE_GLOBALMV => {
@@ -741,7 +849,7 @@ pub(super) fn warp_motion(
                     usize::from(warp.ref_warp_idx),
                 )
             } else {
-                DEFAULT_WARP_PARAMS
+                IDENTITY_WARP_PARAMS
             };
             let base_mv = warp_predicted_mv(params, block, base_precision);
             let mv = warp.mvd.map_or(base_mv, |mvd| add_mv_clamped(base_mv, mvd));
@@ -779,18 +887,18 @@ pub(super) fn warp_motion(
         }
     };
     Ok(ResolvedInterBlock {
-        mv: [mv, Mv::ZERO],
+        mv: [mv, MotionVector::ZERO],
         warp_params: [Some(params), None],
         blend: syntax.blend,
     })
 }
 
-fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> Mv {
+fn warp_newmv(syntax: &InterBlockSyntax, warp: &WarpMotionSyntax, stack: &MvStack) -> MotionVector {
     let pred_mv = lowered_pred_mv(
         syntax.precision,
         stack.candidate(usize::from(warp.ref_mv_idx)),
     );
-    add_mv_clamped(pred_mv, warp.mvd.unwrap_or(Mv::ZERO))
+    add_mv_clamped(pred_mv, warp.mvd.unwrap_or(MotionVector::ZERO))
 }
 
 fn warp_newmv_model(
@@ -798,7 +906,7 @@ fn warp_newmv_model(
     warp: &WarpMotionSyntax,
     block: &MvBlockContext,
     stack: &MvStack,
-    mv: Mv,
+    mv: MotionVector,
     state: &MvResolutionState<'_>,
 ) -> Result<[i32; 6]> {
     match source {
@@ -830,7 +938,7 @@ fn warp_newmv_model(
             mv,
             block,
         ),
-        WarpModelSource::Candidate => Ok(DEFAULT_WARP_PARAMS),
+        WarpModelSource::Candidate => Ok(IDENTITY_WARP_PARAMS),
     }
 }
 
@@ -855,7 +963,7 @@ fn resolve_compound(
 /// The § 7.12 motion of a compound or skip-mode block, before the warp bank
 /// update; the encoder facade calls it too, so its vectors are the ones the
 /// decoder resolves.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]
@@ -948,10 +1056,10 @@ fn single_list_candidate(
     state: &MvResolutionState<'_>,
     block: &MvBlockContext,
     ref_frame: i8,
-    global_mv: Mv,
+    global_mv: MotionVector,
     idx: usize,
     use_temporal_first: bool,
-) -> Mv {
+) -> MotionVector {
     single_list_stack(state, block, ref_frame, global_mv, use_temporal_first, idx).candidate(idx)
 }
 
@@ -961,7 +1069,7 @@ fn single_list_stack(
     state: &MvResolutionState<'_>,
     block: &MvBlockContext,
     ref_frame: i8,
-    global_mv: Mv,
+    global_mv: MotionVector,
     use_temporal_first: bool,
     need: usize,
 ) -> MvStack {
@@ -972,7 +1080,7 @@ fn single_list_stack(
         state.grid,
         &single,
         global_mv,
-        DEFAULT_WARP_PARAMS,
+        IDENTITY_WARP_PARAMS,
         state.bank(),
         state.warp_param_bank,
         false,
@@ -992,14 +1100,14 @@ pub(super) fn near_near_mvs(
     block: &MvBlockContext,
     syntaxes: &[Option<InterBlockSyntax>],
     state: &MvResolutionState<'_>,
-) -> Vec<Option<[Mv; 2]>> {
+) -> Vec<Option<[MotionVector; 2]>> {
     let mut paired: Vec<(bool, CompoundMvStack)> = Vec::new();
     let mut lists: Vec<((i8, bool), MvStack)> = Vec::new();
     let mut out = Vec::with_capacity(syntaxes.len());
     for syntax in syntaxes {
         let Some(compound) = syntax.as_ref().and_then(|syntax| match &syntax.motion {
             InterMotionSyntax::Compound(compound)
-                if compound.y_mode == CompoundYMode::NearNear
+                if compound.y_mode == CompoundMode::NearNear
                     && !compound.skip_mode
                     && !compound.local_warp =>
             {
@@ -1064,7 +1172,7 @@ pub(super) fn near_near_mvs(
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "keeps the resolve path of the parent with the facade as second caller"
 )]
@@ -1073,8 +1181,8 @@ fn compound_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
     paired: &impl Fn(usize) -> CompoundMvCandidate,
-    independent: &impl Fn([usize; 2]) -> [Mv; 2],
-) -> [Mv; 2] {
+    independent: &impl Fn([usize; 2]) -> [MotionVector; 2],
+) -> [MotionVector; 2] {
     let candidates = || {
         select_near_near_candidates(
             compound.independent_idx.map(|idx| idx.map(usize::from)),
@@ -1084,23 +1192,23 @@ fn compound_mvs(
         )
     };
     match compound.y_mode {
-        CompoundYMode::GlobalGlobal => [Mv::ZERO, Mv::ZERO],
-        CompoundYMode::NearNear => candidates(),
-        CompoundYMode::NearNew | CompoundYMode::NewNear => {
+        CompoundMode::GlobalGlobal => [MotionVector::ZERO, MotionVector::ZERO],
+        CompoundMode::NearNear => candidates(),
+        CompoundMode::NearNew | CompoundMode::NewNear => {
             let mut mvs = candidates();
-            let new_ref = usize::from(compound.y_mode == CompoundYMode::NearNew);
+            let new_ref = usize::from(compound.y_mode == CompoundMode::NearNew);
             mvs[new_ref] = add_mv_clamped(
                 lowered_amvd_pred(syntax, mvs[new_ref]),
                 compound.mvd[new_ref],
             );
             mvs
         }
-        CompoundYMode::JointNew => joint_new_mvs(
+        CompoundMode::JointNew => joint_new_mvs(
             syntax,
             compound,
             paired(usize::from(compound.ref_mv_idx)).mvs,
         ),
-        CompoundYMode::NewNew => {
+        CompoundMode::NewNew => {
             let candidate = paired(usize::from(compound.ref_mv_idx)).mvs;
             [
                 add_mv_clamped(lowered_amvd_pred(syntax, candidate[0]), compound.mvd[0]),
@@ -1115,8 +1223,8 @@ fn compound_mvs(
 fn joint_new_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
-    candidates: [Mv; 2],
-) -> [Mv; 2] {
+    candidates: [MotionVector; 2],
+) -> [MotionVector; 2] {
     let Some(projection) = compound.joint else {
         return candidates;
     };
@@ -1138,7 +1246,7 @@ fn joint_new_mvs(
     }
 }
 
-fn lowered_amvd_pred(syntax: &InterBlockSyntax, pred_mv: Mv) -> Mv {
+fn lowered_amvd_pred(syntax: &InterBlockSyntax, pred_mv: MotionVector) -> MotionVector {
     if syntax.use_amvd {
         pred_mv
     } else {

@@ -16,18 +16,167 @@
 #[cfg(not(target_arch = "x86_64"))]
 use fearless_simd::i32x4;
 use fearless_simd::{Simd, SimdIntWiden, i16x16, i32x8, prelude::*, u16x16};
-
-/// Runs `$body` with the baseline SIMD token bound to `$simd`; on x86 the
-/// AVX2 token binds directly, since a `dispatch!` closure does not inline
-/// into per-row callers.
-macro_rules! lr_simd {
-    ($simd:ident => $body:expr) => {
-        baseline_simd!($simd => $body)
-    };
-}
-pub(crate) use lr_simd;
+use splot_core::simd::SimdBackend;
 
 use crate::wienerns_filter::{LumaSimdOutput, LumaSimdSource};
+
+/// Operation parameterized over a static `fearless_simd` token.
+pub(crate) trait LrSimdOp<R> {
+    /// Executes the operation with SIMD capability token `simd`.
+    fn run<S: Simd>(self, simd: S) -> R;
+}
+
+/// Loop-restoration backend abstraction unifying baseline and typed `SimdBackend` execution.
+pub(crate) trait LrBackend: Copy {
+    /// Carried x86 AVX2 token, when guaranteed by this backend.
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2>;
+
+    /// Carried AArch64 NEON token, when guaranteed by this backend.
+    #[cfg(target_arch = "aarch64")]
+    fn neon_token(self) -> Option<fearless_simd::Neon>;
+
+    /// Executes `op` under this backend's static SIMD scope.
+    fn run<R>(self, op: impl LrSimdOp<R>) -> R;
+
+    /// Reports whether any `u16` sample exceeds `max_sample` using this backend.
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool;
+
+    /// Whether [`MaddWeights`] take the in-lane arrangement of the x86 kernel.
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn in_lane(self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.avx2_token().is_some()
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            false
+        }
+    }
+}
+
+/// Legacy baseline-level LR backend used by compatibility wrappers and internal unit tests.
+#[derive(Clone, Copy)]
+pub(crate) struct BaselineLr;
+
+impl LrBackend for BaselineLr {
+    #[cfg(target_arch = "x86_64")]
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        fearless_simd::Level::baseline().as_avx2()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        fearless_simd::Level::baseline().as_neon()
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn run<R>(self, op: impl LrSimdOp<R>) -> R {
+        baseline_simd!(simd => op.run(simd))
+    }
+
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        crate::workspace::u16_samples_exceed(samples, max_sample)
+    }
+}
+
+/// Typed startup-selected `SimdBackend` adapter for loop restoration kernels.
+#[derive(Clone, Copy)]
+pub(crate) struct TypedLr<B: SimdBackend>(pub(crate) B);
+
+impl<B: SimdBackend> LrBackend for TypedLr<B> {
+    #[cfg(target_arch = "x86_64")]
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        self.0.avx2_token()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        self.0.neon_token()
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "preserves constant propagation and avoids per-chunk LR dispatch calls"
+    )]
+    #[inline(always)]
+    fn run<R>(self, op: impl LrSimdOp<R>) -> R {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => op.run(simd))
+    }
+
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        crate::sample_range::u16_samples_exceed_with(self.0, samples, max_sample)
+    }
+}
+
+/// Scalar `Fallback` LR backend for testing non-AVX2/non-NEON layouts and
+/// cross-backend scratch reuse on every architecture.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct ScalarLr;
+
+#[cfg(test)]
+impl LrBackend for ScalarLr {
+    #[cfg(target_arch = "x86_64")]
+    fn avx2_token(self) -> Option<fearless_simd::Avx2> {
+        None
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn neon_token(self) -> Option<fearless_simd::Neon> {
+        None
+    }
+
+    fn run<R>(self, op: impl LrSimdOp<R>) -> R {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let sse2 = fearless_simd::Level::new()
+                .as_sse2()
+                .expect("x86_64 always supports sse2");
+            sse2.vectorize(|| op.run(sse2))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            baseline_simd!(simd => op.run(simd))
+        }
+    }
+
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        samples.iter().any(|&v| v > max_sample)
+    }
+}
 
 /// One 4-sample cell's weights for one pair: `[w0, w1]` per lane.
 pub(crate) type MaddPattern = [i16; 8];
@@ -35,24 +184,15 @@ pub(crate) type MaddPattern = [i16; 8];
 /// Both `pmaddwd` weight vectors of one pair over four cells.
 pub(crate) type MaddWeights = [[i16; 16]; 2];
 
-/// Whether [`MaddWeights`] take the in-lane arrangement of the x86 kernel.
-#[inline]
-fn in_lane() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        fearless_simd::Level::baseline().as_avx2().is_some()
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        false
-    }
-}
-
 /// Writes the weights of one pair for cells `0..4` in the kernel's
 /// arrangement.
 #[inline]
-pub(crate) fn arrange_into<T: LumaSimdSource>(weights: &mut MaddWeights, cells: [&MaddPattern; 4]) {
-    let [a, b, c, d] = if in_lane() {
+pub(crate) fn arrange_into<L: LrBackend>(
+    backend: L,
+    weights: &mut MaddWeights,
+    cells: [&MaddPattern; 4],
+) {
+    let [a, b, c, d] = if backend.in_lane() {
         [cells[0], cells[2], cells[1], cells[3]]
     } else {
         cells
@@ -126,27 +266,29 @@ pub(crate) fn pattern(class: &LaneClass, pairs: usize, pair: usize) -> MaddPatte
 
 /// The [`filter16`] weights of `F` for cells `0..4` of `classes`.
 #[inline]
-pub(crate) fn run_weights<F: TapPairs, T: LumaSimdSource>(
+pub(crate) fn run_weights<L: LrBackend, F: TapPairs>(
+    backend: L,
     classes: [&LaneClass; 4],
 ) -> [MaddWeights; 9] {
     #[cfg(target_arch = "x86_64")]
-    if in_lane()
-        && let Some(t) = fearless_simd::Level::baseline().as_avx2()
-    {
+    if let Some(t) = backend.avx2_token() {
         return in_lane_weights(t, classes, F::TAPS.len() / 2);
     }
-    pattern_weights::<F, T>(classes)
+    pattern_weights::<L, F>(backend, classes)
 }
 
 /// [`run_weights`] from each cell's [`pattern`] of every pair.
 #[inline]
-fn pattern_weights<F: TapPairs, T: LumaSimdSource>(classes: [&LaneClass; 4]) -> [MaddWeights; 9] {
+fn pattern_weights<L: LrBackend, F: TapPairs>(
+    backend: L,
+    classes: [&LaneClass; 4],
+) -> [MaddWeights; 9] {
     let pairs = F::TAPS.len() / 2;
     let mut weights = [[[0; 16]; 2]; 9];
     for (pair, weights) in weights.iter_mut().enumerate().take(pairs + 1) {
         let cells: [MaddPattern; 4] =
             core::array::from_fn(|cell| pattern(classes[cell], pairs, pair));
-        arrange_into::<T>(weights, cells.each_ref());
+        arrange_into(backend, weights, cells.each_ref());
     }
     weights
 }
@@ -210,15 +352,16 @@ fn in_lane_weights(
 /// group's column on. The [`by_lane`] kernel runs it on AArch64, the
 /// [`filter16`] group kernel otherwise; returns `false` when a row, a class
 /// or the output is short.
-#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn filter_run<
+    L: LrBackend,
     F: TapPairs,
     T: LumaSimdSource,
     O: LumaSimdOutput,
     const ROWS: usize,
     const REACH: usize,
 >(
+    backend: L,
     window: &[&[T]],
     rows: usize,
     span: (usize, usize),
@@ -227,11 +370,12 @@ pub(crate) fn filter_run<
     max_sample: u16,
 ) -> bool {
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(t) = backend.neon_token() {
         let (window, out) = (T::lane_rows(window), O::lanes_mut(output));
         return F::by_lane(t, window, rows, span, classes, (out, stride), max_sample);
     }
-    filter_run_groups::<F, T, O, ROWS, REACH>(
+    filter_run_groups::<L, F, T, O, ROWS, REACH>(
+        backend,
         window,
         rows,
         span,
@@ -246,12 +390,14 @@ pub(crate) fn filter_run<
 /// checks one length per plane, and cell weights are built once per group.
 #[inline]
 fn filter_run_groups<
+    L: LrBackend,
     F: TapPairs,
     T: LumaSimdSource,
     O: LumaSimdOutput,
     const ROWS: usize,
     const REACH: usize,
 >(
+    backend: L,
     window: &[&[T]],
     rows: usize,
     (x, end): (usize, usize),
@@ -297,7 +443,7 @@ fn filter_run_groups<
         (*slot, rest) = after.split_at_mut(span);
     }
     let uniform = match classes {
-        Classes::Uniform(class) => Some(run_weights::<F, T>([class; 4])),
+        Classes::Uniform(class) => Some(run_weights::<L, F>(backend, [class; 4])),
         Classes::Cells { .. } => None,
     };
     for (index, col) in (0..span).step_by(16).enumerate() {
@@ -306,7 +452,7 @@ fn filter_run_groups<
             Some(weights) => weights,
             None => match classes.group(index) {
                 Some(cells) => {
-                    cell_weights = run_weights::<F, T>(cells);
+                    cell_weights = run_weights::<L, F>(backend, cells);
                     &cell_weights
                 }
                 None => return false,
@@ -330,7 +476,7 @@ fn filter_run_groups<
                 return false;
             };
             O::store16(
-                filter16::<F, T, ROWS, REACH>(rows_of, &weights[..=pairs], max_sample),
+                filter16::<L, F, T, ROWS, REACH>(backend, rows_of, &weights[..=pairs], max_sample),
                 target,
             );
         }
@@ -354,7 +500,6 @@ pub(crate) trait TapPairs {
     ) -> Option<[u16; 16]>;
     /// The [`by_lane`] run kernel.
     #[cfg(target_arch = "aarch64")]
-    #[allow(clippy::too_many_arguments)]
     fn by_lane(
         t: fearless_simd::Neon,
         window: by_lane::Rows<'_>,
@@ -424,28 +569,60 @@ macro_rules! by_lane_kernel {
 #[cfg(target_arch = "aarch64")]
 pub(crate) use by_lane_kernel;
 
+struct PortableOp<'a, 'w, F, T, const ROWS: usize, const REACH: usize> {
+    window: &'a [&'a [T; REACH]; ROWS],
+    weights: &'w [MaddWeights],
+    max_sample: u16,
+    _marker: core::marker::PhantomData<F>,
+}
+
+impl<F: TapPairs, T: LumaSimdSource, const ROWS: usize, const REACH: usize> LrSimdOp<[u16; 16]>
+    for PortableOp<'_, '_, F, T, ROWS, REACH>
+{
+    #[expect(
+        clippy::inline_always,
+        reason = "forwards the inline row kernel into backend dispatch"
+    )]
+    #[inline(always)]
+    fn run<S: Simd>(self, simd: S) -> [u16; 16] {
+        portable::<S, F, T, ROWS, REACH>(simd, self.window, self.weights, self.max_sample)
+    }
+}
+
 /// The 16 filtered samples of one row from padded `window` rows, each slice
 /// starting `RADIUS` columns left of the first sample.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the row kernel must inline into its group loop"
 )]
 #[inline(always)]
-pub(crate) fn filter16<F: TapPairs, T: LumaSimdSource, const ROWS: usize, const REACH: usize>(
+pub(crate) fn filter16<
+    L: LrBackend,
+    F: TapPairs,
+    T: LumaSimdSource,
+    const ROWS: usize,
+    const REACH: usize,
+>(
+    backend: L,
     window: &[&[T; REACH]; ROWS],
     weights: &[MaddWeights],
     max_sample: u16,
 ) -> [u16; 16] {
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+    if let Some(token) = backend.avx2_token()
         && let Some(values) = F::avx2(token, window, weights, max_sample)
     {
         return values;
     }
-    lr_simd!(simd => portable::<_, F, T, ROWS, REACH>(simd, window, weights, max_sample))
+    backend.run(PortableOp::<F, T, ROWS, REACH> {
+        window,
+        weights,
+        max_sample,
+        _marker: core::marker::PhantomData,
+    })
 }
 
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: the row kernel must inline into its group loop"
 )]
@@ -550,10 +727,6 @@ fn portable<S: Simd, F: TapPairs, T: LumaSimdSource, const ROWS: usize, const RE
 #[cfg(target_arch = "x86_64")]
 macro_rules! madd_avx2 {
     ($taps:ty, $rows:literal, $reach:literal) => {
-        #[allow(
-            clippy::inline_always,
-            reason = "measured: the row kernel must inline into its group loop"
-        )]
         #[inline(always)]
         fn avx2<
             T: $crate::wienerns_filter::LumaSimdSource,
@@ -691,7 +864,6 @@ pub(crate) mod by_lane {
     use super::{Classes, LaneClass as Class, LumaSimdSource, TapPairs};
 
     /// Filters a [`super::filter_run`] run.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     pub(crate) fn filter_run<
@@ -836,7 +1008,6 @@ pub(crate) mod by_lane {
     }
 
     /// A uniform run: rows outer, groups inner.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn run<
@@ -900,7 +1071,6 @@ pub(crate) mod by_lane {
 
     /// A run of groups whose cells take classes of their own: groups outer,
     /// rows inner, each group's weights loaded once.
-    #[allow(clippy::too_many_arguments)]
     #[inline]
     #[target_feature(enable = "neon")]
     fn cells<F: TapPairs, T: LumaSimdSource, O: Store, const ROWS: usize, const REACH: usize>(
@@ -1000,7 +1170,10 @@ pub(crate) mod by_lane {
 
 #[cfg(all(test, target_arch = "x86_64"))]
 mod tests {
-    use super::{LaneClass, TapPairs, in_lane_weights, pattern_weights};
+    use super::{
+        BaselineLr, LaneClass, ScalarLr, TapPairs, TypedLr, in_lane_weights, pattern_weights,
+    };
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
 
     struct Twelve;
     impl TapPairs for Twelve {
@@ -1017,17 +1190,36 @@ mod tests {
     }
 
     fn check<F: TapPairs>(next: &mut impl FnMut() -> i16) {
+        struct Scope<'a, F>(
+            &'a mut Vec<[super::MaddWeights; 9]>,
+            [&'a LaneClass; 4],
+            core::marker::PhantomData<F>,
+        );
+        impl<F: TapPairs> SimdScope<()> for Scope<'_, F> {
+            fn run<B: SimdBackend>(self, backend: B) {
+                self.0
+                    .push(pattern_weights::<_, F>(TypedLr(backend), self.1));
+            }
+        }
         let Some(t) = fearless_simd::Level::baseline().as_avx2() else {
             return;
         };
+        let resolved = resolve_backend(SimdPolicy::Auto).ok();
+        let pairs = F::TAPS.len() / 2;
         for _ in 0..200 {
             let classes: [LaneClass; 4] =
                 core::array::from_fn(|_| (core::array::from_fn(|_| next()), next()));
             let cells = classes.each_ref();
-            assert_eq!(
-                in_lane_weights(t, cells, F::TAPS.len() / 2),
-                pattern_weights::<F, u16>(cells)
-            );
+            let in_lane = in_lane_weights(t, cells, pairs);
+            assert_eq!(in_lane, pattern_weights::<_, F>(BaselineLr, cells));
+            if let Some(backend) = resolved {
+                let mut got = Vec::with_capacity(1);
+                backend.enter(Scope::<F>(&mut got, cells, core::marker::PhantomData));
+                assert_eq!(got[0], in_lane);
+            }
+            if cells[1] != cells[2] {
+                assert_ne!(pattern_weights::<_, F>(ScalarLr, cells), in_lane);
+            }
         }
     }
 
@@ -1048,5 +1240,144 @@ mod tests {
         };
         check::<Twelve>(&mut next);
         check::<Sixteen>(&mut next);
+    }
+}
+
+#[cfg(test)]
+mod backend_tests {
+    use super::{
+        Classes, LaneClass, ScalarLr, TapPairs, TypedLr, filter_run, filter16, run_weights,
+    };
+    use crate::math::round2_i32;
+    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+    struct SmallTaps;
+
+    impl TapPairs for SmallTaps {
+        #[cfg(target_arch = "x86_64")]
+        super::madd_avx2!(SmallTaps, 3, 18);
+        #[cfg(target_arch = "aarch64")]
+        super::by_lane_kernel!(SmallTaps, 3, 18);
+        const RADIUS: usize = 1;
+        const TAPS: &'static [(isize, isize)] = &[(0, 1), (1, 0), (1, 1), (-1, 1)];
+    }
+
+    fn verify_run<L: super::LrBackend>(backend: L) {
+        let classes: [LaneClass; 4] = [
+            ([3, -2, 5, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 118),
+            ([-4, 7, -3, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 124),
+            ([6, 1, -5, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 116),
+            ([-2, -3, 8, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 124),
+        ];
+        let mut state = 0x1357_9bdf_2468_ace0u64;
+        let mut next = |limit: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % limit) as u16
+        };
+        for &(max_sample, use_u8) in &[(255u16, true), (255u16, false), (1023u16, false)] {
+            let width = 32usize;
+            let rows = 3usize;
+            let stride = width + 2;
+            let padded: Vec<Vec<u16>> = (0..rows + 2)
+                .map(|_| {
+                    (0..width + 2)
+                        .map(|_| next(u64::from(max_sample) + 1))
+                        .collect()
+                })
+                .collect();
+            let win16: Vec<&[u16]> = padded.iter().map(Vec::as_slice).collect();
+            let cell_map: [u8; 8] = [0, 1, 2, 3, 3, 0, 2, 1];
+            let mut out16 = vec![0u16; rows * stride];
+            let ok = filter_run::<L, SmallTaps, u16, u16, 3, 18>(
+                backend,
+                &win16,
+                rows,
+                (0, width),
+                Classes::Cells {
+                    cells: &cell_map,
+                    table: &classes,
+                },
+                (&mut out16, stride),
+                max_sample,
+            );
+            assert!(ok);
+            let group_w = run_weights::<L, SmallTaps>(
+                backend,
+                [&classes[3], &classes[0], &classes[2], &classes[1]],
+            );
+            let group_rows: [&[u16; 18]; 3] = [
+                padded[0][16..34].first_chunk::<18>().unwrap(),
+                padded[1][16..34].first_chunk::<18>().unwrap(),
+                padded[2][16..34].first_chunk::<18>().unwrap(),
+            ];
+            let direct16 = filter16::<L, SmallTaps, u16, 3, 18>(
+                backend,
+                &group_rows,
+                &group_w[..=SmallTaps::TAPS.len() / 2],
+                max_sample,
+            );
+            assert_eq!(&out16[16..32], &direct16);
+            if use_u8 {
+                let bytes: Vec<Vec<u8>> = padded
+                    .iter()
+                    .map(|row| row.iter().map(|&v| v as u8).collect())
+                    .collect();
+                let bwin: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+                let mut bout = vec![0u8; rows * stride];
+                assert!(filter_run::<L, SmallTaps, u8, u8, 3, 18>(
+                    backend,
+                    &bwin,
+                    rows,
+                    (0, width),
+                    Classes::Cells {
+                        cells: &cell_map,
+                        table: &classes,
+                    },
+                    (&mut bout, stride),
+                    max_sample,
+                ));
+                for r in 0..rows {
+                    for c in 0..width {
+                        assert_eq!(u16::from(bout[r * stride + c]), out16[r * stride + c]);
+                    }
+                }
+            }
+            for r in 0..rows {
+                for c in 0..width {
+                    let cls = &classes[usize::from(cell_map[c / 4])];
+                    let at = |dy: isize, dx: isize| {
+                        i32::from(
+                            padded[(r + 1).wrapping_add_signed(dy)]
+                                [(c + 1).wrapping_add_signed(dx)],
+                        )
+                    };
+                    let mut sum = at(0, 0) * i32::from(cls.1);
+                    for (j, &(dy, dx)) in SmallTaps::TAPS.iter().enumerate() {
+                        sum += (at(dy, dx) + at(-dy, -dx)) * i32::from(cls.0[j]);
+                    }
+                    let want = round2_i32(sum, 7).clamp(0, i32::from(max_sample)) as u16;
+                    assert_eq!(out16[r * stride + c], want, "({c}, {r})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cell_order_and_lane_layout_match_scalar_across_backends() {
+        struct VerifyScope;
+        impl SimdScope<()> for VerifyScope {
+            fn run<B: SimdBackend>(self, backend: B) {
+                verify_run(TypedLr(backend));
+            }
+        }
+        verify_run(ScalarLr);
+        resolve_backend(SimdPolicy::Auto)
+            .expect("supported host baseline")
+            .enter(VerifyScope);
+        if let Ok(avx512) = resolve_backend(SimdPolicy::Avx512) {
+            avx512.enter(VerifyScope);
+        }
     }
 }

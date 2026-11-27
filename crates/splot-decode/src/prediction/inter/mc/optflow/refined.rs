@@ -10,9 +10,6 @@ use super::super::refinemv::{SEARCH_AREA, SearchArea, search_unit};
 use super::*;
 use crate::DecodeHeaderStateError;
 
-type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-
 /// The cells of one refined block and the scratch that derives and predicts
 /// them, kept by the caller so that no block allocates or zeroes them.
 #[derive(Debug)]
@@ -55,7 +52,7 @@ impl RefinedUnits {
         &self,
         x: usize,
         y: usize,
-    ) -> splot_recon::Result<[Mv; 2]> {
+    ) -> splot_recon::Result<[MotionVector; 2]> {
         let cell = |x: usize, y: usize| {
             let column = x / self.unit_size.max(1);
             (column < self.columns)
@@ -83,7 +80,7 @@ impl RefinedUnits {
                 sum[1] += cell.mvs[reference][1] - cell.base_mvs[reference].col * 2;
             }
         }
-        Ok(core::array::from_fn(|reference| Mv {
+        Ok(core::array::from_fn(|reference| MotionVector {
             row: first.base_mvs[reference].row + round2_signed_i32(delta_sum[reference][0], 3),
             col: first.base_mvs[reference].col + round2_signed_i32(delta_sum[reference][1], 3),
         }))
@@ -119,8 +116,9 @@ impl RefinedUnits {
 /// in an 8x8 block, else 8x8). Optical flow and refine-MV need unscaled
 /// references (§ 5.20.7.6 `opfl_allowed_for_refs`, § 5.20.7.17
 /// `is_refinemv_allowed_reference`), so a scaled one is a state error.
-pub(crate) fn refine_block_units<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
+pub(crate) fn refine_block_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
     offset: ByteOffset,
@@ -156,7 +154,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
             .zip(candidates)
             .zip([&mut *pred0, &mut *pred1])
         {
-            initial_luma_prediction::<_, 0>(
+            initial_luma_prediction::<_, _, 0>(
+                backend,
                 luma,
                 block.rect,
                 mv,
@@ -166,7 +165,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                 prediction,
             )?;
         }
-        let deltas = derive_optflow_mv_deltas_into(
+        let deltas = derive_optflow_mv_deltas_into_with(
+            backend,
             [&*pred0, &*pred1],
             [0; 2],
             width,
@@ -212,7 +212,13 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                 unit_h,
             );
             let (mvs, area) = if block.search_refinemv {
-                search_unit(&mut luma, (rect, candidates, allow_center), bytes, samples)?
+                search_unit(
+                    backend,
+                    &mut luma,
+                    (rect, candidates, allow_center),
+                    bytes,
+                    samples,
+                )?
             } else {
                 (candidates, SearchArea::None)
             };
@@ -232,7 +238,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
             });
             let size = [unit_w, unit_h];
             let deltas = match area {
-                SearchArea::Bytes => derive_optflow_mv_deltas_into(
+                SearchArea::Bytes => derive_optflow_mv_deltas_into_with(
+                    backend,
                     bytes.each_ref().map(|area| &area[..]),
                     starts,
                     stride,
@@ -242,7 +249,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                     distances,
                     optflow,
                 )?,
-                SearchArea::Samples => derive_optflow_mv_deltas_into(
+                SearchArea::Samples => derive_optflow_mv_deltas_into_with(
+                    backend,
                     samples.each_ref().map(|area| &area[..]),
                     starts,
                     stride,
@@ -256,7 +264,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                     for (reference, prediction) in
                         [&mut *pred0, &mut *pred1].into_iter().enumerate()
                     {
-                        initial_luma_prediction::<_, 0>(
+                        initial_luma_prediction::<_, _, 0>(
+                            backend,
                             &mut luma[reference],
                             rect,
                             mvs[reference],
@@ -266,7 +275,8 @@ pub(crate) fn refine_block_units<T: ReconSample>(
                             prediction,
                         )?;
                     }
-                    derive_optflow_mv_deltas_into(
+                    derive_optflow_mv_deltas_into_with(
+                        backend,
                         [&*pred0, &*pred1],
                         [0; 2],
                         unit_w,
@@ -306,8 +316,9 @@ fn grown(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
 /// refine-MV for any other blend) without warp (§ 7.13.3.14 `useWarp = 0`),
 /// so any other block is a state error. A sub-8x8 chroma block (§ 7.13.3.1
 /// `sub8x8Inter`) predicts its chroma from list 0 alone, as AVM does.
-pub(crate) fn predict_refined_block<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+pub(crate) fn predict_refined_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
     offset: ByteOffset,
@@ -325,6 +336,7 @@ pub(crate) fn predict_refined_block<T: ReconSample>(
     let info = sink.info();
     let program = units.program.get_or_insert_default();
     let pass = RefinedPass {
+        backend,
         info,
         block,
         cells: &units.cells,
@@ -369,7 +381,7 @@ pub(crate) fn predict_refined_block<T: ReconSample>(
             let (reference, rect, mv, interp) =
                 (block.reference0, block.rect, block.mv0, block.interp);
             super::super::predict_plane(
-                sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
+                backend, sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )?;
         }
         return Ok(());
@@ -397,7 +409,8 @@ pub(crate) fn predict_refined_block<T: ReconSample>(
 }
 
 /// The block-wide inputs of a [`predict_refined_block`] plane pass.
-struct RefinedPass<'a, 'b, T: ReconSample> {
+struct RefinedPass<'a, 'b, B, T: ReconSample> {
+    backend: B,
     info: DecodedFrameInfo,
     block: &'a CompoundMcBlock<'b, T>,
     cells: &'a [MotionCell],
@@ -408,7 +421,7 @@ struct RefinedPass<'a, 'b, T: ReconSample> {
     offset: ByteOffset,
 }
 
-impl<T: ReconSample> RefinedPass<'_, '_, T> {
+impl<B: splot_core::simd::SimdBackend, T: ReconSample> RefinedPass<'_, '_, B, T> {
     /// Predicts one plane of `W` x `H` cells into the visible rectangle
     /// `outputs[0]`, and for U the V plane into `outputs[1]` from the same
     /// placements.
@@ -497,6 +510,7 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
                          (output, stride): &mut (&mut [O], usize)| {
                 views.map_or(Ok(true), |views| {
                     O::predict_fast(
+                        self.backend,
                         &views[0],
                         &params0,
                         &views[1],
@@ -534,7 +548,7 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
             let [first, second] = outputs;
             let planes = [(views[0], first), (views[1], second)]
                 .map(|(views, (output, stride))| Some((views?, &mut **output, *stride)));
-            run_program::<_, _, W>(program, planes, &cell_in, pred, intermediate)?;
+            run_program::<_, _, _, W>(self.backend, program, planes, &cell_in, pred, intermediate)?;
             program.clear();
             Ok(())
         };
@@ -557,6 +571,7 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
                 let second = views[1]
                     .map(|views| (views, &mut second[row * *second_stride..], *second_stride));
                 let found = predict_fullpel_runs(
+                    self.backend,
                     &prediction,
                     self.cells,
                     refine,
@@ -636,11 +651,29 @@ impl<T: ReconSample> RefinedPass<'_, '_, T> {
                         continue;
                     };
                     if !edge {
-                        predict_cell(views, target, &cell_in, pred, intermediate, output, *stride)?;
+                        predict_cell(
+                            self.backend,
+                            views,
+                            target,
+                            &cell_in,
+                            pred,
+                            intermediate,
+                            output,
+                            *stride,
+                        )?;
                         continue;
                     }
                     let mut staged = [O::default(); MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-                    predict_cell(views, target, &cell_in, pred, intermediate, &mut staged, W)?;
+                    predict_cell(
+                        self.backend,
+                        views,
+                        target,
+                        &cell_in,
+                        pred,
+                        intermediate,
+                        &mut staged,
+                        W,
+                    )?;
                     let width = W.min(visible[0] - col);
                     for (source, target) in staged
                         .chunks_exact(W)
@@ -672,7 +705,13 @@ type Target = (MotionCell, [CellPlacement; 2], bool, [usize; 4]);
 
 /// Runs a program of `SIZE`-square uniform cells into each plane (or U and
 /// V) and predicts each cell it declines through [`predict_cell`].
-fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
+fn run_program<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+    O: CompoundAverageOutput,
+    const SIZE: usize,
+>(
+    backend: B,
     program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     cell_in: &CellInputs<'_, '_, T>,
@@ -682,7 +721,8 @@ fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
     if program.is_empty() {
         return Ok(());
     }
-    let written = splot_recon::subpel_compound_cells(
+    let written = splot_recon::subpel_compound_cells_with(
+        backend,
         planes.each_mut().map(|plane| {
             let (views, output, stride) = plane.as_mut()?;
             Some((*views, &mut **output, *stride))
@@ -706,12 +746,13 @@ fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
                 continue;
             };
             let target = (
-                MotionCell::from_refinemv([Mv::ZERO; 2]),
+                MotionCell::from_refinemv([MotionVector::ZERO; 2]),
                 placements,
                 true,
                 [col, row, SIZE, SIZE],
             );
             predict_cell(
+                backend,
                 views,
                 target,
                 cell_in,
@@ -728,8 +769,10 @@ fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
 /// Predicts one cell from `views` into `output`: the compound average of
 /// § 7.13.3.14 when its weights are uniform, else the per-sample implicit
 /// mask of the cell's own reference starts.
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
+fn predict_cell<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
+    backend: B,
     views: &[ReferencePlaneView<'_, T>; 2],
     (cell, placements, uniform, [col, row, width, height]): Target,
     cell_in: &CellInputs<'_, '_, T>,
@@ -757,6 +800,7 @@ fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
             scalings: prediction.scalings,
         };
         return Ok(super::super::predict_compound_average_into(
+            backend,
             &subplane,
             &params,
             cell_in.cwp_weight,
@@ -768,7 +812,8 @@ fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
     }
     let [pred0, pred1] = pred;
     for ((view, pred), params) in views.iter().zip([&mut *pred0, &mut *pred1]).zip(&params) {
-        subpel_predict_block_compound_intermediate_into(
+        subpel_predict_block_compound_intermediate_into_with(
+            backend,
             view,
             params,
             Some(intermediate),
@@ -788,6 +833,7 @@ fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
         )
     });
     Ok(super::super::blend::blend_nonuniform_implicit_mask(
+        backend,
         &pred0[..width * height],
         &pred1[..width * height],
         (cell_in.bit_depth, width),
@@ -800,7 +846,6 @@ fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
 
     use super::*;
 
@@ -816,7 +861,7 @@ mod tests {
     #[test]
     fn temporal_mvs_average_four_by_four_optflow_deltas_over_eight_by_eight() {
         let cell = |mvs| MotionCell {
-            base_mvs: [Mv::ZERO; 2],
+            base_mvs: [MotionVector::ZERO; 2],
             mvs,
         };
         let units = units(
@@ -830,21 +875,24 @@ mod tests {
         );
         assert_eq!(
             units.temporal_mvs_at_luma_offset(0, 0).unwrap(),
-            [Mv { row: 1, col: -1 }, Mv { row: 2, col: -2 }]
+            [
+                MotionVector { row: 1, col: -1 },
+                MotionVector { row: 2, col: -2 }
+            ]
         );
     }
 
     #[test]
     fn temporal_mvs_treat_cropped_four_by_four_units_as_zero_delta() {
         let cell = MotionCell {
-            base_mvs: [Mv::ZERO; 2],
+            base_mvs: [MotionVector::ZERO; 2],
             mvs: [[4, -4], [0, 0]],
         };
         assert_eq!(
             units(1, vec![cell; 2])
                 .temporal_mvs_at_luma_offset(0, 0)
                 .unwrap(),
-            [Mv { row: 1, col: -1 }, Mv::ZERO]
+            [MotionVector { row: 1, col: -1 }, MotionVector::ZERO]
         );
     }
 }

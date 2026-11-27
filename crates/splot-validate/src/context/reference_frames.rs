@@ -8,22 +8,22 @@ use super::*;
 impl ValidatorContext {
     /// Maintains the § 7.23 reference-frame buffer state for a frame-bearing `obu`.
     ///
-    /// § 7.23 runs at `decode_frame_wrapup`, the final step of decoding a frame, AFTER the
+    /// § 7.23 runs at `decode_frame_wrapup`, the final step of decoding a frame, after the
     /// frame is decoded. To keep later frames' reference checks consistent with that
     /// ordering, each frame's § 7.23 update is *deferred* in [`Self::pending_ref_update`]
     /// and committed at the next frame's coded-frame boundary (or the end-of-bitstream
     /// flush). The segmenter's `boundary` is the coded-frame-unit authority:
     ///
     /// - [`FrameBoundary::OpensNewUnit`]: this OBU opens a NEW coded frame. The previous
-    ///   frame is complete, so commit its pending update FIRST (its decode finished),
+    ///   frame is complete, so commit its pending update first (its decode finished),
     ///   then run this frame's reference checks against the post-update buffer, then
     ///   record this frame's own pending update.
-    /// - [`FrameBoundary::ContinuesUnit`]: a non-first tile group of the SAME coded
+    /// - [`FrameBoundary::ContinuesUnit`]: a non-first tile group of the same coded
     ///   frame. The frame's update was already derived from its first tile group; nothing
     ///   to do (no double-update, no premature commit).
     /// - [`FrameBoundary::Ambiguous`]: an unreadable frame delimiter — the OBU may open a
     ///   new coded frame or continue one. Commit any pending update (the prior frame is
-    ///   done either way) and poison ALL slots: an ambiguous boundary makes this frame's
+    ///   done either way) and poison all slots: an ambiguous boundary makes this frame's
     ///   refresh effect on the buffer unknowable (the Unknown invariant).
     ///
     /// A `None` boundary is a global frame-bearing OBU (the segmenter ignores globals);
@@ -84,7 +84,7 @@ impl ValidatorContext {
     }
 
     /// Derives the grounded § 7.23 [`FrameRefUpdate`] for a frame-bearing `obu` from its
-    /// parsed core, honestly poisoning when the frame's § 7.23 effect on the buffer cannot
+    /// parsed core, poisoning when the frame's § 7.23 effect on the buffer cannot
     /// be grounded.
     ///
     /// Only a frame whose `frame_header_info()` parse **completed** stages a § 7.23 update;
@@ -166,6 +166,8 @@ impl ValidatorContext {
             return FrameRefUpdate::PoisonAll;
         };
         facts.global_motion = core.saved_global_motion_state();
+        facts.mlayer_id = obu.header.embedded_layer_id.get();
+        facts.tlayer_id = obu.header.temporal_layer_id.get();
 
         if let Some(lr) = core.lr_params.as_ref() {
             for (plane, params) in lr.planes.iter().enumerate() {
@@ -180,7 +182,10 @@ impl ValidatorContext {
             let num_ref_frames = self
                 .active_sequence_by_xlayer
                 .get(&obu.header.extended_layer_id)
-                .and_then(|seq_id| self.sequence_headers.get(seq_id))
+                .and_then(|seq_id| {
+                    self.hls
+                        .sequence_header(obu.header.extended_layer_id, *seq_id)
+                })
                 .and_then(|seq| seq.inter.as_ref())
                 .map_or(NUM_REF_FRAMES, |inter| usize::from(inter.num_ref_frames));
             return FrameRefUpdate::ClkReset {
@@ -397,7 +402,88 @@ impl ValidatorContext {
                 }
             }
         }
+
+        if let Some(inter) = core.inter.as_ref()
+            && inter
+                .tip_frame_mode
+                .is_some_and(|mode| mode != TipFrameMode::Disabled)
+            && let Some(((past_slot, past), (future_slot, future))) = tip_reference_pair(
+                &core,
+                inter,
+                obu.header.extended_layer_id,
+                &self.reference_state,
+            )
+            && !past.is_motion_field_eligible_by_frame_type()
+            && !future.is_motion_field_eligible_by_frame_type()
+        {
+            report.push(frame_header_error(
+                "frame-header/tip-ref-pair-ineligible-frame-type",
+                "7.9",
+                obu,
+                format!(
+                    "TIP frame has no inter-eligible reference in its ClosestPast (slot \
+                     {past_slot}, {}) / ClosestFuture (slot {future_slot}, {}) pair (§7.9 / \
+                     §7.10.1 requires is_ref_motion_field_eligible_by_frame_type for at least one \
+                     of the two — neither KEY_FRAME nor INTRA_ONLY_FRAME)",
+                    past.frame_type.label(),
+                    future.frame_type.label(),
+                ),
+            ));
+        }
     }
+}
+
+/// Selects the § 7.9.1 TIP `(ClosestPast, ClosestFuture)` reference pair
+/// `(past_slot, past_facts), (future_slot, future_facts)` from `inter.ref_frame_idx`.
+///
+/// Returns `None` when `OrderHint` is absent, when any referenced slot is not proven
+/// valid (`SlotState::Valid`, preserving the Unknown invariant), or when the reference
+/// set has neither a past+future pair nor at least two past references.
+fn tip_reference_pair(
+    core: &FrameHeaderCore,
+    inter: &InterControl,
+    xlayer: ExtendedLayerId,
+    reference_state: &ReferenceStateTracker,
+) -> Option<((u32, SlotFacts), (u32, SlotFacts))> {
+    let current = i32::try_from(core.order_hint?).ok()?;
+    let mut sorted: Vec<(u32, SlotFacts, i32)> = Vec::with_capacity(inter.ref_frame_idx.len());
+    for &slot in &inter.ref_frame_idx {
+        let SlotState::Valid(facts) = reference_state.slot(xlayer, slot as usize) else {
+            return None;
+        };
+        if facts.order_hint == RESTRICTED_ORDER_HINT {
+            continue;
+        }
+        let hint = i32::try_from(facts.order_hint).ok()?;
+        sorted.push((slot, facts, hint));
+    }
+    for i in 0..sorted.len() {
+        for j in (i + 1)..sorted.len() {
+            if get_relative_dist(sorted[j].2, sorted[i].2) < 0 {
+                sorted.swap(i, j);
+            }
+        }
+    }
+    let mut cur_idx: Option<usize> = None;
+    for (i, &(_, _, hint)) in sorted.iter().enumerate() {
+        if get_relative_dist(hint, current) < 0 {
+            cur_idx = Some(i);
+        } else {
+            break;
+        }
+    }
+    let past_idx = cur_idx?;
+    let has_future = sorted
+        .iter()
+        .any(|&(_, _, hint)| get_relative_dist(hint, current) > 0);
+    let future_idx = if has_future {
+        past_idx.checked_add(1)?
+    } else {
+        past_idx.checked_sub(1)?
+    };
+    let &(past_slot, past_facts, _) = sorted.get(past_idx)?;
+    let &(future_slot, future_facts, _) = sorted.get(future_idx)?;
+    Some(((past_slot, past_facts), (future_slot, future_facts)))
 }
 
 /// Infers `base_q_idx`, `DeltaQUAc`, and `DeltaQVAc` for a TIP-as-output frame when
@@ -415,31 +501,7 @@ fn infer_tip_output_quantizer(
         return None;
     }
 
-    let current_order_hint = i32::try_from(core.order_hint?).ok()?;
-    let mut closest_past: Option<(i32, SlotFacts)> = None;
-    let mut second_past: Option<(i32, SlotFacts)> = None;
-    let mut closest_future: Option<(i32, SlotFacts)> = None;
-
-    for &slot in &inter.ref_frame_idx {
-        let SlotState::Valid(facts) = reference_state.slot(xlayer, slot as usize) else {
-            continue;
-        };
-        let distance = get_relative_dist(current_order_hint, i32::try_from(facts.order_hint).ok()?);
-        if distance > 0 {
-            let candidate = (distance, facts);
-            if closest_past.is_none_or(|(old, _)| distance < old) {
-                second_past = closest_past;
-                closest_past = Some(candidate);
-            } else if second_past.is_none_or(|(old, _)| distance < old) {
-                second_past = Some(candidate);
-            }
-        } else if distance < 0 && closest_future.is_none_or(|(old, _)| distance > old) {
-            closest_future = Some((distance, facts));
-        }
-    }
-
-    let (_, past) = closest_past?;
-    let (_, future) = closest_future.or(second_past)?;
+    let ((_, past), (_, future)) = tip_reference_pair(core, inter, xlayer, reference_state)?;
     Some((
         u32::try_from((u64::from(past.base_q_idx) + u64::from(future.base_q_idx) + 1) >> 1).ok()?,
         ((i64::from(past.delta_q_u_ac) + i64::from(future.delta_q_u_ac) + 1) >> 1)

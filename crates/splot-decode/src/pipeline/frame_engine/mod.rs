@@ -7,7 +7,7 @@
 //! and reconstruction and leaves the filter phase owed as a
 //! [`finish::WalkedFrame`], which the driver hands to the row scheduler
 //! (see [`crate::pipeline::inflight`]). [`FrameSetup`] carries
-//! the frame-level branch between key (intra) and inter frames — the genuinely
+//! the frame-level branch between key (intra) and inter frames — the
 //! frame-level divergence (references, CDF load, order-hint history, warp /
 //! temporal-MV banks, skip-mode, segmentation, CfL enable). Below the setup, the
 //! partition walk, per-block engine ([`crate::prediction::inter::block`]), coeff /
@@ -38,8 +38,9 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 ///
 /// Returns the walk's own diagnostic when the header, tile plan, or block walk
 /// fails.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn walk_frame<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn walk_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
@@ -53,6 +54,7 @@ pub(crate) fn walk_frame<T: ReconSample>(
 ) -> Result<FrameWalk<T>> {
     match *setup {
         FrameSetup::Inter(reference) => inter::walk_inter_frame(
+            backend,
             scratch,
             candidate,
             bytes,
@@ -64,7 +66,8 @@ pub(crate) fn walk_frame<T: ReconSample>(
             bit_depth,
             products,
         ),
-        FrameSetup::Intra => intra::walk_intra_frame::<T>(
+        FrameSetup::Intra => intra::walk_intra_frame::<B, T>(
+            backend,
             scratch,
             candidate,
             bytes,

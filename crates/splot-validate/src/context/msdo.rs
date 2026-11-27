@@ -20,7 +20,7 @@ pub(super) struct MsdoSubstreamMax {
     /// anchor when the violation is detected at sequence-header activation time.
     ///
     /// The § 6.8.2 MSDO↔global-LCR agreement uses the separate per-MSDO
-    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate EVERY
+    /// [`ValidatorContext::msdo_agreement_snapshots`] accumulator (it must evaluate every
     /// MSDO in the CMVS, not just this live last-wins one), so the raw declaration-order
     /// aggregate / observation temporal unit are kept there rather than on this § 6.6 record.
     pub(super) offset: ByteOffset,
@@ -85,7 +85,7 @@ pub(super) struct MsdoSubStream {
 
 /// One sub-stream's § 6.6 PTL ceiling (`sub_stream_max_profile` / `sub_stream_max_level`
 /// / `sub_stream_max_tier`).
-#[allow(clippy::struct_field_names)]
+#[expect(clippy::struct_field_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SubStreamCeiling {
     pub(super) max_profile: u8,
@@ -252,6 +252,12 @@ impl MsdoObserver {
 }
 
 impl ValidatorContext {
+    pub(super) fn complete_msdo_temporal_unit(&mut self, report: &mut ValidationReport) {
+        self.frame_allocations
+            .complete_temporal_unit(self.msdo_identity.current_tu_is_rap, report);
+        self.msdo_identity.complete_temporal_unit(report);
+    }
+
     /// Parses MSDO, records CMVS/IOP facts, payload identity and per-layer ceilings,
     /// then rechecks already-confirmed activations for MSDO-after-header ordering.
     /// Malformed payloads remain silent here; stateless MSDO syntax checks report them.
@@ -261,6 +267,7 @@ impl ValidatorContext {
         options: &ValidationOptions,
         report: &mut ValidationReport,
     ) {
+        self.frame_allocations.note_msdo();
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
         let Ok(msdo) = parse_msdo(&mut reader) else {
             return;
@@ -274,6 +281,7 @@ impl ValidatorContext {
         {
             return;
         }
+        self.frame_allocations.latest = Some(msdo);
         let observation = self.msdo.observe(&msdo);
         self.cmvs.note_msdo(observation);
         self.annex_a_iop.note_msdo(
@@ -367,9 +375,9 @@ impl ValidatorContext {
             return;
         };
         let anchor = self
-            .sequence_header_offsets
-            .get(&seq_header_id)
-            .copied()
+            .hls
+            .sequence(xlayer, seq_header_id)
+            .and_then(|stored| stored.offset)
             .unwrap_or(msdo_offset);
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let value_space = annex_a_value_space_fingerprint(&general);

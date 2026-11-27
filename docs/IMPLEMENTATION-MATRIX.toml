@@ -1920,7 +1920,7 @@ module = "crates/splot-core/src/headers/layer_config_record.rs"
 change_id = "msdo-global-lcr-agreement"
 owner = "core"
 risk = "high"
-notes = "Global LCR validation checks the identifier, nonempty extended-layer map, and ignored dependency flag. Agreement with MSDO applies to activated global LCRs within the CMVS. Cross-layer use of the same global LCR and tile alignment remain outside these checks."
+notes = "Global LCR validation checks the identifier, nonempty extended-layer map, and ignored dependency flag. Agreement with MSDO applies to activated global LCRs within the CMVS. The active extended layers must agree on the global reference at the end of each temporal unit. A local LCR can name the common global parent. Tile alignment remains outside these checks."
 
 [feature.status]
 mapped = "done"
@@ -1935,10 +1935,10 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/layer_config_record_tests.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr"]
+tests = ["crates/splot-core/src/write/layer_config_record_tests.rs::tests", "crates/splot-core/src/headers/layer_config_record.rs::tests", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_stream_count_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_sub_xlayer_not_in_lcr_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_level_and_tier_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_aggregate_interop_and_config_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_substream_ptl_mismatch_is_flagged_both_orders", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_doh_flag_mismatch_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_doh_constraint_required_is_flagged", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_msdo_agreement_inert_for_unactivated_global_lcr", "crates/splot-validate/src/validator/tests/lcr_msdo_cmvs.rs::lcr_global_group_checks_direct_and_local_references"]
 commands = ["cargo test -p splot-core lcr", "cargo test -p splot-validate lcr_msdo", "cargo test -p splot-validate lcr_doh"]
 fixtures = []
-diagnostics = ["lcr/msdo-stream-count-mismatch", "lcr/msdo-sub-xlayer-not-in-lcr", "lcr/msdo-aggregate-mismatch", "lcr/msdo-substream-ptl-mismatch", "lcr/msdo-doh-flag-mismatch", "lcr/doh-constraint-required"]
+diagnostics = ["lcr/global-reference-mismatch", "lcr/msdo-stream-count-mismatch", "lcr/msdo-sub-xlayer-not-in-lcr", "lcr/msdo-aggregate-mismatch", "lcr/msdo-substream-ptl-mismatch", "lcr/msdo-doh-flag-mismatch", "lcr/doh-constraint-required"]
 
 [[feature]]
 id = "AV2-5.8.2-LCR-LOCAL-INFO"
@@ -2232,8 +2232,11 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = ["crates/splot-core/src/headers/atlas_segment.rs::tests", "crates/splot-validate/src/validator/tests/lcr_atlas.rs::atlas_local_atlas_unavailable_is_flagged"]
-commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas"]
-fixtures = []
+commands = ["cargo test -p splot-core atlas", "cargo test -p splot-validate atlas", "cargo test -p splot-decode --test msdo_multistream atlas"]
+fixtures = [
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu",
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu",
+]
 diagnostics = ["atlas/segment-mode-out-of-range", "atlas/region-dimension-out-of-range", "atlas/segment-count-out-of-range", "atlas/multistream-requires-global-xlayer", "atlas/duplicate-input-stream-id", "atlas/local-atlas-unavailable"]
 
 [[feature]]
@@ -4096,7 +4099,7 @@ module = "crates/splot-validate/src/context"
 change_id = "rap-replay-qm-references"
 owner = "validator"
 risk = "high"
-notes = "Tracks active and available HLS objects, reference associations, repeated sequence identity, and the single-active-sequence rule. Random-access replay checks linearly available sequence, MFH, OPS, LCR, local-atlas, film-grain, and QM references against anchor-relative resend visibility, leading-TU exclusion, and sender decodability. External suppression is exact-key for expressible sequence/OPS declarations and blanket for inexpressible kinds. Film-grain/QM linear availability and layer checks are implemented separately. Remaining coverage includes leading-TU content redefinition, interoperability-gated MSDO availability at RAP, and explicit external MFH/LCR/atlas declaration support."
+notes = "Tracks sequence headers, multi-frame headers, film-grain slots and quantizer-matrix levels separately for each extended layer. Tracks HLS reference associations, repeated sequence identity and the single-active-sequence rule. Random-access replay checks linearly available sequence, MFH, OPS, LCR, local-atlas, film-grain, and QM references against anchor-relative resend visibility, leading-TU exclusion, and sender decodability. Key-only external declarations suppress by key for sequence headers and OPS, and by kind for unlisted types. A validated external snapshot can supply actual sequence headers and OPS under exact extended-layer keys. The stream can replace these objects. Replay leaves overlapping snapshot and stream definitions undecided. Film-grain/QM linear availability and layer checks are implemented separately. Remaining coverage includes leading-TU content redefinition, interoperability-gated MSDO availability at RAP, and explicit external MFH/LCR/atlas declaration support."
 
 [feature.status]
 mapped = "done"
@@ -4111,7 +4114,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_mfh_is_flagged", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_sequence_header_available_external_is_accepted", "crates/splot-validate/src/validator/tests/hls_syntax.rs::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/options.rs::tests", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::second_activation_without_clk_is_flagged", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::reactivation_across_clk_is_conforming", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::fallback_guess_then_frame_reference_is_not_flagged", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::unreferenced_extra_sequence_header_is_conforming", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::second_activation_under_external_hls_is_not_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_sequence_header_only_before_rap_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_resend_in_rap_temporal_unit_passes", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_leading_temporal_unit_resend_does_not_qualify", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_non_leading_resend_after_rap_qualifies", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_resend_after_reference_in_same_temporal_unit_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_deduplicates_per_object_per_random_access_point", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_distinct_random_access_points_each_report", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_suppressed_under_external_hls_provided", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_olk_random_access_point_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_ras_random_access_point_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_multi_frame_header_reference_before_rap_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_reference_in_post_rap_leading_tu_is_moot", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_resend_in_mixed_leading_tu_not_visible_to_earlier_anchor", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_resend_in_mixed_leading_tu_visible_to_anchor_at_that_tu", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_resend_by_undecodable_other_layer_does_not_satisfy_reference", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_resend_by_decodable_other_layer_satisfies_reference", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_leading_tu_redefinition_does_not_invalidate_available_rap_version", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_leading_tu_redefinition_with_no_rap_version_still_fires", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_reference_in_non_leading_tu_still_fires"]
+tests = ["crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_sequence_header_is_flagged", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_missing_mfh_is_flagged", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::hls_frame_header_sequence_header_available_external_is_accepted", "crates/splot-validate/src/validator/tests/hls_syntax.rs::hls_repeated_non_identical_sequence_header_is_flagged", "crates/splot-validate/src/options.rs::tests", "crates/splot-validate/src/validator/tests/external_hls.rs::external_sequence_header_contents_apply_when_a_frame_activates_the_key", "crates/splot-validate/src/validator/tests/external_hls.rs::external_operating_point_set_supplies_count_until_replacement_or_reset", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::second_activation_without_clk_is_flagged", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::reactivation_across_clk_is_conforming", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::fallback_guess_then_frame_reference_is_not_flagged", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::unreferenced_extra_sequence_header_is_conforming", "crates/splot-validate/src/validator/tests/distinct_mlayer.rs::second_activation_under_external_hls_is_not_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_sequence_header_only_before_rap_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_resend_in_rap_temporal_unit_passes", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_leading_temporal_unit_resend_does_not_qualify", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_non_leading_resend_after_rap_qualifies", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_resend_after_reference_in_same_temporal_unit_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_deduplicates_per_object_per_random_access_point", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_distinct_random_access_points_each_report", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_suppressed_under_external_hls_provided", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_olk_random_access_point_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_ras_random_access_point_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_foundation.rs::rap_replay_multi_frame_header_reference_before_rap_is_flagged", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_reference_in_post_rap_leading_tu_is_moot", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_resend_in_mixed_leading_tu_not_visible_to_earlier_anchor", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_resend_in_mixed_leading_tu_visible_to_anchor_at_that_tu", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_resend_by_undecodable_other_layer_does_not_satisfy_reference", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_decodable_other_layer_cannot_resend_a_local_header", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_leading_tu_redefinition_does_not_invalidate_available_rap_version", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_leading_tu_redefinition_with_no_rap_version_still_fires", "crates/splot-validate/src/validator/tests/rap_replay_layers.rs::rap_replay_global_reference_in_non_leading_tu_still_fires", "crates/splot-validate/src/validator/tests/hls_frame_header.rs::frame_references_only_resolve_in_its_extended_layer", "crates/splot-validate/src/validator/tests/qm_film_grain.rs::film_grain_and_qm_references_require_a_definition_in_their_layer"]
 commands = ["cargo test -p splot-validate hls", "cargo test -p splot-validate frame_header", "cargo test -p splot-validate mfh_", "cargo test -p splot-validate activation", "cargo test -p splot-validate rap_replay"]
 fixtures = []
 diagnostics = ["hls/repeated-sequence-header-not-identical", "hls/unavailable-sequence-header", "hls/unavailable-multi-frame-header", "hls/unavailable-layer-configuration-record", "hls/unavailable-at-random-access-point", "lcr/global-lcr-unavailable", "lcr/global-xlayer-map-missing-xlayer", "atlas/local-atlas-unavailable", "frame-header/seq-header-id-out-of-range", "frame-header/cur-mfh-id-out-of-range", "sequence-state/no-active-sequence-header", "mfh/sequence-header-unavailable", "hls/external-hls-disabled", "hls/multiple-active-sequence-headers"]
@@ -4239,7 +4242,7 @@ avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/get_ref_frames.rs::tests", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::minimal_single_valid_slot_after_key_yields_one_ref", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::no_valid_slot_yields_zero_refs", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::equal_ref_counter_collapses_to_first_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::two_distinct_refs_rank_by_score", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::active_num_ref_frames_caps_the_result", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::check_res_drops_resolution_incompatible_reference", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::restricted_frame_appended_only_with_check_res", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::allowed_frames_mask_excludes_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::get_relative_dist_clamps_and_handles_sentinels", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::floor_log2_u64_matches_spec", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_one_valid_slot_reaches_shared_tail", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled"]
+tests = ["crates/splot-core/src/headers/frame/get_ref_frames.rs::tests", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::minimal_single_valid_slot_after_key_yields_one_ref", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::no_valid_slot_yields_zero_refs", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::equal_ref_counter_collapses_to_first_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::two_distinct_refs_rank_by_score", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::active_num_ref_frames_caps_the_result", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::check_res_drops_resolution_incompatible_reference", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::restricted_frame_appended_only_with_check_res", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::allowed_frames_mask_excludes_slot", "crates/splot-core/src/headers/frame/get_ref_frames.rs::tests::get_relative_dist_clamps_and_handles_sentinels", "crates/splot-core/src/headers/frame/size.rs::tests::floor_log2_matches_spec_definition", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_one_valid_slot_reaches_shared_tail", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_stops_unmodeled", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_reaches_shared_tail_on_fixture", "crates/splot-core/src/headers/frame/inter.rs::tests::frame_header_core_inter_implicit_map_two_valid_slots_stops_unmodeled"]
 commands = ["cargo test -p splot-core get_ref_frames", "cargo test -p splot-core headers::frame::inter", "cargo test -p splot-core frame_header_core_inter_implicit_map"]
 fixtures = ["tests/conformance/vectors/valid/syn-key-inter-64x64.ivf"]
 diagnostics = []
@@ -4329,25 +4332,25 @@ module = "crates/splot-validate/src/annex_a.rs"
 change_id = "annex-a-profile-level-skeleton"
 owner = "validator"
 risk = "high"
-notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. Remaining coverage includes rate/buffer constraints, per-tile scaling, multistream scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
+notes = "Checks level/tier value space, frame dimensions, and tile-count limits from resolved sequence/frame state; configurable and reserved levels skip undefined static limits. For decoder mode 1, core derives the lower of the native and MSDO frame-size and tile maxima. Decode checks them before reconstruction. Validation applies the limits for the mode selected at the most recent random access point. For missing aggregate level 0–3 table cells, Splot uses the level-4.0 dimensions, tile-column count, and header rate from AVM 457cd58681a747465661baccb1f32095bc5b7774 level_to_sub_stream_level_index(). Other quantities use their signaled level. Video reference-buffer limits use the allocated picture area and the extra buffer required for global intra block copy with filtering. Remaining checks include timing-dependent rate/buffer constraints, per-tile scaling, still-picture conditions, and OPS-level frame checks requiring operating-point membership. Interoperability layer-budget checks are tracked by AV2-A-PROFILES. Differential status remains separate from static validation coverage."
 
 [feature.status]
 mapped = "done"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
 validate = "partial"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "todo"
+decode_check = "partial"
 tests = "done"
 avm_diff = "pending"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
-commands = ["cargo test -p splot-validate annex_a"]
-fixtures = []
-diagnostics = ["annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
+tests = ["crates/splot-core/src/level.rs::tests", "crates/splot-core/src/hls.rs::tests::msdo_allocation_combines_native_and_aggregate_levels_by_xlayer", "crates/splot-decode/tests/msdo_multistream.rs::msdo_frame_width_uses_the_allocated_layer_and_aggregate_level", "crates/splot-validate/src/annex_a.rs::tests", "crates/splot-validate/src/validator/tests/mod.rs"]
+commands = ["cargo test -p splot-validate annex_a", "cargo test -p splot-core --lib", "cargo test -p splot-decode --test msdo_multistream"]
+fixtures = ["tests/conformance/vectors/valid/syn-msdo-two-streams-8bit.obu", "tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"]
+diagnostics = ["annex-a/reference-count-exceeds-level", "annex-a/level-reserved", "annex-a/high-tier-below-4-0", "annex-a/frame-size-exceeds-level", "annex-a/frame-size-below-minimum", "annex-a/tile-count-exceeds-level"]
 
 [[feature]]
 id = "AV2-E-DECODER-MODEL"
@@ -6919,7 +6922,7 @@ module = "crates/splot-cli/src/commands/encode.rs"
 change_id = "enc-low-delay"
 owner = "encoder"
 risk = "low"
-notes = "splot encode --low-delay (off by default) sets the preset fields mini_gop_size=1 and lookahead_frames=1 before --preset-set: every frame is an IPPP frame with immediate_output_frame = 1, coded in display order, and Encoder::receive_packet returns its packet right after send_frame (zero frame latency). References use the implicit get_ref_frames() map (§ 7.7); explicit_ref_frame_map is not needed because the implicit map already picks the latest past frames of an IPPP stream. Deferred (2026-10-26): use_bru backwards reference update (§ 5.18.2, § 5.20.5.2 bru_mode_info), because splot-decode parses the BRU header fields but does not decode BRU superblocks or the reference update, so encoder recon == decode cannot be checked."
+notes = "splot encode --low-delay (off by default) sets the preset fields mini_gop_size=1 and lookahead_frames=1 before --preset-set: every frame is an IPPP frame with immediate_output_frame = 1, coded in display order, and Encoder::receive_packet returns its packet right after send_frame (zero frame latency). References use the implicit get_ref_frames() map (§ 7.7); explicit_ref_frame_map is not needed because the implicit map already picks the latest past frames of an IPPP stream. The low-delay encoder does not emit backward reference updates (§ 5.18.2 and § 5.20.5.2)."
 
 [feature.status]
 mapped = "done"
@@ -7866,7 +7869,7 @@ module = "scripts/check-external-vectors.py"
 change_id = "fetch-public-vectors"
 owner = "conformance"
 risk = "medium"
-notes = "CI fetches 88 EwoutH/AV2 IVF samples (16 pinned repo samples and 72 hd-streams-2026-10 release streams), from 270x480 to 2048x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revisions. The local AVM oracle reproduces every MD5 in the upstream manifests. The shared external runner checks complete output at 1 and 8 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
+notes = "CI fetches 88 EwoutH/AV2 IVF samples (16 pinned repo samples and 72 hd-streams-2026-10 release streams), from 270x480 to 2048x1080, 8-bit and 10-bit. The manifest records input SHA-256, full AVM raw-output SHA-256, byte counts, displayed-frame counts and oracle revisions. The local AVM oracle reproduces every MD5 in the upstream manifests. The shared external runner checks complete output at 1 and 7 threads, rejects missing or unlisted streams, and retains the dav2d AVM corpus MD5 check. Sample bytes remain external."
 
 [feature.status]
 mapped = "done"
@@ -8794,7 +8797,7 @@ module = "xtask/src/feature_status.rs"
 change_id = "spec-coverage-doc"
 owner = "automation"
 risk = "medium"
-notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix and detects drift in committed generated renders."
+notes = "Reports feature, spec-section and writer coverage from the matrix, with on-demand markdown output. `check-feature-status` validates the matrix."
 
 [feature.status]
 mapped = "done"
@@ -13060,6 +13063,7 @@ category = "infrastructure"
 kind = "bitstream-syntax"
 spec_sections = [
     "5.4.8",
+    "5.20.4.1",
     "5.20.5.3",
     "5.20.5.4",
     "5.20.6.1",
@@ -13126,6 +13130,7 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_mv_valid.rs::tests::the_offset_vector_moves_the_source_by_whole_samples",
+    "crates/splot-decode/src/prediction/inter/block/resolve.rs::tests::local_intrabc_replays_chroma_partition_padding_in_leaf_order",
     "crates/splot-decode/tests/frame_pipelining.rs::intrabc_morph_offset_vector_outside_the_tile_is_rejected_at_every_width",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_partition_reader_uses_sequence_selected_reduced_cdf",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_reduced_partition_set_suppresses_one_axis_four_way_symbol",
@@ -14486,6 +14491,38 @@ fixtures = ["crates/splot-decode/src/limits.rs", "crates/splot-decode/src/lib.rs
 diagnostics = []
 
 [[feature]]
+id = "DECODE-ATLAS-COMPOSITION"
+name = "Optional multistream atlas composition"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.9.3", "5.9.4", "6.9.4", "6.9.5", "Annex D"]
+sources = ["docs/spec/av2/1.0.0/annex-d-multistream-composition-process-informative.md"]
+crate = "splot-decode"
+module = "crates/splot-decode/src/decoder/composition.rs"
+change_id = "multistream-atlas-composition"
+owner = "decoder"
+risk = "medium"
+notes = "The optional compositor uses a shared global layout and a common presentation timestamp. It renders modes 3 and 4 in segment order with clipping and Annex D.5 alpha rounding. The Splot rendering policy uses limited-range BT.709 and nearest-neighbor scaling. The native picture and its references keep their original samples. PR #1982 records active composition cost, retained memory, native decode comparisons and linked sizes."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-decode/src/decoder/composition/tests.rs", "crates/splot-cli/tests/decoder_oracle/atlas.rs"]
+commands = ["cargo test -p splot-decode --lib decoder::composition", "cargo test -p splot-cli --test decoder_oracle atlas::", "cargo xtask check-binary-size"]
+fixtures = ["tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-multistream-side-by-side-10bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-8bit.obu", "tests/conformance/vectors/valid/syn-atlas-alpha-paired-10bit.obu"]
+diagnostics = []
+
+[[feature]]
 id = "DECODE-STREAMING-API"
 name = "Streaming decoder API"
 category = "infrastructure"
@@ -14497,7 +14534,7 @@ module = "crates/splot-decode/src/decoder.rs"
 change_id = "decode-streaming-api"
 owner = "decoder"
 risk = "medium"
-notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. wait_picture waits for the pictures of the units the decoder holds and returns none once it is idle; flush drops the session and starts a new one on the same threads and storage, also after an error. A picture reports frame_type. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
+notes = "Decoder takes one temporal unit per send_data call and returns pictures in display order from get_picture, with drain at end of stream. Each picture carries the DataProps (pts, duration, user data) of the unit that coded or showed it. Picture::provenance reports the coded frame, display action, and coded frame's sequence header. Each location contains the unit token and the byte offset of the OBU header within that unit. The Rust coded-frame observer reports admitted coded frames and continuation OBUs, including frames that produce no picture. Coded frame events include the base quantizer and its origin when known. DecoderSettings::skip_film_grain leaves the film grain of § 7.21.7 out of the pictures; a picture reports has_film_grain and apply_film_grain adds the grain later. wait_picture waits for the pictures of the units the decoder holds and returns none once it is idle; flush drops the session and starts a new one on the same threads and storage, also after an error. A picture reports frame_type. The decode loop reads temporal units forward through UnitSource; the batch decode_* entry points use the same loop through a forward-only reader. The decode loop runs on the decoder's own worker pool."
 
 [feature.status]
 mapped = "done"
@@ -14514,11 +14551,15 @@ perf = "done"
 [feature.proof]
 tests = [
     "crates/splot-decode/tests/decoder_api.rs",
+    "crates/splot-decode/tests/block_evidence.rs",
+    "crates/splot-decode/tests/block_transform_evidence.rs",
+    "crates/splot-decode/tests/block_chroma_prediction_evidence.rs",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
     "crates/splot-decode/tests/steady_state_allocation.rs",
 ]
 commands = [
     "cargo test -p splot-decode --test decoder_api --locked",
+    "cargo test -p splot-decode --features block-evidence --test block_evidence --test block_transform_evidence --test block_chroma_prediction_evidence --locked",
     "cargo test -p splot-cli --test decoder_oracle --locked",
 ]
 fixtures = ["tests/conformance/decoder-oracle.toml"]
@@ -14620,7 +14661,7 @@ module = "crates/splot-decode/src/bitstream/stream_plan.rs"
 change_id = "decode-stream-state-planner"
 owner = "decoder"
 risk = "medium"
-notes = "The parsed-stream planner preserves source order/offsets and applies resource limits and base-layer selection. Temporal enhancement OBUs remain counted but unselected; global delimiters retain their scope. Operating-point, embedded/extended-layer, and multistream selection remain separate limitations. Planning is serial within the context-owned pool boundary."
+notes = "The planner retains source offsets and resolves operating points and layer dependencies. The decoder stores each extended layer separately. Each picture retains the atlas layout and segment associations that applied at decode time."
 
 [feature.status]
 mapped = "done"
@@ -14637,8 +14678,9 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/bitstream/stream_plan.rs::tests",
+    "crates/splot-decode/tests/msdo_multistream/atlas.rs",
     "crates/splot-decode/src/output/raw_tests.rs::higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_output",
-    "crates/splot-decode/src/output/raw_tests.rs::non_base_temporal_layer_is_retained_without_runtime_output",
+    "crates/splot-decode/src/output/raw_tests.rs::non_base_temporal_layer_is_selected_by_default_and_filtered_under_base_only",
     "crates/splot-decode/src/output/raw_tests.rs::higher_declared_temporal_layer_fixture_eof_fails_closed",
 ]
 commands = [
@@ -14650,6 +14692,8 @@ commands = [
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-8bit.obu",
+    "tests/conformance/vectors/needs-external-hls/syn-atlas-global-local-id-scope-10bit.obu",
     "crates/splot-decode/Cargo.toml",
     "crates/splot-decode/src/context.rs",
     "crates/splot-decode/src/error.rs",
@@ -17918,7 +17962,7 @@ tests = [
     "crates/splot-core/src/headers/frame/info/tests.rs::wrapped_display_order_hint_drives_implicit_reference_ranking",
     "crates/splot-core/src/headers/frame/info/tests.rs::display_order_hint_extends_past_the_coded_lsb_window",
     "crates/splot-decode/src/reference/buffer.rs::tests::reference_refresh_preserves_full_and_lsb_order_hints",
-    "crates/splot-decode/src/prediction/inter/tests.rs::floor_log2_matches_msb_index",
+    "crates/splot-core/src/headers/frame/size.rs::tests::floor_log2_matches_spec_definition",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_with_base_q_idx_ranks_exact",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_stops_unmodeled",
     "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_two_valid_slots_incomplete_ranking_inputs_stop_unmodeled",
@@ -19308,7 +19352,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level_tests.rs::coefficient_transform_class_derives_from_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits"]
+tests = ["crates/splot-recon/src/coefficient_scan.rs::tests::tx_class_maps_every_plane_tx_type", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits"]
 commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/max_level.rs",
@@ -20901,7 +20945,7 @@ id = "DECODE-TILE-PARTITION-TRAVERSAL-BOUNDARY"
 name = "Tile partition traversal"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.18.2", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
+spec_sections = ["5.18.2", "5.20.2.1", "5.20.3.1", "5.20.3.2", "5.20.9.1", "5.20.10.4", "5.20.10.5", "6.19.2.1", "6.19.3", "7.2", "8.2.5", "8.2.6", "8.3.1", "8.3.2", "9.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-1",
@@ -20924,7 +20968,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs"
 change_id = "tile-partition-traversal-boundary"
 owner = "decoder"
 risk = "medium"
-notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info; unsupported restoration combinations remain explicit gates."
+notes = "The live partition cursor walks superblocks and leaves with one SymbolDecoder, bounded partition steps and tile-derived neighbour availability. It publishes MI/mode state and supports intra SDP with extended-SDP continuation. Tree-specific restoration reads retain source blocks and coded filters for final filtering. Cursor and scheduler share effective superblock geometry, including SB128 for sequence-SB256 intra frames. BRU superblocks read bru_mode, infer PARTITION_NONE and skip region_type when not BRU_ACTIVE, and decode their leaves through § 5.20.5.2 bru_mode_info. The decoder checks the complete BRU region map against § 7.2 before it publishes reference state."
 
 [feature.status]
 mapped = "done"
@@ -20940,6 +20984,8 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/filters/bru.rs::tests",
+    "crates/splot-decode/src/prediction/inter/tests/bru_filters.rs::bru_gdf_vectors_exercise_partial_bru_gdf_modes_lr_and_reference_consumers",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_lr_symbol_precedes_partition_read",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::bru_inactive_superblock_reads_mode_then_infers_partition_none",
@@ -20962,6 +21008,9 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-bru-gdf-frame-8bit.ivf",
+    "tests/conformance/vectors/valid/syn-bru-gdf-frame-10bit.ivf",
+    "tests/conformance/vectors/valid/syn-bru-gdf-lr-10bit.ivf",
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_allowed.rs",
@@ -21112,7 +21161,7 @@ module = "xtask/src/decoder_support.rs"
 change_id = "decoder-roadmap-matrix-boundary"
 owner = "automation"
 risk = "medium"
-notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and any committed render as part of cargo xtask ci. These commands do not invoke reference decoders."
+notes = "cargo xtask decoder-support renders decoder support status; check-decoder-support validates the matrix and its local-reference evidence links as part of cargo xtask ci. These commands do not invoke reference decoders."
 
 [feature.status]
 mapped = "done"
@@ -21135,7 +21184,7 @@ tests = [
     "xtask/src/decoder_support.rs::tests::reference_evidence_rejects_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::rendered_fields_reject_local_absolute_paths",
     "xtask/src/decoder_support.rs::tests::metadata_rejects_local_absolute_paths",
-    "xtask/src/decoder_support.rs::tests::check_decoder_support_detects_drift",
+    "xtask/src/decoder_support.rs::tests::check_decoder_support_accepts_a_valid_matrix",
 ]
 commands = [
     "cargo test -p xtask decoder_support --locked",
@@ -21447,7 +21496,7 @@ module = "xtask/src/decoder_conformance_coverage.rs"
 change_id = "decoder-full-conformance-contract"
 owner = "decoder"
 risk = "medium"
-notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, local-reference pointers and any committed render, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
+notes = "decoder-conformance-coverage renders AV2 section-family coverage on demand. Its gate validates support/Feature/diagnostic links, and local-reference pointers, keeping partial and unsupported runtime coverage explicit without invoking reference decoders."
 
 [feature.status]
 mapped = "done"
@@ -21558,7 +21607,7 @@ module = "crates/splot-core/src/stream_reader.rs"
 change_id = "streaming-validator-input"
 owner = "core"
 risk = "low"
-notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. next_temporal_unit groups Annex B OBUs from one temporal delimiter up to the next and yields an IVF frame as one unit; each unit carries a UnitPosition, and seek on a Read + Seek source resumes at one, so a list of positions is a seek index. is_random_access_point tells whether a temporal unit opens with a temporal delimiter and has a sequence header before a closed-loop key, open-loop key or RAS first frame. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
+notes = "TemporalUnitReader<R: Read> provides forward-only bounded container reads: Annex B returns one framed OBU and IVF one frame payload, each with its absolute offset. last_ivf_payload borrows the last complete IVF payload so callers can pause processing without copying it. next_temporal_unit groups Annex B OBUs from one temporal delimiter up to the next and yields an IVF frame as one unit; each unit carries a UnitPosition, and seek on a Read + Seek source resumes at one, so a list of positions is a seek index. is_random_access_point tells whether a temporal unit opens with a temporal delimiter and has a sequence header before a closed-loop key, open-loop key or RAS first frame. It reuses existing framing parsers and handles fragmented reads. The configurable per-unit cap defaults to 256 MiB; over-cap input returns ReaderError::UnitTooLarge. splot-core remains independent of splot-decode."
 
 [feature.status]
 mapped = "done"

@@ -20,7 +20,7 @@ pub const IVF_SIGNATURE: [u8; 4] = *b"DKIF";
 /// Size of the baseline IVF header in bytes.
 pub const IVF_HEADER_SIZE: u16 = 32;
 
-const IVF_HEADER_SIZE_BYTES: usize = 32;
+pub(crate) const IVF_HEADER_SIZE_BYTES: usize = IVF_HEADER_SIZE as usize;
 
 /// Size of each IVF frame header in bytes.
 pub const IVF_FRAME_HEADER_SIZE: usize = 12;
@@ -156,37 +156,17 @@ impl<'a> IvfFrameCursor<'a> {
             return Ok(IvfFrameRead::End);
         }
 
-        let remaining_header = self.input.len().saturating_sub(self.cursor);
-        if remaining_header < IVF_FRAME_HEADER_SIZE {
-            if self.frame_index > 0 {
-                self.finished = true;
-                return Ok(IvfFrameRead::Warning(
-                    IvfWarning::TrailingPartialFrameHeader {
-                        frame_index: self.frame_index,
-                        offset: ByteOffset::new(self.input.len() as u64),
-                        needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-                    },
-                ));
-            }
-            return Err(IvfError::TruncatedFrameHeader {
-                frame_index: self.frame_index,
-                offset: ByteOffset::new(self.input.len() as u64),
-                needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-            });
-        }
-
-        let size = read_u32_le(self.input, self.cursor).ok_or(IvfError::TruncatedFrameHeader {
-            frame_index: self.frame_index,
-            offset: ByteOffset::new(self.input.len() as u64),
-            needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-        })?;
-        let pts = read_u64_le(self.input, self.cursor.saturating_add(4)).ok_or(
-            IvfError::TruncatedFrameHeader {
-                frame_index: self.frame_index,
-                offset: ByteOffset::new(self.input.len() as u64),
-                needed: IVF_FRAME_HEADER_SIZE.saturating_sub(remaining_header),
-            },
-        )?;
+        let rest = self.input.get(self.cursor..).unwrap_or_default();
+        let Some(header) = rest.first_chunk::<IVF_FRAME_HEADER_SIZE>() else {
+            let warning = short_frame_header(
+                self.frame_index,
+                ByteOffset::new(self.input.len() as u64),
+                IVF_FRAME_HEADER_SIZE - rest.len(),
+            )?;
+            self.finished = true;
+            return Ok(IvfFrameRead::Warning(warning));
+        };
+        let (size, pts) = decode_frame_header(header);
 
         let payload_start = self.cursor.saturating_add(IVF_FRAME_HEADER_SIZE);
         let remaining_payload = self.input.len().saturating_sub(payload_start);
@@ -385,7 +365,7 @@ pub fn parse_ivf_header(input: &[u8]) -> Result<IvfHeader, IvfError> {
         });
     }
 
-    let header_len = u16_at(6);
+    let header_len = declared_header_len(wire);
     if header_len < IVF_HEADER_SIZE {
         return Err(IvfError::InvalidHeaderLength {
             offset: ByteOffset::new(6),
@@ -515,20 +495,43 @@ pub fn write_ivf_frame<W: io::Write + ?Sized>(
     Ok(())
 }
 
-fn read_u32_le(input: &[u8], offset: usize) -> Option<u32> {
-    let bytes = input.get(offset..offset.checked_add(4)?)?;
-    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+/// The `header_len` field of a baseline IVF header.
+pub(crate) const fn declared_header_len(wire: &[u8; IVF_HEADER_SIZE_BYTES]) -> u16 {
+    u16::from_le_bytes([wire[6], wire[7]])
 }
 
-fn read_u64_le(input: &[u8], offset: usize) -> Option<u64> {
-    let bytes = input.get(offset..offset.checked_add(8)?)?;
-    Some(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+/// The `(size, pts)` fields of an IVF frame header.
+pub(crate) fn decode_frame_header(header: &[u8; IVF_FRAME_HEADER_SIZE]) -> (u32, u64) {
+    let [s0, s1, s2, s3, pts @ ..] = *header;
+    (
+        u32::from_le_bytes([s0, s1, s2, s3]),
+        u64::from_le_bytes(pts),
+    )
+}
+
+/// A frame header cut short by EOF: a warning that ends the stream after a complete
+/// frame, an error when no frame precedes it.
+pub(crate) fn short_frame_header(
+    frame_index: usize,
+    offset: ByteOffset,
+    needed: usize,
+) -> Result<IvfWarning, IvfError> {
+    if frame_index > 0 {
+        Ok(IvfWarning::TrailingPartialFrameHeader {
+            frame_index,
+            offset,
+            needed,
+        })
+    } else {
+        Err(IvfError::TruncatedFrameHeader {
+            frame_index,
+            offset,
+            needed,
+        })
+    }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

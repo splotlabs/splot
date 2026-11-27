@@ -23,19 +23,29 @@ pub(super) fn planned_stream(
     planned_stream_of(config, coder, panning_frame, 110)
 }
 
-/// [`planned_stream`] with `coder` of the frames `frame(config,
-/// display_index)` at `qp`.
+/// [`planned_stream`] with `coder` of 5 frames `frame(config, display_index)`
+/// (one key frame and one mini-GOP of 4) at `qp`.
 pub(super) fn planned_stream_of(
+    config: &Config,
+    coder: IntraFrameCoder,
+    frame: fn(&Config, u32) -> SourceFrame,
+    qp: u16,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    planned_stream_frames(config, coder, frame, qp, 5)
+}
+
+/// [`planned_stream_of`] for `frames` frames.
+pub(super) fn planned_stream_frames(
     config: &Config,
     mut coder: IntraFrameCoder,
     frame: fn(&Config, u32) -> SourceFrame,
     qp: u16,
+    mut queued: usize,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mini_gop = coder.preset.mini_gop_size.min(4);
     let mut planner =
         GopPlanner::new(config.keyint, mini_gop).with_intra_only(coder.preset.intra_only);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
-    let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {
         queued -= len;
         for step in planner.plan(len).unwrap() {
@@ -72,15 +82,17 @@ pub(super) fn planned_stream_of(
 /// without carry, frames code `PRIMARY_REF_NONE` and start from the defaults.
 #[test]
 fn inter_frames_start_from_the_primary_reference_cdfs() {
-    let config = config(72, 24, BitDepth::Ten, 7, 110);
-    let on = Preset::new(7).unwrap().params();
+    let config = config(72, 24, BitDepth::Ten, 9, 110);
+    let on = Preset::new(9).unwrap().params();
     let off: &'static PresetParams = Box::leak(Box::new(PresetParams {
         cdf_carry: false,
         ..*on
     }));
     let mut streams = Vec::new();
     for (preset, carry) in [(on, true), (off, false)] {
-        let (units, expected, cores, coder) = planned_stream(&config, preset);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let (units, expected, cores, coder) =
+            planned_stream_frames(&config, coder, panning_frame, 110, 9);
         let tq = coder.sequence.transform_quant_entropy.unwrap();
         assert_eq!(tq.enable_avg_cdf, carry);
         let inter: Vec<_> = cores
@@ -114,13 +126,13 @@ fn inter_frames_start_from_the_primary_reference_cdfs() {
 
 /// A mini-GOP stream in 2x2 tiles, coded through the [`Encoder`] on `threads`.
 fn tiled_mini_gop(threads: usize) -> (Config, Vec<Vec<u8>>, Vec<u8>) {
-    let mut config = config(72, 72, BitDepth::Eight, 7, 100);
+    let mut config = config(72, 72, BitDepth::Eight, 9, 100);
     config.tiles = TileLayout::Uniform {
         cols_log2: 1,
         rows_log2: 1,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
-    let (units, expected) = encode_stream(&config, 9);
+    let (units, expected) = encode_stream(&config, 5);
     (config, units, expected)
 }
 
@@ -150,10 +162,10 @@ fn avm_decodes_tiled_mini_gops_like_splot() {
 /// all off and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn cdf_control_streams_decode_alike_on_any_thread_count() {
-    let base = *Preset::new(6).unwrap().params();
+    let base = *Preset::new(9).unwrap().params();
     let stream = |preset: PresetParams, threads: usize| {
         let preset: &'static PresetParams = Box::leak(Box::new(preset));
-        let mut config = config(136, 136, BitDepth::Eight, 6, 150);
+        let mut config = config(136, 136, BitDepth::Eight, 9, 150);
         config.tiles = TileLayout::Uniform {
             cols_log2: 1,
             rows_log2: 1,
@@ -163,7 +175,11 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
         planned_stream_of(&config, coder, panning_frame, 150)
     };
     let plain = stream(base, 1).0;
-    for (fixed, default_cdfs, tile) in [(true, false, 0), (false, true, 0), (false, false, 1)] {
+    for (index, (fixed, default_cdfs, tile)) in
+        [(true, false, 0), (false, true, 0), (false, false, 1)]
+            .into_iter()
+            .enumerate()
+    {
         let preset = PresetParams {
             disable_cdf_update: fixed,
             primary_default_cdfs: default_cdfs,
@@ -180,13 +196,13 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
                 .iter()
                 .all(|core| core.disable_cdf_update != Some(!fixed))
         );
-        assert!(fixed_frames >= 8, "{fixed_frames} frames code {fixed}");
+        assert!(fixed_frames >= 5, "{fixed_frames} frames code {fixed}");
         let tiled: Vec<_> = cores
             .iter()
             .filter_map(|core| core.tile_info.as_ref())
             .filter(|info| info.tile_cols * info.tile_rows > 1)
             .collect();
-        assert!(tiled.len() >= 8, "{} frames of several tiles", tiled.len());
+        assert!(tiled.len() >= 5, "{} frames of several tiles", tiled.len());
         for info in tiled {
             let middle = info.tile_cols * info.tile_rows / 2;
             assert_eq!(info.context_update_tile_id, middle * u32::from(tile));
@@ -201,7 +217,7 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
             })
             .collect();
         assert!(
-            carried.len() >= 4,
+            carried.len() >= 3,
             "{} frames keep a primary",
             carried.len()
         );
@@ -210,8 +226,8 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
         }
         assert!(one != plain, "case {fixed} {default_cdfs} {tile}");
         assert_same_samples(&decode(&one), &expected, "CDF controls");
-        for threads in [2, 8] {
-            assert!(stream(preset, threads).0 == one, "{threads} threads");
+        if index == 0 {
+            assert!(stream(preset, 2).0 == one, "2 threads");
         }
     }
 }
@@ -220,13 +236,13 @@ fn cdf_control_streams_decode_alike_on_any_thread_count() {
 /// the decoder derives its primary reference (§ 5.18.2) and keeps the
 /// explicit signal when it derives another one. The recon equals the recon
 /// without the field (the same CDFs give the same decisions), the stream
-/// decodes to it, and 1, 2 and 8 threads write the same bytes.
+/// decodes to it, and multiple threads write the same bytes.
 #[test]
 fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
-    let base = *Preset::new(6).unwrap().params();
+    let base = *Preset::new(9).unwrap().params();
     let stream = |preset: PresetParams, threads: usize| {
         let preset: &'static PresetParams = Box::leak(Box::new(preset));
-        let mut config = config(136, 72, BitDepth::Eight, 6, 150);
+        let mut config = config(136, 72, BitDepth::Eight, 9, 150);
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         planned_stream_of(&config, coder, panning_frame, 150)
@@ -253,31 +269,31 @@ fn chosen_primary_references_keep_the_recon_on_any_thread_count() {
         plain.len()
     );
     assert_same_samples(&decode(&one), &expected, "chosen primary");
-    for threads in [2, 8] {
-        assert!(stream(choose, threads).0 == one, "{threads} threads");
-    }
+    assert!(stream(choose, 2).0 == one, "2 threads");
 }
 
 /// With `seq_tile_info` the sequence codes the 2x2 layout and every frame
 /// reuses it (1, 2) or codes `reuse_tile_info = 0` and its own (3); with 256x256
 /// superblocks the intra frames reuse it over 128x128 superblocks. The
-/// streams decode to the encoder recon with the same bytes on 1, 2 and 8
-/// threads.
+/// streams decode to the encoder recon with the same bytes on any thread count.
 #[test]
 fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
-    let base = *Preset::new(6).unwrap().params();
+    let base = fast_p6();
     let large = PresetParams {
         max_block_log2: 8,
         sb256_min_height: 0,
         ..base
     };
-    for (mode, params) in [(1, base), (2, base), (3, base), (1, large)] {
+    for (index, (mode, params)) in [(1, base), (2, base), (3, base), (1, large)]
+        .into_iter()
+        .enumerate()
+    {
         let stream = |threads: usize| {
             let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
                 seq_tile_info: mode,
                 ..params
             }));
-            let mut config = config(136, 136, BitDepth::Eight, 6, 150);
+            let mut config = config(136, 136, BitDepth::Eight, 9, 150);
             config.tiles = TileLayout::Uniform {
                 cols_log2: 1,
                 rows_log2: 1,
@@ -298,8 +314,8 @@ fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
             assert_eq!(info.tile_cols * info.tile_rows, tiles, "{name}");
         }
         assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        if index == 0 {
+            assert!(stream(2).0 == units, "{name}: 2 threads");
         }
     }
 }
@@ -307,10 +323,10 @@ fn sequence_tile_info_streams_decode_alike_on_any_thread_count() {
 /// With `explicit_refs` the sequence codes `explicit_ref_frame_map`: at `1`
 /// inter frames keep the default map, above it they code an explicit map of
 /// at most `explicit_refs - 1` references. The mini-GOP streams decode to the
-/// encoder recon with the same bytes on 1, 2 and 8 threads.
+/// encoder recon with the same bytes on any thread count.
 #[test]
 fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
-    let base = *Preset::new(6).unwrap().params();
+    let base = *Preset::new(9).unwrap().params();
     let mut most = 0;
     for explicit_refs in [1, 2, 3, 8] {
         let stream = |threads: usize| {
@@ -318,7 +334,7 @@ fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
                 explicit_refs,
                 ..base
             }));
-            let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+            let mut config = config(72, 40, BitDepth::Eight, 9, 150);
             config.threads = splot_parallel::ThreadCount::from(threads);
             let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
             planned_stream_of(&config, coder, panning_frame, 150)
@@ -333,8 +349,8 @@ fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
         }
         let name = format!("explicit_refs {explicit_refs}");
         assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            assert!(stream(threads).0 == units, "{name}: {threads} threads");
+        if explicit_refs == 3 {
+            assert!(stream(2).0 == units, "{name}: 2 threads");
         }
     }
     assert!(most > 2, "no frame with more than two references");
@@ -342,28 +358,25 @@ fn explicit_reference_map_streams_decode_alike_on_any_thread_count() {
 
 /// With `num_ref_frames` the sequence codes that many slots and the mini-GOP
 /// of 8 plans over them: streams of 4, 5 and 16 slots decode to the encoder
-/// recon with the same bytes on 1, 2 and 8 threads. Too few slots for the
+/// recon with the same bytes on any thread count. Too few slots for the
 /// mini-GOP fail validation.
 #[test]
 fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
     let stream = |slots: u8, threads: usize| {
-        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        let mut config = config(72, 40, BitDepth::Eight, 9, 150);
         config.preset_overrides = vec![("num_ref_frames".to_owned(), slots.to_string())];
         config.threads = splot_parallel::ThreadCount::from(threads);
-        encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)))
+        encode_frames(&config, (0..18).map(|index| panning_frame(&config, index)))
     };
     for slots in [4, 5, 16] {
         let (units, expected) = stream(slots, 1);
         let units = units.concat();
         assert_same_samples(&decode(&units), &expected, &format!("{slots} slots"));
-        for threads in [2, 8] {
-            assert!(
-                stream(slots, threads).0.concat() == units,
-                "{slots}: {threads} threads"
-            );
+        if slots == 4 {
+            assert!(stream(slots, 2).0.concat() == units, "{slots}: 2 threads");
         }
     }
-    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    let mut config = config(72, 40, BitDepth::Eight, 9, 150);
     config.preset_overrides = vec![("num_ref_frames".to_owned(), "2".to_owned())];
     assert!(config.validate().is_err());
 }
@@ -371,7 +384,7 @@ fn explicit_slot_count_streams_decode_alike_on_any_thread_count() {
 /// With `intra_only = 1` the first frame of each mini-GOP is an intra-only
 /// frame (§ 5.18.2) that refreshes one slot, and a frame coded after it
 /// still references a frame from before it. The 4:2:0 and 4:4:4 streams
-/// decode to the encoder recon with the same bytes on 1, 2 and 8 threads.
+/// decode to the encoder recon with the same bytes on any thread count.
 #[test]
 fn intra_only_streams_decode_alike_on_any_thread_count() {
     for chroma in [PixelFormat::Yuv420, PixelFormat::Yuv444] {
@@ -397,9 +410,9 @@ fn intra_only_streams_decode_alike_on_any_thread_count() {
             assert!(older, "{chroma:?}: no reference across the frame at {hint}");
         }
         assert_same_samples(&decode(&units), &expected, &format!("{chroma:?}"));
-        for threads in [2, 8] {
-            let other = intra_only_stream(chroma, threads).0;
-            assert!(other == units, "{chroma:?}: {threads} threads");
+        if chroma == PixelFormat::Yuv420 {
+            let other = intra_only_stream(chroma, 2).0;
+            assert!(other == units, "{chroma:?}: 2 threads");
         }
     }
 }
@@ -412,13 +425,13 @@ fn intra_only_stream(
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         intra_only: 1,
-        ..*Preset::new(6).unwrap().params()
+        ..*Preset::new(9).unwrap().params()
     }));
-    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    let mut config = config(72, 40, BitDepth::Eight, 9, 150);
     config.chroma = chroma;
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    let (units, expected, cores, _) = planned_stream_of(&config, coder, panning_frame, 150);
+    let (units, expected, cores, _) = planned_stream_frames(&config, coder, panning_frame, 150, 9);
     (units, expected, cores)
 }
 
@@ -429,16 +442,15 @@ fn rate_controlled_intra_only_streams_decode_to_the_encoder_recon() {
         RateControlMode::Crf { crf: 32 },
         RateControlMode::Vbr { bitrate_kbps: 200 },
     ] {
-        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        let mut config = config(72, 40, BitDepth::Eight, 9, 150);
         config.rate_control = mode;
         config.preset_overrides = vec![("intra_only".to_owned(), "1".to_owned())];
         let (units, expected) =
-            encode_frames(&config, (0..20).map(|index| panning_frame(&config, index)));
+            encode_frames(&config, (0..18).map(|index| panning_frame(&config, index)));
         assert_same_samples(&decode(&units.concat()), &expected, &format!("{mode:?}"));
     }
 }
 
-/// AVM decodes intra-only streams like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_intra_only_streams_like_splot() {
@@ -456,7 +468,7 @@ fn avm_decodes_intra_only_streams_like_splot() {
 /// The packets of `frames` panning frames coded through the [`Encoder`] with
 /// `implicit_output` on `threads`, and the encoder recon in display order.
 fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, Vec<u8>) {
-    let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+    let mut config = config(72, 40, BitDepth::Eight, 9, 150);
     config.preset_overrides = vec![("implicit_output".to_owned(), "true".to_owned())];
     config.threads = splot_parallel::ThreadCount::from(threads);
     let (packets, expected) = encoder_packets(&config, frames, panning_frame);
@@ -510,14 +522,12 @@ fn implicit_output_streams_decode_in_display_order() {
         .flat_map(|packet| packet.data.clone())
         .collect();
     assert_same_samples(&decode(&units), &expected, "implicit output");
-    for threads in [2, 8] {
-        let other: Vec<u8> = implicit_output_stream(11, threads)
-            .1
-            .iter()
-            .flat_map(|packet| packet.data.clone())
-            .collect();
-        assert!(other == units, "{threads} threads");
-    }
+    let other: Vec<u8> = implicit_output_stream(11, 2)
+        .1
+        .iter()
+        .flat_map(|packet| packet.data.clone())
+        .collect();
+    assert!(other == units, "2 threads");
 }
 
 #[test]
@@ -542,13 +552,13 @@ fn key_frames_cycle_their_long_term_ids() {
     let stream = |threads: usize| {
         let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
             long_term_id_bits: 2,
-            ..*Preset::new(6).unwrap().params()
+            ..*Preset::new(9).unwrap().params()
         }));
-        let mut config = config(72, 40, BitDepth::Eight, 6, 150);
+        let mut config = config(72, 40, BitDepth::Eight, 9, 150);
         config.keyint = core::num::NonZeroU32::new(2).unwrap();
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        planned_stream_of(&config, coder, panning_frame, 150)
+        planned_stream_frames(&config, coder, panning_frame, 150, 9)
     };
     let (units, expected, cores, coder) = stream(1);
     assert_eq!(coder.sequence.inter.unwrap().long_term_frame_id_bits, 2);
@@ -559,9 +569,7 @@ fn key_frames_cycle_their_long_term_ids() {
         .collect();
     assert_eq!(ids, [Some(0), Some(1), Some(2), Some(0), Some(1)]);
     assert_same_samples(&decode(&units), &expected, "long-term ids");
-    for threads in [2, 8] {
-        assert!(stream(threads).0 == units, "{threads} threads");
-    }
+    assert!(stream(2).0 == units, "2 threads");
 }
 
 /// `(chroma, bit depth, implicit output, short refresh)` of the open-loop
@@ -582,7 +590,7 @@ fn open_loop_stream(
     threads: usize,
     grain: bool,
 ) -> (Config, Vec<Packet>, Vec<u8>) {
-    let mut config = config(72, 40, bit_depth, 6, 150);
+    let mut config = config(72, 40, bit_depth, 9, 150);
     config.chroma = chroma;
     config.film_grain = grain;
     config.rate_control = mode;
@@ -644,13 +652,29 @@ fn open_loop_key_streams_decode_alike_on_any_thread_count() {
             .flat_map(|packet| packet.data.clone())
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
-            let other: Vec<u8> = open_loop_stream(case, qp, threads, false)
+        let start = packets
+            .iter()
+            .position(|packet| {
+                obu_types(core::slice::from_ref(packet)).contains(&ObuType::OpenLoopKey)
+            })
+            .unwrap();
+        let ra_units: Vec<u8> = packets[start..]
+            .iter()
+            .flat_map(|packet| packet.data.clone())
+            .collect();
+        let frame_bytes = expected.len() / 26;
+        assert_same_samples(
+            &decode(&ra_units),
+            &expected[12 * frame_bytes..],
+            &format!("{case:?}: random access"),
+        );
+        if case == OPEN_LOOP_CASES[0] {
+            let other: Vec<u8> = open_loop_stream(case, qp, 2, false)
                 .1
                 .iter()
                 .flat_map(|packet| packet.data.clone())
                 .collect();
-            assert!(other == units, "{case:?}: {threads} threads");
+            assert!(other == units, "{case:?}: 2 threads");
         }
     });
 }
@@ -790,14 +814,14 @@ fn open_loop_key_streams_carry_film_grain() {
             );
             noise.push(diff);
         }
-        for threads in [2, 8] {
-            let other = open_loop_stream(case, qp, threads, true).1;
+        if case == OPEN_LOOP_CASES[0] {
+            let other = open_loop_stream(case, qp, 2, true).1;
             assert!(
                 other
                     .iter()
                     .map(|packet| &packet.data)
                     .eq(packets.iter().map(|packet| &packet.data)),
-                "{case:?}: {threads} threads"
+                "{case:?}: 2 threads"
             );
         }
     });

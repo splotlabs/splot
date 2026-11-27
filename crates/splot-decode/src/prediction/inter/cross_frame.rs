@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_core::headers::frame::{floor_log2, get_relative_dist};
+
 const PRIMARY_REF_NONE: u8 = 7;
 const PRIMARY_REF_CHOOSE: u8 = 8;
 const INITIAL_QP_DIFF: u32 = 512;
@@ -12,7 +14,7 @@ pub(crate) enum ResolvedCdfLoad {
     OutOfRangePrimary { index: u8, reference_count: usize },
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn resolve_cdf_load(
     signal_primary_ref_frame: Option<bool>,
     primary_ref_frame: Option<u8>,
@@ -90,7 +92,7 @@ pub(crate) fn resolve_cdf_load(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn choose_primary_secondary_ref_frame(
     signal_primary_ref_frame: Option<bool>,
     primary_ref_frame: Option<u8>,
@@ -112,7 +114,8 @@ pub(crate) fn choose_primary_secondary_ref_frame(
             continue;
         };
         if ref_is_inter.get(slot).copied() != Some(true)
-            || ref_order_hint.get(slot).copied() == Some(u32::MAX)
+            || ref_order_hint.get(slot).copied()
+                == Some(splot_core::headers::frame::RESTRICTED_ORDER_HINT)
             || ref_counter[..slot]
                 .iter()
                 .enumerate()
@@ -187,7 +190,7 @@ impl RankedRef {
             index: u8::try_from(index).unwrap_or(PRIMARY_REF_NONE),
             qp_diff: base_q_idx.abs_diff(current_base_q_idx),
             order_hint,
-            ratio: floor_log2(u64::from(width) * u64::from(height)),
+            ratio: floor_log2(u64::from(width) * u64::from(height)) as i32,
         }
     }
 
@@ -217,14 +220,6 @@ fn is_ref_better(
         return true;
     }
     d0 == d1 && get_relative_dist(ref_disp, best_disp) > 0
-}
-
-fn get_relative_dist(a: i32, b: i32) -> i32 {
-    (a - b).clamp(-127, 127)
-}
-
-pub(crate) fn floor_log2(x: u64) -> i32 {
-    if x == 0 { 0 } else { x.ilog2() as i32 }
 }
 
 #[cfg(test)]

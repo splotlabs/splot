@@ -14,7 +14,8 @@ use super::*;
 /// inner `w - 1` columns and `h - 1` rows, so the outer column and row read
 /// their inner neighbour twice.
 #[must_use]
-pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
+pub(super) fn subpel_predict_bilinear_search_window_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
@@ -47,18 +48,41 @@ pub(super) fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     }
     let at = [origin, view.stride];
     let phases = phases(params);
+    if phases == [0, 0] {
+        let source = &view.samples[origin..];
+        if w == 16 {
+            copy_fullpel_rows::<16>(source, view.stride, h, output);
+        } else {
+            copy_fullpel_rows::<24>(source, view.stride, h, output);
+        }
+        return true;
+    }
     #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+    if let Some(t) = runner.avx2_token() {
         avx2::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
     #[cfg(target_arch = "aarch64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_neon() {
+    if let Some(t) = runner.neon_token() {
         neon::window(t, view.samples, at, [w, h], phases, output);
         return true;
     }
-    baseline_simd!(simd => generic::window(simd, view.samples, at, [w, h], phases, output));
+    runner.search_window_generic(view.samples, at, [w, h], phases, output);
     true
+}
+
+/// Copies the inner samples and replicates the leading column and row.
+#[inline]
+fn copy_fullpel_rows<const W: usize>(source: &[u8], stride: usize, h: usize, output: &mut [u8]) {
+    let rows = &mut output[..(h - 1) * W];
+    for (row, samples) in rows.as_chunks_mut::<W>().0[1..]
+        .iter_mut()
+        .zip(source.chunks(stride))
+    {
+        row[0] = samples[0];
+        row[1..].copy_from_slice(&samples[..W - 1]); // splot-copy-ok: full-pel prediction
+    }
+    rows.copy_within(W..2 * W, 0); // splot-copy-ok: replicate the first clipped prediction row
 }
 
 /// The horizontal and vertical filter phases of `params`.
@@ -77,14 +101,57 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     output: &mut [u16],
     stride: usize,
 ) -> bool {
+    bilinear_u8(BaselineSubpel, view, params, output, stride)
+}
+
+/// Typed [`subpel_predict_bilinear_u8`] using caller-selected `backend`.
+#[must_use]
+pub fn subpel_predict_bilinear_u8_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    bilinear_u8(TypedSubpel(backend), view, params, output, stride)
+}
+
+#[inline]
+fn bilinear_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    let Some((samples, geometry, phases)) = prepare_bilinear_u8(view, params, output, stride)
+    else {
+        return false;
+    };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = runner.avx2_token() {
+        avx2::block(t, samples, geometry, phases, output, stride);
+        return true;
+    }
+    runner.bilinear_u8_generic(samples, geometry, phases, output, stride);
+    true
+}
+
+type PreparedBilinearU8<'a> = (&'a [u8], ([usize; 2], [usize; 2]), [u8; 2]);
+
+#[inline]
+fn prepare_bilinear_u8<'a, T: ReconSample>(
+    view: &ReferencePlaneView<'a, T>,
+    params: &SubpelPredictParams,
+    output: &[u16],
+    stride: usize,
+) -> Option<PreparedBilinearU8<'a>> {
     let (w, h) = (params.w, params.h);
     let (x0, y0) = (
         params.start_x >> SCALE_SUBPEL_BITS,
         params.start_y >> SCALE_SUBPEL_BITS,
     );
-    let Some(view) = view.as_u8() else {
-        return false;
-    };
+    let view = view.as_u8()?;
     if params.interp != InterpolationFilter::Bilinear
         || (params.step_x, params.step_y) != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS)
         || w == 0
@@ -98,22 +165,18 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
         || x0 + w as i32 > params.last_x.min(view.width as i32 - 1)
         || y0 + h as i32 > params.last_y.min(view.readable_rows as i32 - 1)
     {
-        return false;
+        return None;
     }
     let origin = y0 as usize * view.stride + x0 as usize;
     let last_load = origin + h * view.stride + w + 8;
     if last_load > view.samples.len() || u32::try_from(last_load).is_err() {
-        return false;
+        return None;
     }
-    let geometry = ([origin, view.stride], [w, h]);
-    let phases = phases(params);
-    #[cfg(target_arch = "x86_64")]
-    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::block(t, view.samples, geometry, phases, output, stride);
-        return true;
-    }
-    baseline_simd!(simd => generic::block(simd, view.samples, geometry, phases, output, stride));
-    true
+    Some((
+        view.samples,
+        ([origin, view.stride], [w, h]),
+        phases(params),
+    ))
 }
 
 /// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
@@ -139,8 +202,39 @@ pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
 pub fn refinemv_area_sad_u8<T: ReconSample>(
     views: [&ReferencePlaneView<'_, T>; 2],
     corners: [[usize; 2]; 2],
-    [w, h]: [usize; 2],
+    size: [usize; 2],
 ) -> Option<u32> {
+    area_sad_u8(BaselineSubpel, views, corners, size)
+}
+
+/// Typed [`refinemv_area_sad_u8`] using caller-selected `backend`.
+#[must_use]
+pub fn refinemv_area_sad_u8_with<B: SimdBackend, T: ReconSample>(
+    backend: B,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    corners: [[usize; 2]; 2],
+    size: [usize; 2],
+) -> Option<u32> {
+    area_sad_u8(TypedSubpel(backend), views, corners, size)
+}
+
+#[inline]
+fn area_sad_u8<R: SubpelRunner, T: ReconSample>(
+    runner: R,
+    views: [&ReferencePlaneView<'_, T>; 2],
+    corners: [[usize; 2]; 2],
+    size: [usize; 2],
+) -> Option<u32> {
+    let (planes, strides) = prepare_area_sad_u8(views, corners, size)?;
+    Some(runner.refinemv_area_sad_u8(planes, strides, size))
+}
+
+#[inline]
+fn prepare_area_sad_u8<'a, T: ReconSample>(
+    views: [&ReferencePlaneView<'a, T>; 2],
+    corners: [[usize; 2]; 2],
+    [w, h]: [usize; 2],
+) -> Option<([&'a [u8]; 2], [usize; 2])> {
     if !matches!(w, 12 | 20) || h < 2 || !h.is_multiple_of(2) {
         return None;
     }
@@ -159,12 +253,12 @@ pub fn refinemv_area_sad_u8<T: ReconSample>(
             .get(start..start + (h - 2) * view.stride + w.max(16))?;
         *stride = view.stride;
     }
-    Some(baseline_simd!(simd => generic::area_sad(simd, planes, [0; 2], strides, [w, h])))
+    Some((planes, strides))
 }
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
 /// `threshold`, and the SADs of the 24 neighbours in [`REFINEMV_NEIGHBORS`] order.
-#[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+#[expect(clippy::inline_always, reason = "per refine-MV unit search")]
 #[inline(always)]
 fn best_offset(
     center: impl FnOnce() -> u32,
@@ -658,7 +752,7 @@ pub(super) mod avx2 {
 /// The bilinear windows and blocks in generic `u16` lanes, and the SADs in
 /// generic byte lanes.
 pub(super) mod generic {
-    use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u64x2};
+    use fearless_simd::{Simd, prelude::*, u8x16, u16x8, u16x16, u64x2};
 
     /// The source index, from `base`, of the left or right tap of output
     /// columns `first..first + 16` of an `m`-sample row, clamped to the row.
@@ -686,7 +780,7 @@ pub(super) mod generic {
         [taps(16, 15, 23, false), taps(16, 15, 23, true)],
     ];
 
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     pub(super) fn load<S: Simd>(simd: S, bytes: &[u8], at: usize) -> u8x16<S> {
         bytes
@@ -698,7 +792,7 @@ pub(super) mod generic {
     }
 
     /// `Round2((16 - phase) * top + phase * bottom, 8)` of two horizontal rows.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     fn blend<S: Simd>(simd: S, phase: u8, top: u16x8<S>, bottom: u16x8<S>) -> u16x8<S> {
         let weights = (
@@ -790,7 +884,7 @@ pub(super) mod generic {
     /// The bilinear `w x h` block, `w` a multiple of 8, of the rows of
     /// `source` from `origin`, into `output` at `stride`.
     #[inline(never)]
-    pub(super) fn block<S: Simd>(
+    pub(in crate::subpel_mc) fn block<S: Simd>(
         simd: S,
         source: &[u8],
         ([origin, source_stride], [w, h]): ([usize; 2], [usize; 2]),
@@ -848,11 +942,8 @@ pub(super) mod generic {
         )
     }
 
-    /// The 16-bit refine-MV search of `STRIDE`-wide windows of `AREA`
-    /// samples: per row the full vectors from columns 0 and 8 and the last
-    /// four samples of the vector ending at the row end, each column vector
-    /// summed in its own `u16` lanes, which ten 12-bit rows keep below
-    /// `2^16`.
+    /// Searches the 16-bit windows using fixed-size spans. Each span ends
+    /// immediately after the last sampled row's vector loads.
     #[inline]
     pub(in crate::subpel_mc) fn search_u16<
         S: Simd,
@@ -870,36 +961,44 @@ pub(super) mod generic {
         else {
             return (0, 0);
         };
-        let zero = u16x8::splat(simd, 0);
-        let high = u16x8::load_array(simd, [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]);
-        let lanes = |window: &[u16; AREA], at: usize| {
-            window
-                .get(at..)
-                .and_then(<[u16]>::first_chunk::<8>)
-                .map_or(zero, |lanes| u16x8::load_array_ref(simd, lanes))
-        };
         let width = STRIDE - 4;
+        let span = const {
+            let last_load_end = if STRIDE == 16 { 16 } else { 20 };
+            let span = (SAD_H - 2) * STRIDE + last_load_end;
+
+            assert!(4 * STRIDE + 4 + span <= AREA);
+            span
+        };
+        let high = u16x8::load_array(simd, [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]);
         let sad = |dy: i32, dx: i32| -> u32 {
             let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
             let (a, b) = (start(dy, dx), start(-dy, -dx));
-            let mut sums = [zero; 3];
+            let (a, b) = (&first[a..a + span], &second[b..b + span]);
+            let mut head = u16x16::splat(simd, 0);
+            let mut tail = u16x8::splat(simd, 0);
             for row in (0..SAD_H).step_by(2) {
-                let diff = |at: usize| {
-                    let at = row * STRIDE + at;
-                    let (x, y) = (lanes(first, a + at), lanes(second, b + at));
-                    x.max(y) - x.min(y)
-                };
-                for (column, sum) in sums.iter_mut().enumerate().take(width / 8) {
-                    *sum += diff(8 * column);
+                let at = row * STRIDE;
+                let x = u16x16::from_slice(simd, &a[at..at + 16]);
+                let y = u16x16::from_slice(simd, &b[at..at + 16]);
+                head += x.max(y) - x.min(y);
+                if STRIDE == 24 {
+                    let x = u16x8::from_slice(simd, &a[at + 12..at + 20]);
+                    let y = u16x8::from_slice(simd, &b[at + 12..at + 20]);
+                    tail += x.max(y) - x.min(y);
                 }
-                sums[2] += diff(width - 8) & high;
             }
-            let total = sums
-                .iter()
-                .fold(fearless_simd::u32x4::splat(simd, 0), |total, sum| {
-                    let (low, high) = sum.widen();
-                    total + low + high
-                });
+
+            let (lo, mut hi) = head.split();
+            if STRIDE == 16 {
+                hi &= !high;
+            }
+            let total = [lo, hi, tail & high].into_iter().fold(
+                fearless_simd::u32x4::splat(simd, 0),
+                |total, lanes| {
+                    let (lo, hi) = lanes.widen();
+                    total + lo + hi
+                },
+            );
             total.reduce_sum() >> shift
         };
         super::best_offset(
@@ -913,9 +1012,9 @@ pub(super) mod generic {
     /// `Σ |a - b|` over every other row of the `w x h` areas (`w` 12 or 20)
     /// from `starts` in `planes` at `strides`: each row's masked absolute
     /// differences widened and summed in `u16` lanes.
-    #[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+    #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
-    pub(super) fn area_sad<S: Simd>(
+    pub(in crate::subpel_mc) fn area_sad<S: Simd>(
         simd: S,
         planes: [&[u8]; 2],
         starts: [usize; 2],

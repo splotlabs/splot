@@ -5,7 +5,7 @@
 //! describe (text + JSON) plus behavioral assertions for `--list`, unknown ids, and
 //! the missing-argument path.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![expect(clippy::expect_used)]
 
 use std::process::{Command, Output};
 

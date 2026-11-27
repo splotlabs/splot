@@ -26,9 +26,12 @@
 //! dimension (whose adjusted parity differs) rescale correctly.
 
 use fearless_simd::{Bytes as _, Simd, SimdBase as _, i32x4, i64x2};
+use splot_core::simd::SimdBackend;
 
 use crate::inverse_transform::InverseTransform1dType;
-use crate::inverse_transform_2d_8bit::{Transform8, inverse_transform_2d_8bit};
+use crate::inverse_transform_2d_8bit::{
+    Transform8, inverse_transform_2d_8bit, inverse_transform_2d_8bit_with,
+};
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum 1D transform length: the § 7.15.4 adjusted transform size caps each
@@ -118,12 +121,91 @@ pub fn inverse_transform_2d(
     inverse_transform_2d_with_scratch(params, dequant, residual, &mut intermediate)
 }
 
-pub(super) fn inverse_transform_2d_with_scratch(
+/// Applies the § 7.15.4.1 2D inverse transform using `backend`.
+///
+/// # Errors
+/// Returns the same shape and buffer validation errors as
+/// [`inverse_transform_2d`].
+pub fn inverse_transform_2d_with<B: SimdBackend>(
+    backend: B,
     params: &InverseTransform2d,
     dequant: &[i32],
     residual: &mut [i32],
-    intermediate: &mut [i32; MAX_DIM * MAX_DIM],
 ) -> Result<()> {
+    let mut intermediate = [0i32; MAX_DIM * MAX_DIM];
+    inverse_transform_2d_with_scratch_and_backend(
+        backend,
+        params,
+        dequant,
+        residual,
+        &mut intermediate,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum Transform2dStage {
+    Walsh,
+    Matrix(Transform8),
+}
+
+trait Transform2dRunner: Copy {
+    fn walsh(self, dequant: &[i32], residual: &mut [i32]);
+    fn matrix(
+        self,
+        transform: Transform8,
+        dequant: &[i32],
+        residual: &mut [i32],
+        intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+    ) -> bool;
+}
+
+#[derive(Clone, Copy)]
+struct BaselineTransform2d;
+
+impl Transform2dRunner for BaselineTransform2d {
+    #[inline]
+    fn walsh(self, dequant: &[i32], residual: &mut [i32]) {
+        baseline_simd!(simd => walsh_hadamard_4x4(simd, dequant, residual));
+    }
+
+    #[inline]
+    fn matrix(
+        self,
+        transform: Transform8,
+        dequant: &[i32],
+        residual: &mut [i32],
+        intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+    ) -> bool {
+        inverse_transform_2d_8bit(transform, dequant, residual, intermediate)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TypedTransform2d<B: SimdBackend>(B);
+
+impl<B: SimdBackend> Transform2dRunner for TypedTransform2d<B> {
+    #[inline]
+    fn walsh(self, dequant: &[i32], residual: &mut [i32]) {
+        splot_core::with_simd!(self.0, simd => walsh_hadamard_4x4(simd, dequant, residual));
+    }
+
+    #[inline]
+    fn matrix(
+        self,
+        transform: Transform8,
+        dequant: &[i32],
+        residual: &mut [i32],
+        intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+    ) -> bool {
+        inverse_transform_2d_8bit_with(self.0, transform, dequant, residual, intermediate)
+    }
+}
+
+fn prepare_inverse_transform_2d(
+    params: &InverseTransform2d,
+    dequant_len: usize,
+    residual_len: usize,
+) -> Result<(usize, Transform2dStage)> {
     let (log2_w, log2_h) = (params.log2_width, params.log2_height);
     if !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_w)
         || !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_h)
@@ -139,37 +221,82 @@ pub(super) fn inverse_transform_2d_with_scratch(
     let w = 1usize << log2_w.min(5);
     let h = 1usize << log2_h.min(5);
     let expected = w * h;
-    if dequant.len() > expected || !dequant.len().is_multiple_of(w) || residual.len() != expected {
+    if dequant_len > expected || !dequant_len.is_multiple_of(w) || residual_len != expected {
         return Err(ReconError::InverseTransform2dBufferMismatch {
             expected,
-            dequant_len: dequant.len(),
-            residual_len: residual.len(),
+            dequant_len,
+            residual_len,
         });
     }
 
-    if params.lossless {
-        baseline_simd!(simd => walsh_hadamard_4x4(simd, dequant, residual));
-        return Ok(());
-    }
-    let transform = Transform8 {
-        bit_depth: params.bit_depth,
-        row: params.row_type,
-        col: params.col_type,
-        w,
-        h,
-        rescale: log2_w.abs_diff(log2_h) % 2 == 1,
-        row_shift: params.row_shift,
-        col_shift: params.col_shift,
-        dequant: None,
+    let stage = if params.lossless {
+        Transform2dStage::Walsh
+    } else {
+        Transform2dStage::Matrix(Transform8 {
+            bit_depth: params.bit_depth,
+            row: params.row_type,
+            col: params.col_type,
+            w,
+            h,
+            rescale: log2_w.abs_diff(log2_h) % 2 == 1,
+            row_shift: params.row_shift,
+            col_shift: params.col_shift,
+            dequant: None,
+        })
     };
-    if inverse_transform_2d_8bit(transform, dequant, residual, intermediate) {
-        return Ok(());
+    Ok((expected, stage))
+}
+
+#[inline]
+fn run_inverse_transform_2d<R: Transform2dRunner>(
+    runner: R,
+    params: &InverseTransform2d,
+    dequant: &[i32],
+    residual: &mut [i32],
+    intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+) -> Result<()> {
+    let (expected, stage) = prepare_inverse_transform_2d(params, dequant.len(), residual.len())?;
+    match stage {
+        Transform2dStage::Walsh => {
+            runner.walsh(dequant, residual);
+            Ok(())
+        }
+        Transform2dStage::Matrix(transform) => {
+            if runner.matrix(transform, dequant, residual, intermediate) {
+                return Ok(());
+            }
+            Err(ReconError::InverseTransform2dBufferMismatch {
+                expected,
+                dequant_len: dequant.len(),
+                residual_len: residual.len(),
+            })
+        }
     }
-    Err(ReconError::InverseTransform2dBufferMismatch {
-        expected,
-        dequant_len: dequant.len(),
-        residual_len: residual.len(),
-    })
+}
+
+pub(super) fn inverse_transform_2d_with_scratch(
+    params: &InverseTransform2d,
+    dequant: &[i32],
+    residual: &mut [i32],
+    intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+) -> Result<()> {
+    run_inverse_transform_2d(BaselineTransform2d, params, dequant, residual, intermediate)
+}
+
+pub(super) fn inverse_transform_2d_with_scratch_and_backend<B: SimdBackend>(
+    backend: B,
+    params: &InverseTransform2d,
+    dequant: &[i32],
+    residual: &mut [i32],
+    intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+) -> Result<()> {
+    run_inverse_transform_2d(
+        TypedTransform2d(backend.narrow()),
+        params,
+        dequant,
+        residual,
+        intermediate,
+    )
 }
 
 /// The lossless § 7.15.2.2 Walsh-Hadamard row pass (`shift` 3) and column
@@ -194,7 +321,7 @@ fn walsh_hadamard_4x4<S: Simd>(simd: S, dequant: &[i32], residual: &mut [i32]) {
 /// The § 7.15.2.2 butterfly with input `[src[0], src[1], src[2], src[3]]`
 /// one vector each, each input clamped to the § 7.14.4 dequant range
 /// `±2^17` and shifted down by `shift` first.
-#[allow(clippy::many_single_char_names, reason = "the § 7.15.2.2 names")]
+#[expect(clippy::many_single_char_names, reason = "the § 7.15.2.2 names")]
 #[inline]
 fn walsh_hadamard_lanes<S: Simd>(simd: S, src: [i32x4<S>; 4], shift: u32) -> [i32x4<S>; 4] {
     let bound = 1 << 17;
@@ -232,7 +359,6 @@ fn transpose_4x4<S: Simd>(simd: S, [r0, r1, r2, r3]: [i32x4<S>; 4]) -> [i32x4<S>
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::inverse_transform::{
@@ -959,5 +1085,38 @@ mod tests {
                 residual_len: 16
             })
         ));
+    }
+
+    #[test]
+    fn typed_backend_matches_compatibility_route() {
+        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+
+        struct Check<'a>(&'a InverseTransform2d, &'a [i32], &'a [i32]);
+        impl SimdScope<()> for Check<'_> {
+            fn run<B: SimdBackend>(self, backend: B) {
+                let mut got = vec![0i32; self.2.len()];
+                inverse_transform_2d_with(backend, self.0, self.1, &mut got).unwrap();
+                assert_eq!(got, self.2);
+            }
+        }
+
+        let backend = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        let cases = [
+            (
+                params(2, 2, true, dct(), dct(), 0, 0),
+                vec![40, -17, 9, 13, -5, 22, -31, 8, 12, 0, -4, 19, 3, -9, 14, -2],
+                16usize,
+            ),
+            (
+                params(4, 3, false, dct(), adst(), 7, 11),
+                (0..64).map(|i| ((i * 73) % 401) - 200).collect::<Vec<_>>(),
+                128usize,
+            ),
+        ];
+        for (tx, dequant, out_len) in cases {
+            let mut expected = vec![0i32; out_len];
+            inverse_transform_2d(&tx, &dequant, &mut expected).unwrap();
+            backend.enter(Check(&tx, &dequant, &expected));
+        }
     }
 }

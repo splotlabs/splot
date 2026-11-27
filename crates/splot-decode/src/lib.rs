@@ -12,6 +12,7 @@
 //! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
 //! planned streams to hash, raw, or Y4M byte output, or discards decoded output.
 //! [`encoder_syntax`] lends the tile parser's contexts and CDF rows to `splot-encode`.
+//! Enable the `block-evidence` Cargo feature to capture bounded block records.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
@@ -30,7 +31,7 @@ pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
 /// Runs `$body` with `$simd` bound to the baseline SIMD token: the AVX2
 /// token directly where the baseline has it, since the closure `dispatch!`
 /// wraps its body in is not inlined, else through `dispatch!`.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(test, target_arch = "x86_64"))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         match fearless_simd::Level::baseline().as_avx2() {
@@ -40,7 +41,7 @@ macro_rules! baseline_simd {
     };
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(test, target_arch = "aarch64"))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         match fearless_simd::Level::baseline().as_neon() {
@@ -51,15 +52,18 @@ macro_rules! baseline_simd {
 }
 
 /// [`baseline_simd`] for targets without an AVX2 or NEON baseline.
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(all(test, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
 macro_rules! baseline_simd {
     ($simd:ident => $body:expr) => {
         fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
     };
 }
+#[cfg(test)]
 pub(crate) use baseline_simd;
 
 mod bitstream;
+#[cfg(feature = "block-evidence")]
+pub mod block_evidence;
 pub mod context;
 mod decoder;
 pub mod diagnostic;
@@ -84,9 +88,13 @@ mod test_support;
 mod tile;
 
 pub use bitstream::stream_plan;
-pub use context::DecodeContext;
+pub use context::{DecodeContext, DecodeScope, TypedDecodeContext};
 use core::fmt;
-pub use decoder::{DataProps, Decoder, DecoderSettings, Picture, PictureSamples, SendStatus};
+pub use decoder::{
+    AtlasComposite, AtlasCompositionError, AtlasCompositor, BaseQuantizer, BaseQuantizerOrigin,
+    CodedFrameEvent, DataProps, Decoder, DecoderSettings, ObuLocation, Picture, PictureFrame,
+    PictureProvenance, PictureSamples, SendStatus,
+};
 pub use diagnostic::{
     DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeMalformedSourceDetails,
     DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
@@ -99,10 +107,17 @@ pub use hash_report::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
     DECODE_HASH_REPORT_RAW_INTERMEDIATE_OUTPUT_VARIANT, DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN,
-    DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport, DecodeOutputVariant,
+    DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeOutputVariant,
+};
+pub use pipeline::atlas::{AtlasAssociation, AtlasLayout, ExternalAtlases};
+pub use reference::observation::{
+    ReferenceFrameEvent, ReferenceMapping, ReferenceMappingOrigin, ReferencePicture,
+    ReferenceSlotState, ReferenceSnapshot,
 };
 pub use runtime::DecodeRuntimeConfig;
 pub use splot_core::headers::frame::FrameType;
+pub use splot_core::simd::{CpuCapabilities, SelectedBackend, SimdPolicy, UnsupportedBackendError};
+pub use splot_core::types::{EmbeddedLayerId, ExtendedLayerId, TemporalLayerId};
 pub use splot_parallel::{FrameDelay, ThreadCount};
 pub use splot_recon::Y4mFrameRate;
 pub use splot_recon::{
@@ -111,7 +126,8 @@ pub use splot_recon::{
 pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,
-    DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure,
+    DecodeStreamPlan, DecodeUnsupportedReason, DecodeUnsupportedStructure, EmbeddedLayerSelection,
+    ExtendedLayerSelection, OperatingPointSelection, OperatingPointTracker, TemporalLayerSelection,
 };
 
 mod limits;

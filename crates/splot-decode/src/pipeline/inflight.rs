@@ -27,7 +27,7 @@ use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, RowScheduler};
+use splot_parallel::CompletionCell;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame,
 };
@@ -673,10 +673,12 @@ impl InflightRing {
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
+#[expect(clippy::too_many_arguments)]
 pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
+    backend: impl splot_core::simd::SimdBackend,
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
-    rows: Option<&RowScheduler>,
+    rows: Option<&super::frame_tasks::DecoderRowScheduler>,
     pools: &mut super::frame_tasks::RowPools,
     ring: &mut InflightRing,
     frames: &mut super::FrameStore,
@@ -707,7 +709,7 @@ pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
         frames,
         frame_index,
     )?;
-    pools.push_finish(rows, pending, walked)?;
+    pools.push_finish(backend, rows, pending, walked)?;
     Ok(slot)
 }
 

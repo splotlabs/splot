@@ -56,7 +56,7 @@ pub(super) static DCT32_ODD: [[[u32; 8]; 2]; 8] = dct32_odd_pairs();
 /// `8g..8g + 8`: rows `8g, 8g + 4` (`EE`) and `8g + 2, 8g + 6` (`EO`) over
 /// outputs `0..8`, each symmetric (`EE`) or antisymmetric (`EO`) about
 /// `7.5` within the first 16 outputs.
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "kernel k, rows a to d, group g and output n, as in § 7.15.2.1"
 )]
@@ -81,7 +81,7 @@ const fn dct32_even_pairs() -> [[[u32; 8]; 2]; 4] {
 
 /// The odd `DCT32` row pairs `4s + 1, 4s + 3` over outputs `0..8` and,
 /// reversed, `8..16`, each row antisymmetric about `15.5`.
-#[allow(
+#[expect(
     clippy::many_single_char_names,
     reason = "kernel k, rows a to d, group g and output n, as in § 7.15.2.1"
 )]

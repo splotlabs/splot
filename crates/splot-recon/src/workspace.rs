@@ -20,6 +20,7 @@ use crate::{
     IntraRectBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect, PlaneRef, PlaneSize,
     ReconError, ReconSample, Result,
 };
+use splot_core::simd::SimdBackend;
 
 mod owned_rect;
 #[path = "workspace_edges.rs"]
@@ -33,8 +34,134 @@ mod workspace_rows;
 use crate::plane_buf::PlaneSamples;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
-pub use workspace_interintra::{InterIntraMode, wedge_mask_into, wedge_mask_rows, wedge_mask_unit};
+pub use workspace_interintra::{
+    InterIntraMode, wedge_mask_into, wedge_mask_into_with, wedge_mask_rows, wedge_mask_unit,
+};
 pub use workspace_rows::{CurrentFrameRectRowsMut, IntraBlockFrame, WorkspaceRectRows};
+
+trait WorkspaceRunner: Copy {
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool;
+
+    fn samples_exceed<T: ReconSample>(self, samples: &[T], max_sample: u16) -> bool;
+
+    fn copy_u16_to_u8(self, target: &mut [u8], samples: &[u16]);
+
+    fn add_residual_in_place<T: ReconSample>(
+        self,
+        samples: &mut [T],
+        residual: &[i32],
+        max: i32,
+    ) -> Result<()>;
+
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        residual: i32,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct BaselineWorkspace;
+
+#[derive(Clone, Copy)]
+struct TypedWorkspace<B>(B);
+
+#[inline]
+fn copy_u16_narrow_simd<S: fearless_simd::Simd>(simd: S, target: &mut [u8], samples: &[u16]) {
+    use fearless_simd::{prelude::*, u16x8};
+    let (chunks, tail) = target.as_chunks_mut::<16>();
+    let (sources, source_tail) = samples.as_chunks::<16>();
+    let narrow = |lanes: &[u16; 16]| {
+        let (low, high) = lanes.split_at(8);
+        u16x8::from_slice(simd, low)
+            .narrow(u16x8::from_slice(simd, high))
+            .to_array()
+    };
+    for (target, source) in chunks.iter_mut().zip(sources) {
+        *target = narrow(source);
+    }
+    if !tail.is_empty() {
+        let mut padded = [0; 16];
+        padded[..tail.len()].copy_from_slice(source_tail); // splot-copy-ok: zero-padded last chunk of a narrowed row
+        tail.copy_from_slice(&narrow(&padded)[..tail.len()]); // splot-copy-ok: narrowed last chunk into the frame row
+    }
+}
+
+impl WorkspaceRunner for BaselineWorkspace {
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        u16_samples_exceed(samples, max_sample)
+    }
+
+    #[inline]
+    fn samples_exceed<T: ReconSample>(self, samples: &[T], max_sample: u16) -> bool {
+        samples_exceed(samples, max_sample)
+    }
+
+    #[inline]
+    fn copy_u16_to_u8(self, target: &mut [u8], samples: &[u16]) {
+        baseline_simd!(simd => copy_u16_narrow_simd(simd, target, samples));
+    }
+
+    #[inline]
+    fn add_residual_in_place<T: ReconSample>(
+        self,
+        samples: &mut [T],
+        residual: &[i32],
+        max: i32,
+    ) -> Result<()> {
+        crate::reconstruct::add_residual_in_place(samples, residual, max)
+    }
+
+    #[inline]
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        residual: i32,
+    ) {
+        crate::reconstruct::add_constant_u8_rows(samples, geometry, residual);
+    }
+}
+
+impl<B: SimdBackend> WorkspaceRunner for TypedWorkspace<B> {
+    #[inline]
+    fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
+        crate::sample_range::u16_samples_exceed_with(self.0, samples, max_sample)
+    }
+
+    #[inline]
+    fn samples_exceed<T: ReconSample>(self, samples: &[T], max_sample: u16) -> bool {
+        crate::sample_range::samples_exceed_with(self.0, samples, max_sample)
+    }
+
+    #[inline]
+    fn copy_u16_to_u8(self, target: &mut [u8], samples: &[u16]) {
+        let narrow = self.0.narrow();
+        splot_core::with_simd!(narrow, simd => copy_u16_narrow_simd(simd, target, samples));
+    }
+
+    #[inline]
+    fn add_residual_in_place<T: ReconSample>(
+        self,
+        samples: &mut [T],
+        residual: &[i32],
+        max: i32,
+    ) -> Result<()> {
+        crate::reconstruct::add_residual_in_place_with(self.0, samples, residual, max)
+    }
+
+    #[inline]
+    fn add_constant_u8_rows(
+        self,
+        samples: &mut [u8],
+        geometry: (usize, usize, usize, usize),
+        residual: i32,
+    ) {
+        crate::reconstruct::add_constant_u8_rows_with(self.0, samples, geometry, residual);
+    }
+}
 
 macro_rules! contiguous_rect_writer {
     ($name:ident, $sample:ty, $slice_mut:expr) => {
@@ -218,8 +345,9 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
         ))
     }
 
-    fn write_rect(
+    fn write_rect_with_runner<R: WorkspaceRunner>(
         &mut self,
+        runner: R,
         rect: PlaneRect,
         samples: &[T],
         row_stride_samples: usize,
@@ -227,10 +355,11 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     ) -> Result<()> {
         let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
         self.ensure_rect(rect)?;
-        write_rect_to_samples(
+        let stride = self.stride();
+        write_rect_to_samples_with_runner(
+            runner,
             self.plane,
-            self.samples,
-            self.stride(),
+            (self.samples, stride),
             rect,
             (rect.x(), rect.y() - self.rect.y()),
             (samples, row_stride_samples),
@@ -331,13 +460,18 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
     /// Adds one residual row, which spans at least the clipped target width.
-    #[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
     #[inline(always)]
-    fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
+    fn add_row<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        row: usize,
+        residual: &[i32],
+    ) -> Result<()> {
         let target_start = self.base + row * self.stride;
         let samples = &mut self.samples[target_start..target_start + self.rect.width()];
         debug_assert!(residual.len() >= samples.len());
-        crate::reconstruct::add_residual_in_place(samples, residual, i32::from(self.max_sample))
+        runner.add_residual_in_place(samples, residual, i32::from(self.max_sample))
     }
 }
 
@@ -376,6 +510,41 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
     }
 
+    fn write_rect_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        match self {
+            Self::Frame(workspace) => {
+                workspace.write_rect_with_runner(runner, plane, rect, samples, row_stride_samples)
+            }
+            Self::Rect(surface) => {
+                let max_sample = surface.info().bit_depth().max_sample();
+                surface.plane_mut(plane)?.write_rect_with_runner(
+                    runner,
+                    rect,
+                    samples,
+                    row_stride_samples,
+                    max_sample,
+                )
+            }
+            Self::OwnedRect(surface) => {
+                let max_sample = surface.info().bit_depth().max_sample();
+                surface.plane_mut(plane)?.write_rect_with_runner(
+                    runner,
+                    rect,
+                    samples,
+                    row_stride_samples,
+                    max_sample,
+                )
+            }
+        }
+    }
+
     /// Writes row-strided samples into a checked target rectangle.
     ///
     /// Frame-edge overhang is clipped exactly as for
@@ -392,38 +561,33 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         samples: &[T],
         row_stride_samples: usize,
     ) -> Result<()> {
-        match self {
-            Self::Frame(workspace) => {
-                workspace.write_rect(plane, rect, samples, row_stride_samples)
-            }
-            Self::Rect(surface) => {
-                let max_sample = surface.info().bit_depth().max_sample();
-                surface
-                    .plane_mut(plane)?
-                    .write_rect(rect, samples, row_stride_samples, max_sample)
-            }
-            Self::OwnedRect(surface) => {
-                let max_sample = surface.info().bit_depth().max_sample();
-                surface
-                    .plane_mut(plane)?
-                    .write_rect(rect, samples, row_stride_samples, max_sample)
-            }
-        }
+        self.write_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
     }
 
-    /// Writes row-strided `u16` prediction samples directly into this surface.
-    ///
-    /// Source geometry and every sample are validated before the first target
-    /// write, preserving the fail-atomic behavior of [`Self::write_rect`].
-    /// Frame-edge overhang is clipped, while row and rectangle targets reject
-    /// writes outside their exclusive region.
+    /// Typed [`Self::write_rect`] using caller-selected `backend`.
     ///
     /// # Errors
-    /// Returns [`ReconError`] for absent planes, invalid source or target
-    /// geometry, samples unsupported by `T`, or values outside the active bit
-    /// depth.
-    pub fn write_u16_rect(
+    /// Returns the same validation errors as [`Self::write_rect`].
+    pub fn write_rect_with<B: SimdBackend>(
         &mut self,
+        backend: B,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        self.write_rect_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            rect,
+            samples,
+            row_stride_samples,
+        )
+    }
+
+    fn write_u16_rect_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
         plane: PlaneId,
         rect: PlaneRect,
         samples: &[u16],
@@ -448,7 +612,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             });
         }
         let max_sample = self.info().bit_depth().max_sample();
-        if u16_samples_exceed(samples, max_sample) {
+        if runner.u16_samples_exceed(samples, max_sample) {
             for (sample_index, &sample) in samples.iter().enumerate() {
                 T::try_from_u16(sample)?;
                 if sample > max_sample {
@@ -462,6 +626,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             }
         }
 
+        let copy = |dst: &mut [T], src: &[u16]| copy_u16_samples(runner, dst, src);
         match self {
             Self::Frame(workspace) => {
                 let target = workspace.plane_mut(plane)?;
@@ -473,7 +638,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                     (rect.x(), local_y),
                     rect,
                     (samples, row_stride_samples),
-                    copy_u16_samples,
+                    copy,
                 )
             }
             Self::Rect(surface) => {
@@ -486,7 +651,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                     (rect.x(), rect.y() - target.rect.y()),
                     rect,
                     (samples, row_stride_samples),
-                    copy_u16_samples,
+                    copy,
                 )
             }
             Self::OwnedRect(surface) => {
@@ -499,10 +664,52 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                     (rect.x() - target_rect.x(), rect.y() - target_rect.y()),
                     rect,
                     (samples, row_stride_samples),
-                    copy_u16_samples,
+                    copy,
                 )
             }
         }
+    }
+
+    /// Writes row-strided `u16` prediction samples directly into this surface.
+    ///
+    /// Source geometry and every sample are validated before the first target
+    /// write, preserving the fail-atomic behavior of [`Self::write_rect`].
+    /// Frame-edge overhang is clipped, while row and rectangle targets reject
+    /// writes outside their exclusive region.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for absent planes, invalid source or target
+    /// geometry, samples unsupported by `T`, or values outside the active bit
+    /// depth.
+    pub fn write_u16_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[u16],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        self.write_u16_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
+    }
+
+    /// Typed [`Self::write_u16_rect`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::write_u16_rect`].
+    pub fn write_u16_rect_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[u16],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        self.write_u16_rect_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            rect,
+            samples,
+            row_stride_samples,
+        )
     }
 
     contiguous_rect_writer!(with_contiguous_rect_mut, T, Some);
@@ -603,6 +810,45 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.write_rect(plane, rect, samples, size.width())
     }
 
+    /// Typed [`Self::write_rect_block`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::write_rect_block`].
+    pub fn write_rect_block_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        samples: &[T],
+    ) -> Result<()> {
+        let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
+        self.write_rect_with(backend, plane, rect, samples, size.width())
+    }
+
+    #[inline]
+    fn add_residual_rect_block_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
+        let source_stride = size.width();
+        let mut target = self.residual_rect_target(plane, rect)?;
+        let rows = residual
+            .chunks_exact(source_stride)
+            .take(target.rect.height());
+        for (row, residual) in rows.enumerate() {
+            target.add_row(runner, row, residual)?;
+        }
+        Ok(())
+    }
+
     /// Adds a contiguous signed residual block directly to reconstructed samples.
     ///
     /// The complete source and target geometry is validated before the first
@@ -622,16 +868,31 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
         residual: &[i32],
     ) -> Result<()> {
-        let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
-        let source_stride = size.width();
-        let mut target = self.residual_rect_target(plane, rect)?;
-        let rows = residual
-            .chunks_exact(source_stride)
-            .take(target.rect.height());
-        for (row, residual) in rows.enumerate() {
-            target.add_row(row, residual)?;
-        }
-        Ok(())
+        self.add_residual_rect_block_with_runner(BaselineWorkspace, plane, x, y, size, residual)
+    }
+
+    /// Typed [`Self::add_residual_rect_block`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::add_residual_rect_block`].
+    #[inline]
+    pub fn add_residual_rect_block_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        self.add_residual_rect_block_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            x,
+            y,
+            size,
+            residual,
+        )
     }
 
     /// The samples of a residual block from its origin and their row stride,
@@ -663,6 +924,46 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             .map(|samples| (samples, stride)))
     }
 
+    #[inline]
+    fn add_adjusted_residual_rect_block_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        if size.log2_width() < 6 && size.log2_height() < 6 {
+            return self.add_residual_rect_block_with_runner(runner, plane, x, y, size, residual);
+        }
+        let width_shift = usize::from(size.log2_width() == 6);
+        let height_shift = usize::from(size.log2_height() == 6);
+        let adjusted_width = size.width() >> width_shift;
+        let adjusted_height = size.height() >> height_shift;
+        let expected = adjusted_width * adjusted_height;
+        if residual.len() != expected {
+            return Err(ReconError::WorkspaceWriteLengthMismatch {
+                plane,
+                expected,
+                actual: residual.len(),
+            });
+        }
+        let rect = block_rect(x, y, size)?;
+        let mut target = self.residual_rect_target(plane, rect)?;
+        let mut duplicated = [0i32; 64];
+        for row in 0..target.rect.height() {
+            let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
+            if width_shift == 0 {
+                target.add_row(runner, row, source)?;
+                continue;
+            }
+            crate::inverse_transform_2d_outer::duplicate_columns(source, &mut duplicated);
+            target.add_row(runner, row, &duplicated)?;
+        }
+        Ok(())
+    }
+
     /// Adds an adjusted-size signed residual block directly to reconstructed
     /// samples, applying the AV2 § 7.15.4 sample duplication for a 64-sample
     /// transform side while writing.
@@ -685,32 +986,63 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
         residual: &[i32],
     ) -> Result<()> {
-        if size.log2_width() < 6 && size.log2_height() < 6 {
-            return self.add_residual_rect_block(plane, x, y, size, residual);
-        }
-        let width_shift = usize::from(size.log2_width() == 6);
-        let height_shift = usize::from(size.log2_height() == 6);
-        let adjusted_width = size.width() >> width_shift;
-        let adjusted_height = size.height() >> height_shift;
-        let expected = adjusted_width * adjusted_height;
-        if residual.len() != expected {
-            return Err(ReconError::WorkspaceWriteLengthMismatch {
-                plane,
-                expected,
-                actual: residual.len(),
-            });
-        }
+        self.add_adjusted_residual_rect_block_with_runner(
+            BaselineWorkspace,
+            plane,
+            x,
+            y,
+            size,
+            residual,
+        )
+    }
+
+    /// Typed [`Self::add_adjusted_residual_rect_block`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::add_adjusted_residual_rect_block`].
+    #[inline]
+    pub fn add_adjusted_residual_rect_block_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        self.add_adjusted_residual_rect_block_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            x,
+            y,
+            size,
+            residual,
+        )
+    }
+
+    #[inline]
+    fn add_constant_residual_rect_block_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: i32,
+    ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
         let mut target = self.residual_rect_target(plane, rect)?;
-        let mut duplicated = [0i32; 64];
+        let (base, stride, width) = (target.base, target.stride, target.rect.width());
+        if target.max_sample == u16::from(u8::MAX)
+            && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
+        {
+            let height = target.rect.height();
+            runner.add_constant_u8_rows(samples, (base, stride, width, height), residual);
+            return Ok(());
+        }
+        let constant = [residual; 64];
         for row in 0..target.rect.height() {
-            let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
-            if width_shift == 0 {
-                target.add_row(row, source)?;
-                continue;
-            }
-            crate::inverse_transform_2d_outer::duplicate_columns(source, &mut duplicated);
-            target.add_row(row, &duplicated)?;
+            target.add_row(runner, row, &constant)?;
         }
         Ok(())
     }
@@ -733,25 +1065,38 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
         residual: i32,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let mut target = self.residual_rect_target(plane, rect)?;
-        let (base, stride, width) = (target.base, target.stride, target.rect.width());
-        if target.max_sample == u16::from(u8::MAX)
-            && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
-        {
-            let height = target.rect.height();
-            crate::reconstruct::add_constant_u8_rows(
-                samples,
-                (base, stride, width, height),
-                residual,
-            );
-            return Ok(());
-        }
-        let constant = [residual; 64];
-        for row in 0..target.rect.height() {
-            target.add_row(row, &constant)?;
-        }
-        Ok(())
+        self.add_constant_residual_rect_block_with_runner(
+            BaselineWorkspace,
+            plane,
+            x,
+            y,
+            size,
+            residual,
+        )
+    }
+
+    /// Typed [`Self::add_constant_residual_rect_block`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::add_constant_residual_rect_block`].
+    #[inline]
+    pub fn add_constant_residual_rect_block_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: i32,
+    ) -> Result<()> {
+        self.add_constant_residual_rect_block_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            x,
+            y,
+            size,
+            residual,
+        )
     }
 
     #[inline]
@@ -1060,6 +1405,24 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         target.fill_rect(rect, sample)
     }
 
+    fn write_rect_with_runner<R: WorkspaceRunner>(
+        &mut self,
+        runner: R,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        let max = self.info.bit_depth().max_sample();
+        self.plane_mut(plane)?.write_rect_with_runner(
+            runner,
+            rect,
+            samples,
+            row_stride_samples,
+            max,
+        )
+    }
+
     /// Writes a checked rectangular region in `plane` from row-strided samples.
     ///
     /// `samples` points at the first source row and `row_stride_samples` is the
@@ -1077,9 +1440,28 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         samples: &[T],
         row_stride_samples: usize,
     ) -> Result<()> {
-        let max = self.info.bit_depth().max_sample();
-        self.plane_mut(plane)?
-            .write_rect(rect, samples, row_stride_samples, max)
+        self.write_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
+    }
+
+    /// Typed [`Self::write_rect`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::write_rect`].
+    pub fn write_rect_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        self.write_rect_with_runner(
+            TypedWorkspace(backend.narrow()),
+            plane,
+            rect,
+            samples,
+            row_stride_samples,
+        )
     }
 
     #[cfg(test)]
@@ -1170,6 +1552,23 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ) -> Result<()> {
         let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
         self.write_rect(plane, rect, samples, size.width())
+    }
+
+    /// Typed [`Self::write_rect_block`] using caller-selected `backend`.
+    ///
+    /// # Errors
+    /// Returns the same validation errors as [`Self::write_rect_block`].
+    pub fn write_rect_block_with<B: SimdBackend>(
+        &mut self,
+        backend: B,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        samples: &[T],
+    ) -> Result<()> {
+        let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
+        self.write_rect_with(backend, plane, rect, samples, size.width())
     }
 
     /// Takes a reusable, initialized intra-prediction buffer from this workspace.
@@ -1498,21 +1897,21 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// One bounds proof covers every row: the clamped rect's first and last
     /// target rows both index in-storage and rows advance by the plane
     /// stride, so per-row range math cannot fail after the up-front checks.
-    fn write_rect(
+    fn write_rect_with_runner<R: WorkspaceRunner>(
         &mut self,
+        runner: R,
         rect: PlaneRect,
         samples: &[T],
         row_stride_samples: usize,
         max_sample: u16,
     ) -> Result<()> {
-        // Drop partial frame-edge overhang; an out-of-frame origin remains an error.
         let rect = self.clamp_rect_to_storage(rect)?;
         let stride_samples = self.stride_samples();
         let local_y = self.band_row(rect.y(), rect.height())?;
-        write_rect_to_samples(
+        write_rect_to_samples_with_runner(
+            runner,
             self.plane,
-            &mut self.samples,
-            stride_samples,
+            (&mut self.samples, stride_samples),
             rect,
             (rect.x(), local_y),
             (samples, row_stride_samples),
@@ -1751,16 +2150,17 @@ fn rect_is_within(rect: PlaneRect, bounds: PlaneRect) -> bool {
             .is_some_and(|bottom| bottom <= bounds.height())
 }
 
-fn write_rect_to_samples<T: ReconSample>(
+fn write_rect_to_samples_with_runner<R: WorkspaceRunner, T: ReconSample>(
+    runner: R,
     plane: PlaneId,
-    target: &mut [T],
-    target_stride_samples: usize,
+    (target, target_stride_samples): (&mut [T], usize),
     rect: PlaneRect,
     local: (usize, usize),
     (samples, row_stride_samples): (&[T], usize),
     max_sample: u16,
 ) -> Result<()> {
-    validate_write_source(
+    validate_write_source_with_runner(
+        runner,
         plane,
         rect,
         samples,
@@ -1810,7 +2210,7 @@ fn copy_into_rect<T, S>(
 /// power-of-two pieces that fold into inline vector loads and stores; any copy
 /// loop here would be recognized by LLVM and re-lowered to a library call.
 /// Rows at or above 512 bytes keep the tuned library memcpy, where it wins.
-#[allow(clippy::inline_always, reason = "measured row-copy hot path")]
+#[expect(clippy::inline_always, reason = "measured row-copy hot path")]
 #[inline(always)]
 fn copy_row_samples<T: ReconSample>(dst: &mut [T], src: &[T]) {
     debug_assert_eq!(dst.len(), src.len(), "rect row copy length mismatch");
@@ -1866,33 +2266,21 @@ fn copy_fixed_chunk<const N: usize, T: ReconSample>(dst: &mut [T], src: &[T], at
 
 /// Copies a validated `u16` row into `target`; into `u8` storage, whose bit
 /// depth caps every sample at 255, sixteen narrowed lanes at a time.
-fn copy_u16_samples<T: ReconSample>(target: &mut [T], samples: &[u16]) {
+fn copy_u16_samples<R: WorkspaceRunner, T: ReconSample>(
+    runner: R,
+    target: &mut [T],
+    samples: &[u16],
+) {
     if let Some(target) = T::u16_slice_mut(target) {
         copy_row_samples(target, samples);
     } else if let Some(target) = T::u8_slice_mut(target) {
-        use fearless_simd::{prelude::*, u16x8};
         let len = target.len().min(samples.len());
-        let (target, samples) = (&mut target[..len], &samples[..len]);
-        let (chunks, tail) = target.as_chunks_mut::<16>();
-        let (sources, source_tail) = samples.as_chunks::<16>();
-        baseline_simd!(simd => {
-            let narrow = |lanes: &[u16; 16]| {
-                let (low, high) = lanes.split_at(8);
-                u16x8::from_slice(simd, low).narrow(u16x8::from_slice(simd, high)).to_array()
-            };
-            for (target, source) in chunks.iter_mut().zip(sources) {
-                *target = narrow(source);
-            }
-            if !tail.is_empty() {
-                let mut padded = [0; 16];
-                padded[..tail.len()].copy_from_slice(source_tail); // splot-copy-ok: zero-padded last chunk of a narrowed row
-                tail.copy_from_slice(&narrow(&padded)[..tail.len()]); // splot-copy-ok: narrowed last chunk into the frame row
-            }
-        });
+        runner.copy_u16_to_u8(&mut target[..len], &samples[..len]);
     }
 }
 
-fn validate_write_source<T: ReconSample>(
+fn validate_write_source_with_runner<R: WorkspaceRunner, T: ReconSample>(
+    runner: R,
     plane: PlaneId,
     rect: PlaneRect,
     samples: &[T],
@@ -1926,14 +2314,14 @@ fn validate_write_source<T: ReconSample>(
     if row_stride_samples == rect.width()
         && let Some(span) = rect.width().checked_mul(rect.height())
         && let Some(source) = samples.get(..span)
-        && !samples_exceed(source, max_sample)
+        && !runner.samples_exceed(source, max_sample)
     {
         return Ok(());
     }
     for row_index in 0..rect.height() {
         let source_start = row_index * row_stride_samples;
         let source_row = &samples[source_start..source_start + rect.width()];
-        if samples_exceed(source_row, max_sample) {
+        if runner.samples_exceed(source_row, max_sample) {
             let global_start = global_target_base + row_index * target_stride_samples;
             for (column, &sample) in source_row.iter().enumerate() {
                 validate_sample_value(plane, global_start + column, sample, max_sample)?;

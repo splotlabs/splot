@@ -5,20 +5,33 @@
 
 use super::*;
 
-/// In-band HLS availability for § 7.3.8 reference checks. RAP resend requirements
+#[derive(Debug)]
+pub(super) struct StoredSequenceHeader {
+    pub(super) header: SequenceHeader,
+    pub(super) offset: Option<ByteOffset>,
+    pub(super) fingerprint: u64,
+}
+
+/// Extended-layer substream state. Allocate header records only when their OBUs arrive.
+#[derive(Debug, Default)]
+pub(super) struct LayerHls {
+    pub(super) sequences: [Option<Box<StoredSequenceHeader>>; MAX_SEQ_NUM as usize],
+    multi_frame_headers: [Option<Box<MultiFrameHeaderRecord>>; MAX_MFH_NUM as usize],
+    pub(super) qm: QuantizerMatrixState,
+    pub(super) film_grain: FilmGrainState,
+}
+
+/// Parsed HLS availability for § 7.3.8 reference checks. RAP resend requirements
 /// are tracked separately by `RapReplayTracker`; redefinitions replace stored details.
 #[derive(Debug, Default)]
 pub(super) struct HlsAvailabilityStore {
-    /// `seq_header_id` values of sequence headers seen in-band so far (§ 7.3.8.6).
-    pub(super) sequence_header_ids: BTreeSet<u32>,
-    /// Multi-frame-header records keyed by `mfhId`, seen in-band so far (§ 7.3.8.7).
-    pub(super) multi_frame_headers: BTreeMap<u32, MultiFrameHeaderRecord>,
+    pub(super) layers: [Option<Box<LayerHls>>; GLOBAL_XLAYER_ID.get() as usize + 1],
     /// `lcr_xlayer_map` of each global LCR, keyed by `lcr_global_config_record_id`,
     /// seen in-band so far (§ 7.3.8.3).
     pub(super) global_lcr_xlayer_maps: BTreeMap<u8, u32>,
     /// `lcr_local_id` values of local LCRs, keyed by their `obu_xlayer_id`, seen
     /// in-band so far (§ 7.3.8.3).
-    pub(super) local_lcr_ids: BTreeMap<ExtendedLayerId, BTreeSet<u8>>,
+    pub(super) local_lcr_parents: BTreeMap<(ExtendedLayerId, u8), u8>,
     /// § 5.8.8 embedded-layer maps of global LCR payloads, keyed by
     /// `(lcr_global_config_record_id, xId)`, for the § 6.8.9 dependency-map
     /// agreement checks. A redefinition overwrites the maps, mirroring
@@ -60,52 +73,126 @@ pub(super) struct HlsAvailabilityStore {
 
 /// How a referenced HLS object resolves against available objects (AV2 § 7.3.8).
 pub(super) enum HlsResolution {
-    /// Available in the bitstream.
-    InBand,
-    /// Available only through caller-provided external HLS.
-    External,
+    /// Parsed from a stream OBU or the external snapshot.
+    Parsed,
+    /// Available through a key declaration without parsed contents.
+    ExternalDeclaration,
     /// Not available by any modeled means.
     Unavailable,
 }
 
 impl HlsAvailabilityStore {
-    /// Records a sequence header (by `seq_header_id`) as available in-band
-    /// (AV2 § 7.3.8.6).
-    pub(super) fn record_sequence_header(&mut self, seq_header_id: u32) {
-        self.sequence_header_ids.insert(seq_header_id);
+    pub(super) fn layer(&self, xlayer: ExtendedLayerId) -> Option<&LayerHls> {
+        self.layers[usize::from(xlayer.get())].as_deref()
     }
 
-    /// Resolves a `seq_header_id` reference against in-band then caller-provided
-    /// external availability (AV2 § 7.3.8.6).
+    pub(super) fn layer_mut(&mut self, xlayer: ExtendedLayerId) -> &mut LayerHls {
+        self.layers[usize::from(xlayer.get())].get_or_insert_default()
+    }
+
+    pub(super) fn sequence(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: SequenceHeaderId,
+    ) -> Option<&StoredSequenceHeader> {
+        self.layer(xlayer)?.sequences[usize::from(id.get())].as_deref()
+    }
+
+    pub(super) fn sequence_header(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: SequenceHeaderId,
+    ) -> Option<&SequenceHeader> {
+        self.sequence(xlayer, id).map(|stored| &stored.header)
+    }
+
+    /// Resolves a `seq_header_id` reference against parsed objects, then caller-declared
+    /// availability (AV2 § 7.3.8.6).
     pub(super) fn resolve_sequence_header(
         &self,
+        xlayer: ExtendedLayerId,
         id: u32,
         options: &ValidationOptions,
     ) -> HlsResolution {
-        if self.sequence_header_ids.contains(&id) {
-            return HlsResolution::InBand;
+        if SequenceHeaderId::try_new(id)
+            .and_then(|id| self.sequence(xlayer, id))
+            .is_some()
+        {
+            return HlsResolution::Parsed;
         }
         if let ExternalHlsMode::Provided(set) = &options.external_hls
             && set.has_sequence_header(id)
         {
-            return HlsResolution::External;
+            return HlsResolution::ExternalDeclaration;
         }
         HlsResolution::Unavailable
     }
 
-    /// Records a multi-frame header as available in-band, keyed by `mfhId`
+    /// Records a multi-frame header as available in-band, keyed by extended layer and `mfhId`
     /// (AV2 § 7.3.8.7). A later redefinition of the same id overwrites the record but
     /// keeps the id available, preserving monotonic availability.
-    #[allow(clippy::large_types_passed_by_value)]
-    pub(super) fn record_multi_frame_header(&mut self, record: MultiFrameHeaderRecord) {
-        self.multi_frame_headers.insert(record.mfh_id.get(), record);
+    #[expect(clippy::large_types_passed_by_value)]
+    pub(super) fn record_multi_frame_header(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        record: MultiFrameHeaderRecord,
+    ) {
+        self.layer_mut(xlayer).multi_frame_headers[record.mfh_id.get() as usize] =
+            Some(Box::new(record));
+    }
+
+    pub(super) fn save_multi_frame_header(
+        &mut self,
+        obu: &ObuEnvelope<'_>,
+        mfh: &splot_core::hls::MultiFrameHeader,
+    ) -> Option<MfhId> {
+        if !mfh.mfh_id_in_range() {
+            return None;
+        }
+        let mfh_id = MfhId::from_raw(u32::try_from(mfh.mfh_id()).ok()?);
+        self.record_multi_frame_header(
+            obu.header.extended_layer_id,
+            MultiFrameHeaderRecord {
+                mfh_id,
+                mfh_seq_header_id: SequenceHeaderId::try_new(mfh.mfh_seq_header_id)?,
+                mfh_tlayer_id: obu.header.temporal_layer_id,
+                mfh_mlayer_id: obu.header.embedded_layer_id,
+                mfh_frame_size: mfh.mfh_frame_size,
+                mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
+                mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
+                mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
+                mfh_segment_info: mfh.segment_info,
+                mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
+                mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
+                offset: obu.offset,
+            },
+        );
+        Some(mfh_id)
     }
 
     /// Returns the in-band multi-frame-header record for `mfhId`, if available.
     ///
     /// External multi-frame-header availability is not modeled.
-    pub(super) fn multi_frame_header(&self, id: MfhId) -> Option<&MultiFrameHeaderRecord> {
-        self.multi_frame_headers.get(&id.get())
+    pub(super) fn multi_frame_header(
+        &self,
+        xlayer: ExtendedLayerId,
+        id: MfhId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        self.layer(xlayer)?
+            .multi_frame_headers
+            .get(id.get() as usize)?
+            .as_deref()
+    }
+
+    /// A frame can use only an MFH associated with its resolved sequence in this layer.
+    pub(super) fn frame_mfh_record(
+        &self,
+        xlayer: ExtendedLayerId,
+        mfh_id: MfhId,
+        sequence_id: SequenceHeaderId,
+    ) -> Option<&MultiFrameHeaderRecord> {
+        self.multi_frame_header(xlayer, mfh_id)
+            .filter(|record| record.mfh_seq_header_id == sequence_id)
     }
 
     /// Records a global LCR (by `lcr_global_config_record_id`) and its `lcr_xlayer_map`
@@ -123,19 +210,18 @@ impl HlsAvailabilityStore {
 
     /// Records a local LCR (by `obu_xlayer_id` and `lcr_local_id`) as available in-band
     /// (AV2 § 7.3.8.3).
-    pub(super) fn record_local_lcr(&mut self, xlayer: ExtendedLayerId, local_id: u8) {
-        self.local_lcr_ids
-            .entry(xlayer)
-            .or_default()
-            .insert(local_id);
+    pub(super) fn record_local_lcr(
+        &mut self,
+        xlayer: ExtendedLayerId,
+        local_id: u8,
+        global_id: u8,
+    ) {
+        self.local_lcr_parents.insert((xlayer, local_id), global_id);
     }
 
-    /// Returns `true` if a local LCR with `lcr_local_id == local_id` is available in
-    /// the extended layer `xlayer` (AV2 § 7.3.8.3).
+    /// Returns `true` if the layer has this local LCR (AV2 § 7.3.8.3).
     pub(super) fn has_local_lcr(&self, xlayer: ExtendedLayerId, local_id: u8) -> bool {
-        self.local_lcr_ids
-            .get(&xlayer)
-            .is_some_and(|ids| ids.contains(&local_id))
+        self.local_lcr_parents.contains_key(&(xlayer, local_id))
     }
 
     /// Drops every stored embedded-layer map of the global LCR `global_id`. Called
@@ -233,8 +319,11 @@ impl ValidatorContext {
         }
 
         let id = mfh.mfh_seq_header_id;
-        match self.hls.resolve_sequence_header(id, options) {
-            HlsResolution::InBand | HlsResolution::External => {}
+        match self
+            .hls
+            .resolve_sequence_header(obu.header.extended_layer_id, id, options)
+        {
+            HlsResolution::Parsed | HlsResolution::ExternalDeclaration => {}
             HlsResolution::Unavailable => {
                 let external_note = if matches!(options.external_hls, ExternalHlsMode::Disabled) {
                     " (external HLS is disabled)"
@@ -268,34 +357,19 @@ impl ValidatorContext {
             return;
         }
 
-        if mfh.mfh_id_in_range()
-            && let Some(seq_id) = SequenceHeaderId::try_new(mfh.mfh_seq_header_id)
-            && let Ok(mfh_id_value) = u32::try_from(mfh.mfh_id())
-        {
-            self.hls.record_multi_frame_header(MultiFrameHeaderRecord {
-                mfh_id: MfhId::from_raw(mfh_id_value),
-                mfh_seq_header_id: seq_id,
-                mfh_tlayer_id: obu.header.temporal_layer_id,
-                mfh_mlayer_id: obu.header.embedded_layer_id,
-                mfh_frame_size: mfh.mfh_frame_size,
-                mfh_seg_info_present_flag: mfh.mfh_seg_info_present_flag,
-                mfh_ext_seg_flag: mfh.mfh_ext_seg_flag,
-                mfh_allow_seg_info_change: mfh.mfh_allow_seg_info_change,
-                mfh_segment_info: mfh.segment_info,
-                mfh_deblocking_filter_update: mfh.mfh_deblocking_filter_update,
-                mfh_apply_deblocking_filter: mfh.mfh_apply_deblocking_filter,
-                offset: obu.offset,
-            });
+        if let Some(mfh_id) = self.hls.save_multi_frame_header(obu, &mfh) {
+            let mfh_id_value = mfh_id.get();
             self.rap_replay.note_resend(
-                RapHlsKey::MultiFrameHeader(mfh_id_value),
+                RapHlsKey::MultiFrameHeader(obu.header.extended_layer_id, mfh_id_value),
                 obu.header.extended_layer_id,
             );
             if matches!(
-                self.hls.resolve_sequence_header(id, options),
-                HlsResolution::InBand
+                self.hls
+                    .resolve_sequence_header(obu.header.extended_layer_id, id, options),
+                HlsResolution::Parsed
             ) {
                 self.note_rap_reference(
-                    RapHlsKey::SequenceHeader(id),
+                    RapHlsKey::SequenceHeader(obu.header.extended_layer_id, id),
                     obu.header.extended_layer_id,
                     obu.offset,
                 );
@@ -309,7 +383,8 @@ impl ValidatorContext {
     /// parse and a valid § 5.2.1 payload tail.
     pub(super) fn observe_atlas_segment(&mut self, obu: &ObuEnvelope<'_>) {
         let mut reader = BitReader::new(obu.payload, obu.payload_offset());
-        let Ok(atlas) = parse_atlas_segment(&mut reader) else {
+        let Ok(atlas) = parse_scoped_atlas_segment(&mut reader, obu.header.extended_layer_id)
+        else {
             return;
         };
         if finish_obu_payload(

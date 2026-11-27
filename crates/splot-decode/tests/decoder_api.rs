@@ -4,13 +4,22 @@
 //! Streaming `Decoder` tests: the pictures must match the batch raw output,
 //! carry each temporal unit's caller data, and share the decoder's storage.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::stream_reader::{StreamUnit, TemporalUnitReader, is_random_access_point};
+use std::sync::{Arc, Mutex};
+
+use splot_core::annexb::parse_annex_b_obus;
+use splot_core::stream_reader::{TemporalUnitReader, is_random_access_point};
+use splot_core::types::ObuType;
 use splot_decode::{
-    DataProps, DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig, Decoder,
-    DecoderSettings, DecoderStateError, FrameDelay, FrameType, Picture, PictureSamples, PlaneId,
-    SendStatus, ThreadCount,
+    BaseQuantizerOrigin, CodedFrameEvent, DataProps, DecodeContext, DecodeError, DecodeOptions,
+    DecodeRuntimeConfig, Decoder, DecoderSettings, DecoderStateError, EmbeddedLayerSelection,
+    FrameDelay, FrameType, Picture, PictureFrame, PictureSamples, PlaneId, ReferenceFrameEvent,
+    ReferenceMappingOrigin, ReferenceSlotState, SendStatus, ThreadCount, Y4mFrameRate,
+};
+use splot_recon::{
+    DecodedFrame, DecodedFrameHashInput, PlaneSize, ReconSample, Y4mError, Y4mFrameFormat,
+    Y4mStreamHeader, Y4mWriter,
 };
 
 const MULTIREF: &[u8] =
@@ -34,6 +43,57 @@ const CROP: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-crop-intra-64x64-q80.ivf");
 const FILM_GRAIN: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
+const BRU_INACTIVE: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-inactive-frame-128x64-q220.ivf"
+);
+const BRU_INACTIVE_REFRESH_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-8bit.ivf");
+const BRU_INACTIVE_REFRESH_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-10bit.ivf");
+const BRU_INACTIVE_FILMGRAIN_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf");
+const BRU_INTER_CONTROL: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-inter-128x64-q220.ivf");
+const BRU_MULTITILE_CONTROL: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-multitile-256x128-q220.ivf");
+const BRU_LR_WIENERNS_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf");
+const BRU_LR_WIENERNS_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-10bit.ivf");
+const BRU_LR_PCWIENER_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf");
+const BRU_LR_PCWIENER_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-10bit.ivf");
+const BRU_LR_MULTITILE_CROSS_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-cross-8bit.ivf");
+const BRU_LR_MULTITILE_ISOLATED_8BIT: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
+);
+const BRU_GDF_BLOCK_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-8bit.ivf");
+const BRU_GDF_BLOCK_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-block-10bit.ivf");
+const BRU_GDF_FRAME_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-frame-8bit.ivf");
+const BRU_GDF_FRAME_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-frame-10bit.ivf");
+const BRU_GDF_LR_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-10bit.ivf");
+const BRU_GDF_LR_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-lr-8bit.ivf");
+const BRU_GDF_MULTITILE_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-gdf-multitile-8bit.ivf");
+const BRU_LOCAL_INTRABC_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-8bit.ivf");
+const BRU_LOCAL_INTRABC_10BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-10bit.ivf");
+const BRU_LOCAL_INTRABC_MULTITILE_8BIT: &[u8] = include_bytes!(
+    "../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-multitile-8bit.ivf"
+);
+const BRU_LOCAL_INTRABC_LR_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-lr-8bit.ivf");
+const BRU_LOCAL_INTRABC_GDF_8BIT: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-bru-local-intrabc-gdf-8bit.ivf");
 
 const FIXTURES: &[&[u8]] = &[
     MULTIREF,
@@ -44,17 +104,30 @@ const FIXTURES: &[&[u8]] = &[
     TEN_BIT_INTER,
     CROP,
     FILM_GRAIN,
+    BRU_INACTIVE,
+    BRU_INACTIVE_REFRESH_8BIT,
+    BRU_INACTIVE_REFRESH_10BIT,
+    BRU_INACTIVE_FILMGRAIN_8BIT,
+    BRU_INTER_CONTROL,
+    BRU_MULTITILE_CONTROL,
+    BRU_LR_WIENERNS_8BIT,
+    BRU_LR_WIENERNS_10BIT,
+    BRU_LR_PCWIENER_8BIT,
+    BRU_LR_PCWIENER_10BIT,
+    BRU_LR_MULTITILE_CROSS_8BIT,
+    BRU_LR_MULTITILE_ISOLATED_8BIT,
+    BRU_GDF_BLOCK_8BIT,
+    BRU_GDF_BLOCK_10BIT,
+    BRU_GDF_LR_8BIT,
+    BRU_GDF_MULTITILE_8BIT,
 ];
 
-/// The payload of each non-empty IVF frame record: one temporal unit each.
-fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
-    let mut reader = TemporalUnitReader::new(ivf);
+fn units(stream: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = TemporalUnitReader::new(stream);
     let mut units = Vec::new();
-    while let Some(unit) = reader.next_unit().unwrap() {
-        if let StreamUnit::IvfFrame { payload, .. } = unit
-            && !payload.is_empty()
-        {
-            units.push(payload.to_vec());
+    while let Some(unit) = reader.next_temporal_unit().unwrap() {
+        if !unit.bytes.is_empty() {
+            units.push(unit.bytes.to_vec());
         }
     }
     units
@@ -126,6 +199,109 @@ fn batch_raw_with(bytes: &[u8], options: &DecodeOptions) -> Vec<u8> {
     out
 }
 
+#[test]
+fn borrowed_frames_match_batch_raw_y4m_and_hash_output() {
+    fn write_frame<T: ReconSample>(
+        frame: &DecodedFrame<T>,
+        raw: &mut Vec<u8>,
+        y4m: &mut Y4mWriter<Vec<u8>>,
+    ) -> String {
+        let samples = DecodedFrameHashInput::new(frame);
+        samples.write_to(raw).unwrap();
+        y4m.write_frame(frame).unwrap();
+        samples.compute_hash().to_hex()
+    }
+
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+    let rate = Y4mFrameRate::new(24_000, 1001).unwrap();
+    for (fixture, skip_grain) in [
+        (CROP, true),
+        (TEN_BIT_INTER, true),
+        (SEF_FAMILIES, true),
+        (FILM_GRAIN, true),
+        (FILM_GRAIN, false),
+    ] {
+        let options = DecodeOptions::default()
+            .with_skip_film_grain(skip_grain)
+            .with_y4m_frame_rate_override(Some(rate));
+        let mut decoder =
+            Decoder::new(DecoderSettings::default().with_skip_film_grain(skip_grain)).unwrap();
+        let pictures = decode(&mut decoder, &units(fixture), |_| DataProps::default());
+        let first = &pictures[0];
+        let format = Y4mFrameFormat::new(
+            PlaneSize::new(first.width(), first.height()).unwrap(),
+            first.bit_depth(),
+            first.pixel_format(),
+        );
+        let mut y4m = Y4mWriter::new(Vec::new(), Y4mStreamHeader::new(format, rate)).unwrap();
+        let mut raw = Vec::new();
+        let hashes: Vec<_> = pictures
+            .iter()
+            .map(|picture| match picture.decoded_frame().unwrap() {
+                PictureFrame::Eight(frame) => write_frame(frame, &mut raw, &mut y4m),
+                PictureFrame::Ten(frame) => write_frame(frame, &mut raw, &mut y4m),
+            })
+            .collect();
+        assert_eq!(raw, batch_raw_with(fixture, &options));
+        let mut expected_y4m = Vec::new();
+        context
+            .decode_y4m_bytes(fixture, options, &mut expected_y4m)
+            .unwrap();
+        assert_eq!(y4m.into_inner(), expected_y4m);
+        if skip_grain {
+            let report = context.decode_hash_report_bytes(fixture, options).unwrap();
+            let expected: Vec<_> = report
+                .frames
+                .iter()
+                .map(|entry| entry.hashes[0].digest_hex.as_str())
+                .collect();
+            assert_eq!(hashes, expected);
+        }
+    }
+}
+
+#[test]
+fn borrowed_frame_keeps_geometry_and_writer_errors() {
+    const PADDED: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-mrl-padded-422-68x68-10bit-q120.ivf"
+    );
+    let pictures = decode(&mut decoder(1, 1), &units(CROP), |_| DataProps::default());
+    let PictureFrame::Eight(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("an eight-bit frame")
+    };
+    let visible = frame.visible_luma_rect();
+    assert_eq!((visible.x(), visible.y()), (2, 2));
+    assert_eq!(visible.size(), PlaneSize::new(60, 60).unwrap());
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(64, 64).unwrap());
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let pictures = decode(&mut decoder(1, 1), &units(PADDED), |_| DataProps::default());
+    let PictureFrame::Ten(frame) = pictures[0].decoded_frame().unwrap() else {
+        panic!("a ten-bit frame")
+    };
+    assert_eq!(frame.coded_luma_size(), PlaneSize::new(68, 68).unwrap());
+    assert_eq!(
+        frame.info().storage_luma_size(),
+        PlaneSize::new(72, 72).unwrap()
+    );
+    assert_eq!(
+        frame.y().samples().as_ptr() as usize,
+        luma_storage(&pictures[0])
+    );
+
+    let mut bytes = [0; 64];
+    let rate = Y4mFrameRate::new(30, 1).unwrap();
+    let mut y4m = Y4mWriter::from_frame(bytes.as_mut_slice(), frame, rate).unwrap();
+    assert!(matches!(
+        y4m.write_frame(frame),
+        Err(Y4mError::Io { source }) if source.kind() == std::io::ErrorKind::WriteZero
+    ));
+    assert_eq!(y4m.frames_written(), 0);
+}
+
 /// The address of the picture's first stored luma sample.
 fn luma_storage(picture: &Picture) -> usize {
     match picture.plane(PlaneId::Y) {
@@ -140,6 +316,256 @@ fn with_film_grain(pictures: &[Picture]) -> Vec<Picture> {
         .iter()
         .map(|picture| picture.apply_film_grain().unwrap())
         .collect()
+}
+
+#[test]
+fn coded_frame_observer_reports_hidden_frames_and_tile_group_continuations() {
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let mut decoder = Decoder::new_with_coded_frame_observer(
+        DecoderSettings::default()
+            .with_threads(ThreadCount::from(4))
+            .with_frame_delay(FrameDelay::from(4)),
+        move |event| observed.lock().unwrap().push(event),
+    )
+    .unwrap();
+
+    let pictures = decode(&mut decoder, &units(BRIDGE), |_| {
+        DataProps::default().with_user_data(17)
+    });
+    let coded_locations = |pictures: &[Picture]| {
+        pictures
+            .iter()
+            .map(|picture| picture.provenance().coded.offset.get())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(pictures.len(), 2);
+    assert!(raw_of(&pictures) == batch_raw(BRIDGE));
+    let actual = core::mem::take(&mut *events.lock().unwrap());
+    let frames = actual
+        .iter()
+        .map(|event| match event {
+            CodedFrameEvent::Frame {
+                coded,
+                sequence_header,
+                ..
+            } => {
+                assert_eq!(coded.user_data, 17);
+                assert_eq!(sequence_header.user_data, 17);
+                assert_eq!(sequence_header.offset.get(), 3);
+                coded.offset.get()
+            }
+            _ => panic!("Expected a coded frame."),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(frames, [27, 41, 46]);
+    assert!(
+        coded_locations(&pictures)
+            .iter()
+            .all(|location| frames.contains(location))
+    );
+
+    decoder.flush();
+    let fixture = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-multi-tile-group-intra-256x128.ivf"
+    );
+    let groups = units(fixture);
+    let pictures = decode(&mut decoder, &groups, |index| {
+        DataProps::default().with_user_data(23 + index as u64)
+    });
+    let actual = core::mem::take(&mut *events.lock().unwrap());
+    assert_eq!(pictures.len(), 3);
+    assert!(raw_of(&pictures) == batch_raw(fixture));
+    assert_eq!(actual.len(), 6);
+    for (index, (pair, picture)) in actual.chunks_exact(2).zip(pictures.iter()).enumerate() {
+        let provenance = picture.provenance();
+        assert!(matches!(
+            pair,
+            [
+                CodedFrameEvent::Frame { coded, sequence_header, .. },
+                CodedFrameEvent::Continuation { coded: owner, obu, .. },
+            ] if *coded == provenance.coded
+                && *sequence_header == provenance.sequence_header
+                && owner == coded
+                && coded.user_data == 23 + index as u64
+                && coded.offset.get() == 25
+                && obu.user_data == coded.user_data
+                && obu.offset.get() == [189, 200, 190][index]
+        ));
+    }
+}
+
+/// AVM 01803db6af inspection callbacks report the indexes in coded order.
+#[test]
+fn coded_frame_base_quantizer_matches_avm() {
+    use BaseQuantizerOrigin::{Derived, Inherited, Signaled};
+
+    let cases: &[(&[u8], &[_])] = &[
+        (BRIDGE, &[(21, Signaled), (21, Inherited), (57, Signaled)]),
+        (
+            TIP_FAMILIES,
+            &[
+                (166, Signaled),
+                (118, Signaled),
+                (164, Signaled),
+                (187, Signaled),
+                (210, Signaled),
+                (176, Derived),
+                (170, Derived),
+                (141, Derived),
+                (153, Derived),
+                (130, Derived),
+                (124, Derived),
+                (185, Signaled),
+                (152, Derived),
+            ],
+        ),
+        (
+            BRU_INACTIVE_REFRESH_10BIT,
+            &[
+                (234, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Signaled),
+                (268, Inherited),
+                (268, Signaled),
+                (268, Signaled),
+            ],
+        ),
+        (
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-luma-palette2-row-mono-16x16-q0.ivf"
+            ),
+            &[(0, Signaled)],
+        ),
+    ];
+    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let mut decoder =
+        Decoder::new_with_coded_frame_observer(DecoderSettings::default(), move |event| {
+            if let CodedFrameEvent::Frame { base_quantizer, .. } = event {
+                let entry = base_quantizer.map(|quantizer| (quantizer.index, quantizer.origin));
+                observed.lock().unwrap().push(entry);
+            }
+        })
+        .unwrap();
+    for &(fixture, expected) in cases {
+        decoder.flush();
+        decode(&mut decoder, &units(fixture), |_| DataProps::default());
+        let observed = core::mem::take(&mut *events.lock().unwrap());
+        let expected: Vec<_> = expected.iter().copied().map(Some).collect();
+        assert_eq!(observed, expected);
+    }
+}
+
+#[test]
+fn coded_frame_observer_omits_show_existing_and_unselected_layers() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let units = units(fixture);
+    for selection in [
+        EmbeddedLayerSelection::All,
+        EmbeddedLayerSelection::BASE_ONLY,
+    ] {
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = frames.clone();
+        let mut decoder = Decoder::new_with_coded_frame_observer(
+            DecoderSettings::default().with_embedded_layer_selection(selection),
+            move |event| {
+                if let CodedFrameEvent::Frame {
+                    coded,
+                    embedded_layer_id,
+                    ..
+                } = event
+                {
+                    observed.lock().unwrap().push((coded, embedded_layer_id));
+                }
+            },
+        )
+        .unwrap();
+        let pictures = decode(&mut decoder, &units, |index| {
+            DataProps::default().with_user_data(index as u64)
+        });
+        let frames = frames.lock().unwrap();
+        assert!(!frames.is_empty());
+        if selection == EmbeddedLayerSelection::All {
+            let locations: Vec<_> = frames
+                .iter()
+                .map(|(coded, _)| (coded.user_data, coded.offset.get()))
+                .collect();
+            assert_eq!(locations, [(0, 44), (0, 769), (1, 4)]);
+            assert_eq!(pictures.len(), 4);
+        } else {
+            assert!(frames.iter().all(|(_, layer)| layer.get() == 0));
+        }
+    }
+}
+
+#[test]
+fn picture_provenance_follows_coded_and_show_existing_obus() {
+    let fixture =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-mlayer2-derived-sef-8bit.obu");
+    let units = units(fixture);
+    for (threads, delay) in [(1, 1), (4, 4)] {
+        let mut decoder = decoder(threads, delay);
+        for token in [17, u64::MAX - 1] {
+            let pictures = decode(&mut decoder, &units, |index| {
+                DataProps::default().with_user_data(token + index as u64)
+            });
+            let expected = [
+                ((token, 44), (token, 44)),
+                ((token, 769), (token, 769)),
+                ((token, 44), (token + 1, 541)),
+                ((token + 1, 4), (token + 1, 545)),
+            ];
+            assert_eq!(pictures.len(), expected.len());
+            decoder.flush();
+            for (picture, (coded, display)) in pictures.iter().zip(expected) {
+                let provenance = picture.provenance();
+                assert_eq!(
+                    (provenance.coded.user_data, provenance.coded.offset.get()),
+                    coded
+                );
+                assert_eq!(
+                    (
+                        provenance.display.user_data,
+                        provenance.display.offset.get()
+                    ),
+                    display
+                );
+                assert_eq!(picture.props().user_data, display.0);
+                assert_eq!(provenance.sequence_header.user_data, token);
+                assert_eq!(provenance.sequence_header.offset.get(), 18);
+            }
+        }
+    }
+}
+
+#[test]
+fn picture_provenance_follows_each_extended_layer_sequence() {
+    let fixture = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-msdo-four-streams-obu-order.obu"
+    );
+    let units = units(fixture);
+    let sequences = parse_annex_b_obus(&units[0]).unwrap();
+    let pictures = decode(&mut decoder(4, 4), &units, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    assert_eq!(pictures.len(), 12);
+    for picture in pictures {
+        let provenance = picture.provenance();
+        assert_eq!(provenance.coded, provenance.display);
+        let sequence = sequences
+            .iter()
+            .find(|obu| {
+                obu.header.obu_type == ObuType::SequenceHeader
+                    && obu.header.extended_layer_id == picture.extended_layer_id()
+            })
+            .unwrap();
+        assert_eq!(provenance.sequence_header.user_data, 0);
+        assert_eq!(provenance.sequence_header.offset, sequence.offset);
+    }
 }
 
 #[test]
@@ -182,6 +608,9 @@ fn skipped_film_grain_is_left_out_and_applied_on_request() {
         assert!(raw_of(&pictures) == clean);
         let (pictures, applied) = std::thread::spawn(move || {
             let applied = with_film_grain(&pictures);
+            for (original, applied) in pictures.iter().zip(&applied) {
+                assert_eq!(original.provenance(), applied.provenance());
+            }
             (pictures, applied)
         })
         .join()
@@ -230,15 +659,31 @@ fn each_picture_carries_the_data_of_the_unit_that_coded_or_showed_it() {
 
 #[test]
 fn held_pictures_neither_stall_the_decoder_nor_change_its_output() {
-    let units: Vec<Vec<u8>> = (0..8).flat_map(|_| units(EIGHT_FRAME)).collect();
+    let sequence = units(EIGHT_FRAME);
+    let units: Vec<_> = sequence
+        .iter()
+        .cycle()
+        .take(8 * sequence.len())
+        .cloned()
+        .collect();
     let expected = raw_of(&decode(&mut decoder(1, 1), &units, |_| {
         DataProps::default()
     }));
     for (threads, frame_delay) in [(1, 1), (4, 4)] {
-        let held = decode(&mut decoder(threads, frame_delay), &units, |_| {
-            DataProps::default()
+        let held = decode(&mut decoder(threads, frame_delay), &units, |index| {
+            DataProps::default().with_user_data(index as u64)
         });
         assert!(held.len() > 2 * 16 + frame_delay + 1);
+        for picture in &held {
+            let provenance = picture.provenance();
+            let unit = provenance.coded.user_data;
+            let sequence_len = sequence.len() as u64;
+            assert_eq!(
+                provenance.sequence_header.user_data,
+                unit - unit % sequence_len
+            );
+            assert_eq!(provenance.sequence_header.offset.get(), 3);
+        }
         assert!(
             raw_of(&held) == expected,
             "held pictures changed the output"
@@ -420,4 +865,627 @@ fn a_picture_reports_the_type_of_the_frame_it_shows() {
             .iter()
             .all(|&kind| kind == Some(FrameType::Inter))
     );
+}
+
+#[test]
+fn decoder_validates_simd_policy_once_and_retains_it_across_flush() {
+    use splot_decode::SelectedBackend;
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        use splot_decode::SimdPolicy;
+
+        let err = Decoder::new(DecoderSettings::default().with_simd_policy(SimdPolicy::Neon))
+            .unwrap_err();
+        assert!(
+            matches!(err, DecodeError::UnsupportedBackend { .. }),
+            "{err}"
+        );
+
+        if !splot_core::simd::detect_capabilities().has_avx512() {
+            let err = Decoder::new(DecoderSettings::default().with_simd_policy(SimdPolicy::Avx512))
+                .unwrap_err();
+            assert!(
+                matches!(err, DecodeError::UnsupportedBackend { .. }),
+                "{err}"
+            );
+        }
+    }
+
+    let expected_units = units(MULTIREF);
+    let expected = batch_raw(MULTIREF);
+    let mut decoder = Decoder::new(DecoderSettings::default()).unwrap();
+    let initial = decoder.selected_backend();
+    #[cfg(target_arch = "x86_64")]
+    assert_eq!(
+        initial,
+        if splot_core::simd::detect_capabilities().has_avx512() {
+            SelectedBackend::Avx512
+        } else if splot_core::simd::detect_capabilities().has_avx2() {
+            SelectedBackend::Avx2
+        } else {
+            SelectedBackend::Sse2
+        }
+    );
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(initial, SelectedBackend::Neon);
+
+    let first = decode(&mut decoder, &expected_units, |_| DataProps::default());
+    assert_eq!(raw_of(&with_film_grain(&first)), expected);
+    assert_eq!(decoder.selected_backend(), initial);
+
+    decoder.flush();
+    assert_eq!(decoder.selected_backend(), initial);
+    let second = decode(&mut decoder, &expected_units, |_| DataProps::default());
+    assert_eq!(raw_of(&with_film_grain(&second)), expected);
+    assert_eq!(decoder.selected_backend(), initial);
+}
+
+struct ChunkedSliceReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+    pattern: &'a [usize],
+    step: usize,
+}
+
+impl std::io::Read for ChunkedSliceReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset >= self.bytes.len() || buf.is_empty() {
+            return Ok(0);
+        }
+        let max_chunk = self.pattern[self.step % self.pattern.len()];
+        self.step += 1;
+        let count = (self.bytes.len() - self.offset)
+            .min(buf.len())
+            .min(max_chunk);
+        buf[..count].copy_from_slice(&self.bytes[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
+}
+
+#[test]
+fn bru_inactive_and_refresh_vectors_match_batch_and_chunked_streaming() {
+    let bru_fixtures = [
+        (
+            "syn-bru-inactive-frame-128x64-q220",
+            BRU_INACTIVE,
+            5usize,
+            Some((2usize, 4usize)),
+        ),
+        (
+            "syn-bru-inactive-refresh-8bit",
+            BRU_INACTIVE_REFRESH_8BIT,
+            8,
+            Some((3, 5)),
+        ),
+        (
+            "syn-bru-inactive-refresh-10bit",
+            BRU_INACTIVE_REFRESH_10BIT,
+            8,
+            Some((3, 5)),
+        ),
+        (
+            "syn-bru-inactive-block-use-8bit",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+            ),
+            8,
+            Some((3, 5)),
+        ),
+        (
+            "syn-bru-inactive-block-use-10bit",
+            include_bytes!(
+                "../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+            ),
+            8,
+            Some((3, 5)),
+        ),
+        ("syn-bru-inter-128x64-q220", BRU_INTER_CONTROL, 5, None),
+        (
+            "syn-bru-multitile-256x128-q220",
+            BRU_MULTITILE_CONTROL,
+            6,
+            None,
+        ),
+    ];
+
+    for (name, bytes, expected_frames, inactive_pair) in bru_fixtures {
+        let units = units(bytes);
+        let expected = batch_raw(bytes);
+        let frame_bytes = expected.len() / expected_frames;
+        assert_eq!(frame_bytes * expected_frames, expected.len(), "{name}");
+        if let Some((src_idx, inactive_idx)) = inactive_pair {
+            let src = &expected[src_idx * frame_bytes..(src_idx + 1) * frame_bytes];
+            let inactive = &expected[inactive_idx * frame_bytes..(inactive_idx + 1) * frame_bytes];
+            assert_eq!(
+                inactive, src,
+                "{name}: bru_inactive frame {inactive_idx} must copy frame {src_idx}"
+            );
+            if expected_frames > inactive_idx + 1 {
+                let next =
+                    &expected[(inactive_idx + 1) * frame_bytes..(inactive_idx + 2) * frame_bytes];
+                assert_ne!(
+                    next, inactive,
+                    "{name}: subsequent inter frame must differ from inactive"
+                );
+            }
+        }
+
+        for threads in [1, 3, 12] {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads))).unwrap();
+            let mut batch_out = Vec::new();
+            context
+                .decode_raw_bytes(bytes, DecodeOptions::default(), &mut batch_out)
+                .unwrap();
+            assert_eq!(batch_out, expected, "{name} batch at {threads} threads");
+
+            let mut chunked_out = Vec::new();
+            let reader = ChunkedSliceReader {
+                bytes,
+                offset: 0,
+                pattern: &[1, 3, 7, 13, 2],
+                step: 0,
+            };
+            context
+                .decode_raw_reader(reader, DecodeOptions::default(), &mut chunked_out)
+                .unwrap();
+            assert_eq!(chunked_out, expected, "{name} chunked at {threads} threads");
+
+            let mut dec = decoder(threads, threads.min(4));
+            let pics = decode(&mut dec, &units, |_| DataProps::default());
+            assert_eq!(pics.len(), expected_frames, "{name}");
+            assert_eq!(
+                raw_of(&pics),
+                expected,
+                "{name} stream at {threads} threads"
+            );
+
+            dec.flush();
+            dec.drain();
+            assert!(dec.get_picture().unwrap().is_none());
+            dec.flush();
+            let pics_again = decode(&mut dec, &units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&pics_again),
+                expected,
+                "{name} repeated flush/drain at {threads} threads"
+            );
+        }
+    }
+}
+
+#[test]
+fn bru_inactive_film_grain_does_not_mutate_reference_or_double_apply() {
+    let pre_grain_expected = batch_raw(BRU_INACTIVE_REFRESH_8BIT);
+    let grained_expected = batch_raw(BRU_INACTIVE_FILMGRAIN_8BIT);
+    let skipped = batch_raw_with(
+        BRU_INACTIVE_FILMGRAIN_8BIT,
+        &DecodeOptions::default().with_skip_film_grain(true),
+    );
+    assert_eq!(
+        skipped, pre_grain_expected,
+        "film-grain bru_inactive fixture pre-grain output must equal non-grain fixture"
+    );
+    assert_ne!(grained_expected, skipped);
+
+    let frame_bytes = skipped.len() / 8;
+    assert_eq!(frame_bytes * 8, skipped.len());
+    assert_eq!(
+        &skipped[5 * frame_bytes..6 * frame_bytes],
+        &skipped[3 * frame_bytes..4 * frame_bytes],
+        "pre-grain bru_inactive frame must still match its reference frame"
+    );
+    assert_ne!(
+        &grained_expected[5 * frame_bytes..6 * frame_bytes],
+        &skipped[5 * frame_bytes..6 * frame_bytes],
+        "bru_inactive frame must apply its own output film grain"
+    );
+
+    let units = units(BRU_INACTIVE_FILMGRAIN_8BIT);
+    for threads in [1, 3, 12] {
+        let mut clean_dec = Decoder::new(
+            DecoderSettings::default()
+                .with_threads(ThreadCount::from(threads))
+                .with_skip_film_grain(true),
+        )
+        .unwrap();
+        let clean_pics = decode(&mut clean_dec, &units, |_| DataProps::default());
+        assert_eq!(raw_of(&clean_pics), skipped);
+        assert!(clean_pics.iter().all(Picture::has_film_grain));
+
+        let applied_pics = with_film_grain(&clean_pics);
+        assert_eq!(raw_of(&applied_pics), grained_expected);
+        assert_eq!(
+            raw_of(&clean_pics),
+            skipped,
+            "applying grain to emitted bru_inactive picture mutated its source samples"
+        );
+        assert_eq!(
+            raw_of(&with_film_grain(&applied_pics)),
+            grained_expected,
+            "re-applying grain double-applied grain"
+        );
+
+        let mut grained_dec = decoder(threads, threads.min(4));
+        let grained_pics = decode(&mut grained_dec, &units, |_| DataProps::default());
+        assert_eq!(raw_of(&grained_pics), grained_expected);
+    }
+}
+
+fn stream_decode_until_error(decoder: &mut Decoder, units: &[Vec<u8>]) -> bool {
+    for (index, unit) in units.iter().enumerate() {
+        let mut props = DataProps::default();
+        props.pts = i64::try_from(index).unwrap_or_default();
+        loop {
+            match decoder.send_data(unit, props) {
+                Ok(SendStatus::Full) => while let Ok(Some(_)) = decoder.get_picture() {},
+                Ok(SendStatus::Accepted) => break,
+                Err(_) => return true,
+            }
+            if decoder.get_picture().is_err() {
+                return true;
+            }
+        }
+    }
+    decoder.drain();
+    loop {
+        match decoder.get_picture() {
+            Ok(Some(_)) => {}
+            Ok(None) => return false,
+            Err(_) => return true,
+        }
+    }
+}
+
+fn assert_bru_batch_chunked_streaming(fixtures: &[(&str, &[u8])], kind: &str) {
+    for &(name, bytes) in fixtures {
+        let stream_units = units(bytes);
+        let expected = batch_raw(bytes);
+        for threads in [1, 3, 12] {
+            let context =
+                DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads))).unwrap();
+            let mut batch_out = Vec::new();
+            context
+                .decode_raw_bytes(bytes, DecodeOptions::default(), &mut batch_out)
+                .unwrap();
+            assert_eq!(batch_out, expected, "{name} batch at {threads} threads");
+
+            let mut chunked_out = Vec::new();
+            let reader = ChunkedSliceReader {
+                bytes,
+                offset: 0,
+                pattern: &[1, 3, 7, 13, 2],
+                step: 0,
+            };
+            context
+                .decode_raw_reader(reader, DecodeOptions::default(), &mut chunked_out)
+                .unwrap();
+            assert_eq!(chunked_out, expected, "{name} chunked at {threads} threads");
+
+            let mut dec = decoder(threads, threads.min(4));
+            let pics = decode(&mut dec, &stream_units, |_| DataProps::default());
+            assert_eq!(pics.len(), 6, "{name}");
+            assert_eq!(
+                raw_of(&pics),
+                expected,
+                "{name} stream at {threads} threads"
+            );
+
+            dec.flush();
+            dec.drain();
+            assert!(dec.get_picture().unwrap().is_none());
+            dec.flush();
+            let pics_again = decode(&mut dec, &stream_units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&pics_again),
+                expected,
+                "{name} ({kind}) repeated flush/drain at {threads} threads"
+            );
+        }
+    }
+}
+
+fn assert_bru_flush_recovery(cases: &[(&str, &[u8])], kind: &str) {
+    for &(name, bytes) in cases {
+        let mut corrupted_units = units(bytes);
+        let cut = corrupted_units[3].len() / 2;
+        corrupted_units[3].truncate(cut.max(4));
+        for threads in [1, 3] {
+            let mut dec = decoder(threads, threads.min(4));
+            assert!(
+                stream_decode_until_error(&mut dec, &corrupted_units),
+                "{name}: truncated frame 3 {kind} payload must error at {threads} threads"
+            );
+            dec.flush();
+            dec.drain();
+            while matches!(dec.get_picture(), Ok(Some(_)) | Err(_)) {}
+            dec.flush();
+            let intact_units = units(bytes);
+            let recovered = decode(&mut dec, &intact_units, |_| DataProps::default());
+            assert_eq!(
+                raw_of(&recovered),
+                batch_raw(bytes),
+                "{name}: decoder must recover cleanly after flush at {threads} threads"
+            );
+        }
+    }
+}
+
+#[test]
+fn bru_lr_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_lr_fixtures = [
+        ("syn-bru-lr-stripe-wienerns-8bit", BRU_LR_WIENERNS_8BIT),
+        ("syn-bru-lr-stripe-wienerns-10bit", BRU_LR_WIENERNS_10BIT),
+        ("syn-bru-lr-stripe-pcwiener-8bit", BRU_LR_PCWIENER_8BIT),
+        ("syn-bru-lr-stripe-pcwiener-10bit", BRU_LR_PCWIENER_10BIT),
+        (
+            "syn-bru-lr-multitile-cross-8bit",
+            BRU_LR_MULTITILE_CROSS_8BIT,
+        ),
+        (
+            "syn-bru-lr-multitile-isolated-8bit",
+            BRU_LR_MULTITILE_ISOLATED_8BIT,
+        ),
+    ];
+
+    assert_ne!(
+        batch_raw(BRU_LR_MULTITILE_CROSS_8BIT),
+        batch_raw(BRU_LR_MULTITILE_ISOLATED_8BIT),
+        "multitile cross-tile and isolated BRU+LR streams must produce distinct pixels"
+    );
+
+    assert_bru_batch_chunked_streaming(&bru_lr_fixtures, "BRU+LR");
+    assert_bru_flush_recovery(
+        &[
+            ("pcwiener-truncated", BRU_LR_PCWIENER_8BIT),
+            ("wienerns-truncated", BRU_LR_WIENERNS_8BIT),
+        ],
+        "BRU+LR",
+    );
+}
+
+#[test]
+fn bru_gdf_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_gdf_fixtures = [
+        ("syn-bru-gdf-block-8bit", BRU_GDF_BLOCK_8BIT),
+        ("syn-bru-gdf-block-10bit", BRU_GDF_BLOCK_10BIT),
+        ("syn-bru-gdf-frame-8bit", BRU_GDF_FRAME_8BIT),
+        ("syn-bru-gdf-frame-10bit", BRU_GDF_FRAME_10BIT),
+        ("syn-bru-gdf-lr-10bit", BRU_GDF_LR_10BIT),
+        ("syn-bru-gdf-lr-8bit", BRU_GDF_LR_8BIT),
+        ("syn-bru-gdf-multitile-8bit", BRU_GDF_MULTITILE_8BIT),
+    ];
+
+    assert_bru_batch_chunked_streaming(&bru_gdf_fixtures, "BRU+GDF");
+    assert_bru_flush_recovery(
+        &[
+            ("gdf-block-8bit-truncated", BRU_GDF_BLOCK_8BIT),
+            ("gdf-block-10bit-truncated", BRU_GDF_BLOCK_10BIT),
+            ("gdf-lr-8bit-truncated", BRU_GDF_LR_8BIT),
+        ],
+        "BRU+GDF",
+    );
+}
+
+#[test]
+fn bru_local_intrabc_vectors_match_batch_and_chunked_streaming_and_recover_on_flush() {
+    let bru_intrabc_fixtures = [
+        ("syn-bru-local-intrabc-8bit", BRU_LOCAL_INTRABC_8BIT),
+        ("syn-bru-local-intrabc-10bit", BRU_LOCAL_INTRABC_10BIT),
+        (
+            "syn-bru-local-intrabc-multitile-8bit",
+            BRU_LOCAL_INTRABC_MULTITILE_8BIT,
+        ),
+        ("syn-bru-local-intrabc-lr-8bit", BRU_LOCAL_INTRABC_LR_8BIT),
+        ("syn-bru-local-intrabc-gdf-8bit", BRU_LOCAL_INTRABC_GDF_8BIT),
+    ];
+
+    assert_bru_batch_chunked_streaming(&bru_intrabc_fixtures, "BRU+local-IntraBC");
+    assert_bru_flush_recovery(
+        &[
+            ("local-intrabc-8bit-truncated", BRU_LOCAL_INTRABC_8BIT),
+            ("local-intrabc-10bit-truncated", BRU_LOCAL_INTRABC_10BIT),
+            (
+                "local-intrabc-multitile-truncated",
+                BRU_LOCAL_INTRABC_MULTITILE_8BIT,
+            ),
+            ("local-intrabc-lr-truncated", BRU_LOCAL_INTRABC_LR_8BIT),
+            ("local-intrabc-gdf-truncated", BRU_LOCAL_INTRABC_GDF_8BIT),
+        ],
+        "BRU+local-IntraBC",
+    );
+}
+
+fn reference_decoder(threads: usize, events: &Arc<Mutex<Vec<ReferenceFrameEvent>>>) -> Decoder {
+    let events = Arc::clone(events);
+    Decoder::new_with_reference_observer(
+        DecoderSettings::default().with_threads(ThreadCount::from(threads)),
+        move |event| events.lock().unwrap().push(event),
+    )
+    .unwrap()
+}
+
+#[test]
+fn reference_observer_reports_refresh_reuse_and_sequence_reset() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(4, &events);
+    let mut units = units(MULTIREF);
+    units.push(units[0].clone());
+    let pictures = decode(&mut decoder, &units, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+
+    let events = events.lock().unwrap();
+    let [key, inter, multi, reset] = events.as_slice() else {
+        panic!("expected four coded frames");
+    };
+    let retained = |state: ReferenceSlotState| match state {
+        ReferenceSlotState::Retained(picture) => picture.provenance.coded,
+        state => panic!("expected a retained reference, got {state:?}"),
+    };
+    assert!(key.resets_sequence);
+    assert!(key.mapping.is_none());
+    assert!(
+        key.before
+            .slots
+            .iter()
+            .all(|slot| *slot == ReferenceSlotState::Empty)
+    );
+    assert_eq!(retained(key.after.slots[0]), key.frame.coded);
+    assert!(
+        key.after.slots[1..]
+            .iter()
+            .all(|slot| *slot == ReferenceSlotState::Invalid)
+    );
+    assert_eq!(inter.before.slots, key.after.slots);
+    assert_eq!(inter.refresh_frame_flags, 1 << 1);
+    assert_eq!(retained(inter.after.slots[1]), inter.frame.coded);
+    let map = multi.mapping.as_ref().unwrap();
+    assert_eq!(map.origin, ReferenceMappingOrigin::Derived);
+    assert_eq!(map.slots.as_slice(), &[0, 1]);
+    assert_eq!(retained(multi.before.slots[0]), key.frame.coded);
+    assert_eq!(retained(multi.before.slots[1]), inter.frame.coded);
+    assert_eq!(multi.scaled_slots, 0);
+
+    assert!(reset.resets_sequence);
+    assert_eq!(reset.before.slots, multi.after.slots);
+    assert_eq!(retained(reset.after.slots[0]), reset.frame.coded);
+    assert_ne!(reset.frame.sequence_header, key.frame.sequence_header);
+    assert_eq!(pictures.len(), events.len());
+    for (event, picture) in events.iter().zip(pictures) {
+        assert_eq!(event.frame, picture.provenance());
+    }
+}
+
+#[test]
+fn reference_observer_reports_scaling_and_in_band_long_term_dependencies() {
+    let reference_scaling = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-2frame-refscale-inter-64x64-51x51-q80.ivf"
+    );
+    let hidden_long_term = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-hidden-clk-ras-initial-tu-64x64.ivf"
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let pictures = decode(&mut decoder, &units(reference_scaling), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    assert_eq!(pictures.len(), 2);
+    {
+        let mut events = events.lock().unwrap();
+        let [key, scaled] = events.as_slice() else {
+            panic!("expected the key and scaled frames");
+        };
+        assert_eq!((key.frame_size.width, key.frame_size.height), (64, 64));
+        assert_eq!(
+            (scaled.frame_size.width, scaled.frame_size.height),
+            (51, 51)
+        );
+        assert_eq!(scaled.scaled_slots, 1);
+        events.clear();
+    }
+    decoder.flush();
+    let pictures = decode(&mut decoder, &units(hidden_long_term), |_| {
+        DataProps::default().with_user_data(2)
+    });
+    let events = events.lock().unwrap();
+    let [hidden, ras] = events.as_slice() else {
+        panic!("expected the hidden key and the RAS frame");
+    };
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(pictures[0].provenance(), ras.frame);
+    assert_eq!(ras.required_long_term_ids, [0]);
+    let ReferenceSlotState::Retained(reference) = ras.before.slots[0] else {
+        panic!("expected the in-band long-term reference in slot zero");
+    };
+    assert_eq!(reference.long_term_id, Some(0));
+    assert_eq!(reference.provenance, hidden.frame);
+}
+
+#[test]
+fn reference_observer_uses_switch_signaling_and_omits_display_events() {
+    let switch =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-frame-switch-64x64.ivf");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let units_switch = units(switch);
+    let _ = decode(&mut decoder, &units_switch, |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    {
+        let mut events = events.lock().unwrap();
+        let event = events.last().unwrap();
+        assert_eq!(event.obu_type, ObuType::Switch);
+        assert_eq!(
+            event.mapping.as_ref().unwrap().origin,
+            ReferenceMappingOrigin::Signaled
+        );
+        assert_eq!(
+            event
+                .after
+                .slots
+                .iter()
+                .filter(|slot| matches!(slot, ReferenceSlotState::Retained(_)))
+                .count(),
+            1
+        );
+        events.clear();
+    }
+
+    decoder.flush();
+    let _ = decoder
+        .send_data(&units_switch[1], DataProps::default())
+        .unwrap();
+    assert!(decoder.wait_picture().is_err());
+    assert!(events.lock().unwrap().is_empty());
+
+    decoder.flush();
+    let pictures = decode(&mut decoder, &units(SEF_FAMILIES), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    let events = events.lock().unwrap();
+    let show_existing = pictures
+        .iter()
+        .find(|picture| {
+            let provenance = picture.provenance();
+            provenance.display != provenance.coded
+        })
+        .unwrap()
+        .provenance();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.frame.coded == show_existing.coded)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.frame.coded != show_existing.display)
+    );
+}
+
+#[test]
+fn reference_observer_preserves_the_single_picture_bridge_source() {
+    let bridge = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-bridge-single-picture-32x32.ivf"
+    );
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut decoder = reference_decoder(1, &events);
+    let pictures = decode(&mut decoder, &units(bridge), |index| {
+        DataProps::default().with_user_data(index as u64)
+    });
+    let events = events.lock().unwrap();
+    let [key, bridge] = events.as_slice() else {
+        panic!("expected the key and single-picture bridge");
+    };
+    assert_eq!(pictures.len(), 2);
+    assert_eq!(bridge.obu_type, ObuType::BridgeFrame);
+    assert_eq!(bridge.bridge_slot, Some(0));
+    assert!(bridge.mapping.is_none());
+    let ReferenceSlotState::Retained(source) = bridge.before.slots[0] else {
+        panic!("expected an available bridge source");
+    };
+    assert_eq!(source.provenance, key.frame);
 }

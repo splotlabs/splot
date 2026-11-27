@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used)]
-
 use super::grid::DeblockGridStorage;
 use super::*;
 use crate::filters::source::DeblockedWindow;
@@ -107,7 +105,7 @@ pub(super) fn source_from_workspace<T: ReconSample>(
     frontier_rows(core::mem::replace(workspace, replacement)).1
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn deblock_through_live_source<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],
@@ -134,7 +132,9 @@ fn deblock_through_live_source<T: ReconSample>(
         return Ok(());
     };
     let mut source = source_from_workspace(workspace);
-    sections.advance_source(&mut source, mi_rows, bit_depth)?;
+    crate::test_support::with_auto_backend!(backend => {
+        sections.advance_source(backend, &mut source, mi_rows, bit_depth)
+    })?;
     copy_rows_to_workspace(&mut source, workspace);
     Ok(())
 }
@@ -217,8 +217,10 @@ fn one_row_advance_matches_the_whole_frame_deblock() {
     )
     .unwrap();
     let mut staged_source = source_from_workspace(&mut staged);
-    plan.advance_source(&mut staged_source, mi_rows, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        plan.advance_source(backend, &mut staged_source, mi_rows, BitDepth::Eight)
+    })
+    .unwrap();
     copy_rows_to_workspace(&mut staged_source, &mut staged);
 
     let combined =
@@ -359,8 +361,10 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
     .unwrap();
     let mut source = source_from_workspace(&mut actual);
     for mi_row_end in [16, 32] {
-        plan.advance_source(&mut source, mi_row_end, BitDepth::Eight)
-            .unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            plan.advance_source(backend, &mut source, mi_row_end, BitDepth::Eight)
+        })
+        .unwrap();
     }
 
     assert_eq!(plan.final_luma_rows(1), 128);
@@ -404,9 +408,10 @@ fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
     };
     let mut expected = patterned_yuv420_workspace(128, 128);
     let mut source = source_from_workspace(&mut expected);
-    prepare(&blocks, &chroma)
-        .advance_source(&mut source, mi_rows, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        prepare(&blocks, &chroma).advance_source(backend, &mut source, mi_rows, BitDepth::Eight)
+    })
+    .unwrap();
     copy_rows_to_workspace(&mut source, &mut expected);
 
     let mut actual = patterned_yuv420_workspace(128, 128);
@@ -416,8 +421,10 @@ fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
     let luma = [blocks[..split].to_vec(), blocks[split..].to_vec()];
     for ((mut luma, mut part), advance) in luma.into_iter().zip(parts).zip([10, 32]) {
         plan.append_records(&mut luma, &mut part);
-        plan.advance_source(&mut source, advance, BitDepth::Eight)
-            .unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            plan.advance_source(backend, &mut source, advance, BitDepth::Eight)
+        })
+        .unwrap();
     }
     copy_rows_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
@@ -457,12 +464,16 @@ fn in_place_deblock_matches_workspace_across_stripe_windows() {
         &mut DeblockGridStorage::default(),
     )
     .unwrap();
-    plan.advance_source(&mut source, 16, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        plan.advance_source(backend, &mut source, 16, BitDepth::Eight)
+    })
+    .unwrap();
     let (mut earlier, mut carry) = (DeblockedWindow::default(), DeblockedWindow::default());
     earlier.fill(&mut source, &mut carry, (0, 32), 8).unwrap();
-    plan.advance_source(&mut source, 32, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        plan.advance_source(backend, &mut source, 32, BitDepth::Eight)
+    })
+    .unwrap();
     let mut later = DeblockedWindow::default();
     later.fill(&mut source, &mut carry, (32, 128), 0).unwrap();
 
@@ -538,12 +549,14 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
     let mut borrowed_source = source_from_workspace(&mut borrowed);
     let mut owned_source = source_from_workspace(&mut owned);
     for mi_row_end in [16, 32] {
-        borrowed_plan
-            .advance_source(&mut borrowed_source, mi_row_end, BitDepth::Eight)
-            .unwrap();
-        owned_plan
-            .advance_source(&mut owned_source, mi_row_end, BitDepth::Eight)
-            .unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            borrowed_plan.advance_source(backend, &mut borrowed_source, mi_row_end, BitDepth::Eight)
+        })
+        .unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            owned_plan.advance_source(backend, &mut owned_source, mi_row_end, BitDepth::Eight)
+        })
+        .unwrap();
     }
 
     copy_rows_to_workspace(&mut borrowed_source, &mut borrowed);
@@ -613,8 +626,10 @@ fn incremental_deblock_enforces_frontiers_and_leases_exact_window() {
 
     assert_eq!(plan.final_luma_rows(1), 0);
     let mut source = source_from_workspace(&mut workspace);
-    plan.advance_source(&mut source, 16, BitDepth::Eight)
-        .unwrap();
+    crate::test_support::with_auto_backend!(backend => {
+        plan.advance_source(backend, &mut source, 16, BitDepth::Eight)
+    })
+    .unwrap();
     assert_eq!(plan.final_luma_rows(0), 56);
     assert_eq!(plan.final_luma_rows(1), 48);
 
@@ -670,9 +685,10 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
     )
     .unwrap();
     let mut source = source_from_workspace(&mut actual);
-    plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
-        .unwrap();
-
+    crate::test_support::with_auto_backend!(backend => {
+        plan.advance_source(backend, &mut source, mi_rows, BitDepth::Eight)
+    })
+    .unwrap();
     assert_eq!(plan.final_luma_rows(1), 72);
     copy_rows_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
@@ -727,8 +743,10 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         )
         .unwrap();
         let mut source = source_from_workspace(&mut actual);
-        plan.advance_source(&mut source, mi_rows, BitDepth::Eight)
-            .unwrap();
+        crate::test_support::with_auto_backend!(backend => {
+            plan.advance_source(backend, &mut source, mi_rows, BitDepth::Eight)
+        })
+        .unwrap();
         copy_rows_to_workspace(&mut source, &mut actual);
         assert_workspace_samples_eq(&actual, &expected);
 
@@ -779,7 +797,8 @@ fn tip_deblocking_smooths_prediction_unit_boundaries() {
     fill_rect(&mut ws, PlaneId::Y, 0..16, 0..32, 100);
     fill_rect(&mut ws, PlaneId::Y, 16..32, 0..32, 108);
 
-    deblock_tip_frame(
+    crate::test_support::with_auto_backend!(backend => deblock_tip_frame(
+        backend,
         &mut ws,
         16,
         QuantizationParams::inferred_tip(100, 0, 0),
@@ -787,7 +806,7 @@ fn tip_deblocking_smooths_prediction_unit_boundaries() {
         None,
         false,
         BitDepth::Eight,
-    )
+    ))
     .unwrap();
 
     assert_smoothed_step(
@@ -823,7 +842,8 @@ fn tip_deblocking_obeys_cross_tile_filtering_flag() {
         .unwrap();
         fill_rect(&mut workspace, PlaneId::Y, 0..64, 0..64, 100);
         fill_rect(&mut workspace, PlaneId::Y, 64..128, 0..64, 108);
-        deblock_tip_frame(
+        crate::test_support::with_auto_backend!(backend => deblock_tip_frame(
+            backend,
             &mut workspace,
             16,
             QuantizationParams::inferred_tip(100, 0, 0),
@@ -831,7 +851,7 @@ fn tip_deblocking_obeys_cross_tile_filtering_flag() {
             Some((&col_starts, &row_starts)),
             disable_loopfilters_across_tiles,
             BitDepth::Eight,
-        )
+        ))
         .unwrap();
         workspace
     };
@@ -868,7 +888,8 @@ fn tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry() {
             0..32,
             108,
         );
-        deblock_tip_frame(
+        crate::test_support::with_auto_backend!(backend => deblock_tip_frame(
+            backend,
             &mut workspace,
             16,
             QuantizationParams::inferred_tip(100, 0, 0),
@@ -876,7 +897,7 @@ fn tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry() {
             None,
             false,
             BitDepth::Eight,
-        )
+        ))
         .unwrap();
         assert_smoothed_step(
             workspace
@@ -931,7 +952,6 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
 
 #[test]
 fn batched_passes_match_every_edge_alone_in_spec_order() {
-    #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
             r: r as u16,
@@ -976,7 +996,6 @@ fn batched_passes_match_every_edge_alone_in_spec_order() {
 
 #[test]
 fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
-    #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
             r: r as u16,
@@ -1169,13 +1188,19 @@ fn assert_passes_match_every_edge(
                 width: band.width,
                 height: band.height,
             };
-            edges.build(grid, &plane_pass, &geometry).unwrap();
+            crate::test_support::with_auto_backend!(backend => {
+                edges.build(backend, grid, &plane_pass, &geometry)
+            })
+            .unwrap();
             let mut ctx = PlaneCtx::new(band).unwrap();
-            if plane_pass.pass == 0 {
-                edges.apply::<u8, 0>(&mut ctx, BitDepth::Eight).unwrap();
-            } else {
-                edges.apply::<u8, 1>(&mut ctx, BitDepth::Eight).unwrap();
-            }
+            crate::test_support::with_auto_backend!(backend => {
+                if plane_pass.pass == 0 {
+                    edges.apply::<_, u8, 0>(backend, &mut ctx, BitDepth::Eight)
+                } else {
+                    edges.apply::<_, u8, 1>(backend, &mut ctx, BitDepth::Eight)
+                }
+            })
+            .unwrap();
         }
     });
     let mut reference = walk_test_workspace(width, height);

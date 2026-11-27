@@ -129,7 +129,7 @@ impl EncoderInterTile {
         let (ref0, ref1) = compound.ref_frames;
         let input = CompoundBlendInput {
             use_optflow: compound.use_optflow,
-            joint_amvd: compound.y_mode == CompoundYMode::JointNew && compound.use_amvd,
+            joint_amvd: compound.y_mode == CompoundMode::JointNew && compound.use_amvd,
             switchable_refinemv_on: refinemv && switchable,
             n4w,
             n4h,
@@ -291,7 +291,7 @@ impl EncoderInterTile {
                 None => Ok(()),
             };
         }
-        let bsize_group = super::super::SIZE_GROUP_LOOKUP[frontier.b_size.index()];
+        let bsize_group = usize::from(super::super::SIZE_GROUP_LOOKUP[frontier.b_size.index()]);
         out.push((
             TileCdfSelector::InterIntra { bsize_group },
             u8::from(interintra.is_some()),
@@ -492,7 +492,7 @@ impl BawpBlock {
     /// Whether the template of the plane with `(subX, subY)` under `mv`
     /// lies inside the plane: `refX >= 1`, `refY >= 1`,
     /// `refX + bw <= planeWidth` and `refY + bh <= planeHeight`.
-    fn template_inside(self, (sx, sy): (u32, u32), mv: Mv) -> bool {
+    fn template_inside(self, (sx, sy): (u32, u32), mv: MotionVector) -> bool {
         let to_fullmv = crate::prediction::inter::bawp::to_fullmv;
         let ((row, col), (n4w, n4h), (mi_rows, mi_cols)) = (self.mi, self.n4, self.mi_size);
         let plane_width = (mi_cols * MI_SIZE) as i64 >> sx;
@@ -586,7 +586,7 @@ mod tests {
             n4: (4, 4),
             mi_size: (12, 16),
         };
-        let fullpel = |row: i32, col: i32| Mv {
+        let fullpel = |row: i32, col: i32| MotionVector {
             row: row * 8,
             col: col * 8,
         };

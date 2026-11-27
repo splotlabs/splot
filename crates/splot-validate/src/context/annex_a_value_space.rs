@@ -37,115 +37,6 @@ pub(super) fn annex_a_value_space_fingerprint(
     }
 }
 
-/// Checks Annex A.4 frame dimensions and tile counts for table-mapped levels.
-/// The minimum-dimension rule shares that gate; reserved levels and level 31 skip it.
-pub(super) fn frame_annex_a_level_checks(
-    core: &FrameHeaderCore,
-    active_sequence: &SequenceHeader,
-    obu: &ObuEnvelope<'_>,
-    report: &mut ValidationReport,
-) {
-    let level_idx = active_sequence.general.seq_level_idx.get();
-    let Some(limits) = level_limits(level_idx) else {
-        return;
-    };
-
-    if let Some(frame_size) = core.frame_size {
-        let width = frame_size.width;
-        let height = frame_size.height;
-        let pic_size = u64::from(width) * u64::from(height);
-
-        if pic_size > limits.max_pic_size {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/frame-size-exceeds-level",
-                    format!(
-                        "FrameWidth * FrameHeight ({width} * {height} = {pic_size}) exceeds \
-                         MaxPicSize {} for seq_level_idx {level_idx}",
-                        limits.max_pic_size
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-        if width > limits.max_h_v_size {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/frame-size-exceeds-level",
-                    format!(
-                        "FrameWidth {width} exceeds MaxHSize {} for seq_level_idx {level_idx}",
-                        limits.max_h_v_size
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-        if height > limits.max_h_v_size {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/frame-size-exceeds-level",
-                    format!(
-                        "FrameHeight {height} exceeds MaxVSize {} for seq_level_idx {level_idx}",
-                        limits.max_h_v_size
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-        if width < MIN_FRAME_DIMENSION || height < MIN_FRAME_DIMENSION {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/frame-size-below-minimum",
-                    format!(
-                        "FrameWidth {width} / FrameHeight {height} must both be at least \
-                         {MIN_FRAME_DIMENSION} for seq_level_idx {level_idx}"
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-    }
-
-    if let Some(tile_info) = core.tile_info.as_ref() {
-        let tile_cols = tile_info.tile_cols;
-        let num_tiles = u64::from(tile_cols) * u64::from(tile_info.tile_rows);
-        if num_tiles > u64::from(limits.max_tiles) {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/tile-count-exceeds-level",
-                    format!(
-                        "NumTiles {num_tiles} (TileCols {tile_cols} * TileRows {}) exceeds \
-                         MaxTiles {} for seq_level_idx {level_idx}",
-                        tile_info.tile_rows, limits.max_tiles
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-        if tile_cols > limits.max_tile_cols {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/tile-count-exceeds-level",
-                    format!(
-                        "TileCols {tile_cols} exceeds MaxTileCols {} for seq_level_idx \
-                         {level_idx}",
-                        limits.max_tile_cols
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(obu.offset),
-            );
-        }
-
-        // TODO(spec: AV2-A-LEVELS-TIERS): the per-tile constraints in the same Annex A.4
-    }
-}
-
 /// Checks each included extended layer’s OPS profile, level and tier (Annex A.2/A.4).
 /// High tier below 4.0 is advisory: the constraint comes from the informative Table A.9
 /// NOTE. OPS signals the tier unconditionally, making this warning reachable.
@@ -154,13 +45,13 @@ pub(super) fn check_ops_level_tier_value_space(
     ops: &OperatingPointSet,
     report: &mut ValidationReport,
 ) {
-    // TODO(spec: AV2-A-LEVELS-TIERS): this checks only the OPS-carried *value space*
+    // TODO(spec: AV2-A-LEVELS-TIERS): also check each ops_level_idx against the Annex A.4 limits.
     for payload in &ops.payloads {
         for entry in &payload.xlayer_entries {
             let Some(ptl) = entry.ptl_info.as_ref() else {
                 continue;
             };
-            if is_reserved_profile(ptl.seq_profile_idc.get()) {
+            if ptl.seq_profile_idc.is_reserved() {
                 report.push(
                     Diagnostic::error(
                         "annex-a/profile-reserved",
@@ -222,8 +113,7 @@ pub(super) fn check_ops_level_tier_value_space(
 impl ValidatorContext {
     /// Checks Annex A.2/A.4 value space once per frame-confirmed header and CVS epoch,
     /// anchored at the defining OBU. Redefinitions with changed checked fields re-run it.
-    /// These in-band facts remain decidable under external HLS. Configurable profiles
-    /// have no fixed chroma restriction. The parser infers Main tier below level 4.0.
+    /// Snapshot construction checks external definitions. The parser infers Main tier below level 4.0.
     pub(super) fn check_annex_a_value_space(
         &mut self,
         xlayer: ExtendedLayerId,
@@ -235,11 +125,13 @@ impl ValidatorContext {
         let Some((seq_header_id, general)) = self.active_general_for(xlayer) else {
             return;
         };
-        let offset = self
-            .sequence_header_offsets
-            .get(&seq_header_id)
-            .copied()
-            .unwrap_or(ByteOffset::new(0));
+        let Some(offset) = self
+            .hls
+            .sequence(xlayer, seq_header_id)
+            .and_then(|stored| stored.offset)
+        else {
+            return;
+        };
         let epoch = self.cvs.cvs_generation_epoch(xlayer);
         let fingerprint = annex_a_value_space_fingerprint(&general);
         if !self
@@ -249,50 +141,60 @@ impl ValidatorContext {
             return;
         }
 
-        let profile_idc = general.seq_profile_idc.get();
-        let level_idx = general.seq_level_idx.get();
-        let is_configurable = profile_idc == crate::annex_a::CONFIGURABLE_PROFILE_IDC;
+        check_sequence_value_space(&general, offset, report);
+    }
+}
 
-        if is_reserved_profile(profile_idc) {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/profile-reserved",
-                    format!(
-                        "seq_profile_idc {profile_idc} is reserved (5..=30); it conforms to no \
-                         AV2 profile defined in this version of the specification"
-                    ),
-                )
-                .with_spec_section("A.2")
-                .with_byte_offset(offset),
-            );
-        } else if !is_configurable && !profile_allows_chroma(profile_idc, general.chroma_format_idc)
-        {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/profile-chroma-format-mismatch",
-                    format!(
-                        "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
-                        general.chroma_format_idc.get(),
-                        profile_idc
-                    ),
-                )
-                .with_spec_section("A.2")
-                .with_byte_offset(offset),
-            );
-        }
+/// Checks sequence header facts that do not depend on stream activation.
+pub(super) fn check_sequence_value_space(
+    general: &SequenceHeaderGeneral,
+    offset: ByteOffset,
+    report: &mut ValidationReport,
+) {
+    let profile_idc = general.seq_profile_idc.get();
+    let level_idx = general.seq_level_idx.get();
 
-        if is_reserved_level(level_idx) {
-            report.push(
-                Diagnostic::error(
-                    "annex-a/level-reserved",
-                    format!(
-                        "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
-                         defined in this version of the specification"
-                    ),
-                )
-                .with_spec_section("A.4")
-                .with_byte_offset(offset),
-            );
-        }
+    if general.seq_profile_idc.is_reserved() {
+        report.push(
+            Diagnostic::error(
+                "annex-a/profile-reserved",
+                format!(
+                    "seq_profile_idc {profile_idc} is reserved (5..=30); it conforms to no \
+                     AV2 profile defined in this version of the specification"
+                ),
+            )
+            .with_spec_section("A.2")
+            .with_byte_offset(offset),
+        );
+    } else if !general
+        .seq_profile_idc
+        .allows_chroma(general.chroma_format_idc)
+    {
+        report.push(
+            Diagnostic::error(
+                "annex-a/profile-chroma-format-mismatch",
+                format!(
+                    "chroma_format_idc {} is not in the allowed set of seq_profile_idc {}",
+                    general.chroma_format_idc.get(),
+                    profile_idc
+                ),
+            )
+            .with_spec_section("A.2")
+            .with_byte_offset(offset),
+        );
+    }
+
+    if is_reserved_level(level_idx) {
+        report.push(
+            Diagnostic::error(
+                "annex-a/level-reserved",
+                format!(
+                    "seq_level_idx {level_idx} is reserved (22..=30); it maps to no AV2 level \
+                     defined in this version of the specification"
+                ),
+            )
+            .with_spec_section("A.4")
+            .with_byte_offset(offset),
+        );
     }
 }

@@ -8,14 +8,18 @@
 //! AVM oracle hash at every pool width in [`THREAD_LEGS`], ensuring output is
 //! independent of worker count. CI gate, no AVM, no network.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, clippy::panic)]
+
+#[path = "decoder_oracle/atlas.rs"]
+mod atlas;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
+mod common;
+use common::sha256_hex;
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeContext, DecodeOptions, DecodeRuntimeConfig, Decoder, DecoderSettings,
@@ -36,7 +40,7 @@ const SB256_INTRA_RAW_SHA256: &str =
 /// Film grain fixtures with the SHA-256 of their
 /// `avmdec --i420 --rawvideo --skip-film-grain` output: an 8-bit key frame,
 /// and a 10-bit key frame with two inter frames.
-const FILM_GRAIN_SKIPPED: [(&[u8], &str); 2] = [
+const FILM_GRAIN_SKIPPED: [(&[u8], &str); 3] = [
     (
         include_bytes!("../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf"),
         "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53",
@@ -46,6 +50,12 @@ const FILM_GRAIN_SKIPPED: [(&[u8], &str); 2] = [
             "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
         ),
         "5e4da3a2658836d7f15696188ecf895b16992d6fd033d30e4c62f579b81cdf89",
+    ),
+    (
+        include_bytes!(
+            "../../../tests/conformance/vectors/valid/syn-bru-inactive-filmgrain-8bit.ivf"
+        ),
+        "6571db3ede2a79b9568e602483e1f38b266f7b4cfe3408e9e0f011c33c39791b",
     ),
 ];
 
@@ -69,15 +79,6 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("repo root")
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut hex = String::with_capacity(64);
-    for b in Sha256::digest(bytes) {
-        let _ = write!(hex, "{b:02x}");
-    }
-    hex
 }
 
 fn decode_raw(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {

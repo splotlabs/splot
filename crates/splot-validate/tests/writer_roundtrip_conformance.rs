@@ -21,7 +21,7 @@
 //! re-emits each through the complete-OBU writer and asserts the re-emission is byte-exact and still
 //! otherwise validator-clean.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![expect(clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 

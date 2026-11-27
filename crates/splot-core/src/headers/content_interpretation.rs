@@ -12,7 +12,8 @@
 
 use crate::bitio::BitReader;
 use crate::error::Result;
-use crate::headers::sequence::{TimingInfo, parse_timing_info};
+use crate::headers::sequence::{TimingInfo, parse_timing_info_with_reader};
+use crate::syntax::{NoopObserver, SyntaxObserver, SyntaxReader};
 
 /// `ci_scan_type_idc` (AV2 v1.0.0 § 5.15 / § 6.14): how to interpret pictures in a
 /// CVS in terms of progressive or interlace samples (0 unspecified, 1 progressive
@@ -67,7 +68,19 @@ pub struct ColorDescription {
 /// The unspecified `(CP_UNSPECIFIED, TC_UNSPECIFIED, MC_UNSPECIFIED)` color-primaries
 /// triple (AV2 § 6.14: each constant is `2`). It is the default when no color
 /// description is present and the derived value of any reserved color id.
-const UNSPECIFIED_COLOR_PRIMARIES: (u8, u8, u8) = (2, 2, 2);
+const UNSPECIFIED_COLOR_PRIMARIES: ColorPrimariesTriple = triple(2, 2, 2);
+
+const fn triple(
+    color_primaries: u8,
+    transfer_characteristics: u8,
+    matrix_coefficients: u8,
+) -> ColorPrimariesTriple {
+    ColorPrimariesTriple {
+        color_primaries,
+        transfer_characteristics,
+        matrix_coefficients,
+    }
+}
 
 /// Derived color information for AV2 § 6.14 "same information" comparisons.
 ///
@@ -79,11 +92,10 @@ const UNSPECIFIED_COLOR_PRIMARIES: (u8, u8, u8) = (2, 2, 2);
 /// [`ContentInterpretation::derived_color`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedColorInfo {
-    /// `(ci_color_primaries, ci_transfer_characteristics, ci_matrix_coefficients)`:
-    /// the explicit triple for `idc == 0`, the Table 6.13 preset for `idc` in
-    /// `1..=5`, or the unspecified `(2, 2, 2)` for a reserved `idc` (`6..=127`),
-    /// which decoders ignore.
-    pub primaries: (u8, u8, u8),
+    /// The H.273 code points: the explicit triple for `idc == 0`, the Table 6.13
+    /// preset for `idc` in `1..=5`, or the unspecified `(2, 2, 2)` for a reserved
+    /// `idc` (`6..=127`), which decoders ignore.
+    pub code_points: ColorPrimariesTriple,
     /// `ci_full_range_flag`.
     pub full_range: bool,
 }
@@ -92,17 +104,17 @@ impl DerivedColorInfo {
     /// The derived color information when no color description is present (AV2
     /// § 5.15: `ci_color_*` default to `*_UNSPECIFIED` and `ci_full_range_flag` to 0).
     pub const UNSPECIFIED: Self = Self {
-        primaries: UNSPECIFIED_COLOR_PRIMARIES,
+        code_points: UNSPECIFIED_COLOR_PRIMARIES,
         full_range: false,
     };
 }
 
 impl ColorDescription {
-    /// The shortest description of the H.273 code points `(color_primaries,
-    /// transfer_characteristics, matrix_coefficients)` with `full_range_flag`: the
-    /// Table 6.13 preset id whose triple they equal, else the explicit triple.
+    /// The shortest description of the H.273 `code_points` with
+    /// `full_range_flag`: the Table 6.13 preset id whose triple they equal, else
+    /// the explicit triple.
     #[must_use]
-    pub fn from_code_points(code_points: (u8, u8, u8), full_range_flag: bool) -> Self {
+    pub fn from_code_points(code_points: ColorPrimariesTriple, full_range_flag: bool) -> Self {
         let preset = |color_description_idc| Self {
             color_description_idc,
             primaries: None,
@@ -110,14 +122,10 @@ impl ColorDescription {
         };
         (1..=5)
             .map(preset)
-            .find(|preset| preset.derived().primaries == code_points)
+            .find(|preset| preset.derived().code_points == code_points)
             .unwrap_or(Self {
                 color_description_idc: 0,
-                primaries: Some(ColorPrimariesTriple {
-                    color_primaries: code_points.0,
-                    transfer_characteristics: code_points.1,
-                    matrix_coefficients: code_points.2,
-                }),
+                primaries: Some(code_points),
                 full_range_flag,
             })
     }
@@ -129,23 +137,17 @@ impl ColorDescription {
     /// unspecified description).
     #[must_use]
     pub fn derived(&self) -> DerivedColorInfo {
-        let primaries = match self.color_description_idc {
-            0 => self.primaries.map_or(UNSPECIFIED_COLOR_PRIMARIES, |p| {
-                (
-                    p.color_primaries,
-                    p.transfer_characteristics,
-                    p.matrix_coefficients,
-                )
-            }),
-            1 => (1, 1, 1),                   // BT.709 SDR
-            2 => (9, 16, 9),                  // BT.2100 PQ
-            3 => (9, 18, 9),                  // BT.2100 HLG
-            4 => (1, 13, 0),                  // sRGB
-            5 => (1, 13, 5),                  // sYCC
+        let code_points = match self.color_description_idc {
+            0 => self.primaries.unwrap_or(UNSPECIFIED_COLOR_PRIMARIES),
+            1 => triple(1, 1, 1),             // BT.709 SDR
+            2 => triple(9, 16, 9),            // BT.2100 PQ
+            3 => triple(9, 18, 9),            // BT.2100 HLG
+            4 => triple(1, 13, 0),            // sRGB
+            5 => triple(1, 13, 5),            // sYCC
             _ => UNSPECIFIED_COLOR_PRIMARIES, // 6..=127 reserved -> ignored by decoders
         };
         DerivedColorInfo {
-            primaries,
+            code_points,
             full_range: self.full_range_flag,
         }
     }
@@ -303,6 +305,23 @@ impl ContentInterpretation {
         }
     }
 
+    /// Returns whether two declarations contain different known information.
+    ///
+    /// The comparison uses the derived color and aspect ratio values (AV2
+    /// § 6.14). Reserved bits and an undecidable aspect ratio do not establish
+    /// differences.
+    #[must_use]
+    pub fn information_differs(&self, other: &Self) -> bool {
+        self.scan_type_idc != other.scan_type_idc
+            || self.chroma_sample_position != other.chroma_sample_position
+            || self.timing_info != other.timing_info
+            || self.derived_color() != other.derived_color()
+            || matches!(
+                (self.derived_sample_aspect_ratio(), other.derived_sample_aspect_ratio()),
+                (Some(a), Some(b)) if a != b
+            )
+    }
+
     /// Returns the derived color information, resolving an absent color description
     /// to its § 5.15 default (`*_UNSPECIFIED`, full range 0). Suitable for § 6.14
     /// "same information" comparisons across OBUs regardless of how (or whether) the
@@ -336,82 +355,129 @@ impl ContentInterpretation {
 /// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the payload ends
 /// mid-field.
 pub fn parse_content_interpretation(reader: &mut BitReader<'_>) -> Result<ContentInterpretation> {
-    let scan_type_idc = ScanTypeIdc::from_bits(reader.read_bits_u8(2)?);
-    let color_description_present_flag = reader.read_flag()?;
-    let chroma_sample_position_present_flag = reader.read_flag()?;
-    let aspect_ratio_info_present_flag = reader.read_flag()?;
-    let timing_info_present_flag = reader.read_flag()?;
-    let reserved_2bit = reader.read_bits_u8(2)?;
+    let mut noop = NoopObserver;
+    let mut sr = SyntaxReader::new(reader, &mut noop);
+    parse_content_interpretation_with_reader(&mut sr)
+}
 
-    let color_description = if color_description_present_flag {
-        let color_description_idc = reader.read_rg(2)?;
-        let primaries = if color_description_idc == 0 {
-            Some(ColorPrimariesTriple {
-                color_primaries: reader.read_bits_u8(8)?,
-                transfer_characteristics: reader.read_bits_u8(8)?,
-                matrix_coefficients: reader.read_bits_u8(8)?,
+/// Parses `content_interpretation_obu()` (AV2 v1.0.0 § 5.15) while reporting
+/// syntax fields and bit spans to `observer`.
+///
+/// # Errors
+/// Returns descriptor errors, [`Error::InvalidSequenceHeader`](crate::error::Error::InvalidSequenceHeader),
+/// or [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof).
+pub fn parse_content_interpretation_observed(
+    reader: &mut BitReader<'_>,
+    observer: &mut dyn SyntaxObserver,
+) -> Result<ContentInterpretation> {
+    let mut observer = observer;
+    let mut sr = SyntaxReader::new(reader, &mut observer);
+    parse_content_interpretation_with_reader(&mut sr)
+}
+
+pub(crate) fn parse_content_interpretation_with_reader<O: SyntaxObserver>(
+    sr: &mut SyntaxReader<'_, '_, O>,
+) -> Result<ContentInterpretation> {
+    sr.in_struct("content_interpretation_obu", Some("5.15"), |sr| {
+        let scan_type_idc = ScanTypeIdc::from_bits(sr.read_bits_u8("ci_scan_type_idc", 2)?);
+        let color_description_present_flag = sr.read_flag("ci_color_description_present_flag")?;
+        let chroma_sample_position_present_flag =
+            sr.read_flag("ci_chroma_sample_position_present_flag")?;
+        let aspect_ratio_info_present_flag = sr.read_flag("ci_aspect_ratio_info_present_flag")?;
+        let timing_info_present_flag = sr.read_flag("ci_timing_info_present_flag")?;
+        let reserved_2bit = sr.read_bits_u8("ci_reserved_2bit", 2)?;
+
+        let color_description = if color_description_present_flag {
+            let color_description_idc = sr.read_rg("ci_color_description_idc", 2)?;
+            let primaries = if color_description_idc == 0 {
+                Some(ColorPrimariesTriple {
+                    color_primaries: sr.read_bits_u8("ci_color_primaries", 8)?,
+                    transfer_characteristics: sr.read_bits_u8("ci_transfer_characteristics", 8)?,
+                    matrix_coefficients: sr.read_bits_u8("ci_matrix_coefficients", 8)?,
+                })
+            } else {
+                sr.absent("ci_color_primaries", "ci_color_description_idc != 0");
+                sr.absent(
+                    "ci_transfer_characteristics",
+                    "ci_color_description_idc != 0",
+                );
+                sr.absent("ci_matrix_coefficients", "ci_color_description_idc != 0");
+                None
+            };
+            let full_range_flag = sr.read_flag("ci_full_range_flag")?;
+            Some(ColorDescription {
+                color_description_idc,
+                primaries,
+                full_range_flag,
             })
+        } else {
+            sr.absent(
+                "ci_color_description_idc",
+                "!ci_color_description_present_flag",
+            );
+            None
+        };
+
+        let chroma_sample_position = if chroma_sample_position_present_flag {
+            let top = sr.read_uvlc("ci_chroma_sample_position_top")?;
+            let bottom = if scan_type_idc.is_progressive_frame() {
+                sr.inferred_u64(
+                    "ci_chroma_sample_position_bottom",
+                    "ci_scan_type_idc == 1",
+                    u64::from(top),
+                );
+                top
+            } else {
+                sr.read_uvlc("ci_chroma_sample_position_bottom")?
+            };
+            Some(ChromaSamplePosition { top, bottom })
+        } else {
+            sr.absent(
+                "ci_chroma_sample_position_top",
+                "!ci_chroma_sample_position_present_flag",
+            );
+            None
+        };
+
+        let aspect_ratio = if aspect_ratio_info_present_flag {
+            let aspect_ratio_idc = sr.read_bits_u8("ci_aspect_ratio_idc", 8)?;
+            let extended_sar = if aspect_ratio_idc == 255 {
+                Some(ExtendedSampleAspectRatio {
+                    sar_width: sr.read_uvlc("ci_sar_width")?,
+                    sar_height: sr.read_uvlc("ci_sar_height")?,
+                })
+            } else {
+                sr.absent("ci_sar_width", "ci_aspect_ratio_idc != 255");
+                sr.absent("ci_sar_height", "ci_aspect_ratio_idc != 255");
+                None
+            };
+            Some(AspectRatioInfo {
+                aspect_ratio_idc,
+                extended_sar,
+            })
+        } else {
+            sr.absent("ci_aspect_ratio_idc", "!ci_aspect_ratio_info_present_flag");
+            None
+        };
+
+        let timing_info = if timing_info_present_flag {
+            Some(parse_timing_info_with_reader(sr)?)
         } else {
             None
         };
-        let full_range_flag = reader.read_flag()?;
-        Some(ColorDescription {
-            color_description_idc,
-            primaries,
-            full_range_flag,
+
+        Ok(ContentInterpretation {
+            scan_type_idc,
+            color_description,
+            chroma_sample_position,
+            aspect_ratio,
+            timing_info,
+            reserved_2bit,
         })
-    } else {
-        None
-    };
-
-    let chroma_sample_position = if chroma_sample_position_present_flag {
-        let top = reader.read_uvlc()?;
-        let bottom = if scan_type_idc.is_progressive_frame() {
-            top
-        } else {
-            reader.read_uvlc()?
-        };
-        Some(ChromaSamplePosition { top, bottom })
-    } else {
-        None
-    };
-
-    let aspect_ratio = if aspect_ratio_info_present_flag {
-        let aspect_ratio_idc = reader.read_bits_u8(8)?;
-        let extended_sar = if aspect_ratio_idc == 255 {
-            Some(ExtendedSampleAspectRatio {
-                sar_width: reader.read_uvlc()?,
-                sar_height: reader.read_uvlc()?,
-            })
-        } else {
-            None
-        };
-        Some(AspectRatioInfo {
-            aspect_ratio_idc,
-            extended_sar,
-        })
-    } else {
-        None
-    };
-
-    let timing_info = if timing_info_present_flag {
-        Some(parse_timing_info(reader)?)
-    } else {
-        None
-    };
-
-    Ok(ContentInterpretation {
-        scan_type_idc,
-        color_description,
-        chroma_sample_position,
-        aspect_ratio,
-        timing_info,
-        reserved_2bit,
     })
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::error::Error;
@@ -656,7 +722,7 @@ mod tests {
             full_range_flag: false,
         };
         assert_eq!(preset.derived(), explicit.derived());
-        assert_eq!(preset.derived().primaries, (1, 1, 1));
+        assert_eq!(preset.derived().code_points, triple(1, 1, 1));
 
         let preset_triple = |idc: u32| {
             ColorDescription {
@@ -665,12 +731,12 @@ mod tests {
                 full_range_flag: false,
             }
             .derived()
-            .primaries
+            .code_points
         };
-        assert_eq!(preset_triple(2), (9, 16, 9)); // BT.2100 PQ
-        assert_eq!(preset_triple(3), (9, 18, 9)); // BT.2100 HLG
-        assert_eq!(preset_triple(4), (1, 13, 0)); // sRGB
-        assert_eq!(preset_triple(5), (1, 13, 5)); // sYCC
+        assert_eq!(preset_triple(2), triple(9, 16, 9)); // BT.2100 PQ
+        assert_eq!(preset_triple(3), triple(9, 18, 9)); // BT.2100 HLG
+        assert_eq!(preset_triple(4), triple(1, 13, 0)); // sRGB
+        assert_eq!(preset_triple(5), triple(1, 13, 5)); // sYCC
 
         let bt2100_pq = ColorDescription {
             color_description_idc: 2,
@@ -684,7 +750,7 @@ mod tests {
             primaries: None,
             full_range_flag: true,
         };
-        assert_eq!(reserved.derived().primaries, (2, 2, 2));
+        assert_eq!(reserved.derived().code_points, triple(2, 2, 2));
         assert!(reserved.derived().full_range);
 
         let explicit_unspecified = ColorDescription {
@@ -701,15 +767,19 @@ mod tests {
 
     #[test]
     fn shortest_descriptions_keep_the_derived_values() {
-        for (code_points, idc) in [((1, 1, 1), 1), ((9, 16, 9), 2), ((1, 13, 5), 5)] {
+        for (code_points, idc) in [
+            (triple(1, 1, 1), 1),
+            (triple(9, 16, 9), 2),
+            (triple(1, 13, 5), 5),
+        ] {
             let color = ColorDescription::from_code_points(code_points, true);
             assert_eq!((color.color_description_idc, color.primaries), (idc, None));
-            assert_eq!(color.derived().primaries, code_points);
+            assert_eq!(color.derived().code_points, code_points);
             assert!(color.full_range_flag);
         }
-        let explicit = ColorDescription::from_code_points((9, 16, 0), false);
+        let explicit = ColorDescription::from_code_points(triple(9, 16, 0), false);
         assert_eq!(explicit.color_description_idc, 0);
-        assert_eq!(explicit.derived().primaries, (9, 16, 0));
+        assert_eq!(explicit.derived().code_points, triple(9, 16, 0));
 
         for (sar, idc) in [((1, 1), 1), ((8, 8), 1), ((80, 33), 9), ((4, 2), 16)] {
             let aspect = AspectRatioInfo::from_sample_aspect_ratio(sar.0, sar.1);

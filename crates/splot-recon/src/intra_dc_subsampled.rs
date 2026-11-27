@@ -136,7 +136,6 @@ pub(crate) const fn subsampled_step(dimension: usize) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -3,6 +3,8 @@
 
 //! AV2 § 8.3.2 block-symbol CDF context derivation.
 
+use splot_recon::IntraSmoothMode;
+
 pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 
 /// An intra prediction mode: a § 6.19.5.5 `YMode` or non-CFL `UVMode` value.
@@ -41,7 +43,7 @@ pub enum IntraYMode {
 pub(crate) enum IntraYModeClass {
     Dc,
     Directional { base_angle: u16 },
-    Smooth(SupportedNonDcLumaMode),
+    Smooth(IntraSmoothMode),
     Paeth,
 }
 
@@ -82,21 +84,12 @@ impl IntraYMode {
             Self::D157 => IntraYModeClass::Directional { base_angle: 157 },
             Self::D203 => IntraYModeClass::Directional { base_angle: 203 },
             Self::D67 => IntraYModeClass::Directional { base_angle: 67 },
-            Self::Smooth => IntraYModeClass::Smooth(SupportedNonDcLumaMode::Smooth),
-            Self::SmoothVertical => IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothVertical),
-            Self::SmoothHorizontal => {
-                IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothHorizontal)
-            }
+            Self::Smooth => IntraYModeClass::Smooth(IntraSmoothMode::Smooth),
+            Self::SmoothVertical => IntraYModeClass::Smooth(IntraSmoothMode::SmoothVertical),
+            Self::SmoothHorizontal => IntraYModeClass::Smooth(IntraSmoothMode::SmoothHorizontal),
             Self::Paeth => IntraYModeClass::Paeth,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportedNonDcLumaMode {
-    Smooth,
-    SmoothVertical,
-    SmoothHorizontal,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -106,28 +99,51 @@ pub(crate) enum SupportedDirectionalLumaMode {
     D157,
 }
 
+/// An AV2 chroma intra mode outside of chroma-from-luma prediction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SupportedChromaMode {
+#[non_exhaustive]
+pub enum SupportedChromaMode {
+    /// DC prediction.
     Dc,
+    /// Smooth prediction in both directions.
     Smooth,
+    /// 135-degree prediction with the luma angle delta.
     D135Follow,
+    /// 113-degree prediction with the luma angle delta.
     D113Follow,
+    /// 157-degree prediction with the luma angle delta.
     D157Follow,
+    /// Vertical prediction with the luma angle delta.
     VerticalFollow,
+    /// Vertical prediction.
     Vertical,
+    /// Horizontal prediction with the luma angle delta.
     HorizontalFollow,
+    /// Horizontal prediction.
     Horizontal,
+    /// 45-degree prediction with the luma angle delta.
     D45Follow,
+    /// 67-degree prediction with the luma angle delta.
     D67Follow,
+    /// 45-degree prediction.
     D45,
+    /// 67-degree prediction.
     D67,
+    /// 135-degree prediction.
     D135,
+    /// 113-degree prediction.
     D113,
+    /// 203-degree prediction with the luma angle delta.
     D203Follow,
+    /// 203-degree prediction.
     D203,
+    /// 157-degree prediction.
     D157,
+    /// Paeth prediction.
     Paeth,
+    /// Smooth prediction in the vertical direction.
     SmoothVertical,
+    /// Smooth prediction in the horizontal direction.
     SmoothHorizontal,
 }
 
@@ -537,7 +553,6 @@ pub(crate) fn txb_skip_ctx_luma(
     }
 }
 
-#[allow(clippy::fn_params_excessive_bools)]
 pub(crate) const fn v_txb_skip_ctx(
     above_nonzero: bool,
     left_nonzero: bool,

@@ -3,8 +3,6 @@
 
 //! CDEF frontier tests for `DECODE-GENERAL-INTRA-CDEF`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-
 use super::{assert_hash, assert_yuv420_frame, decode_eight};
 use splot_recon::BitDepth;
 

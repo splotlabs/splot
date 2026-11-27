@@ -7,7 +7,7 @@
 //! `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-1`) on the intra path
 //! (`ENC-BITSTREAM-WRITER`).
 //!
-//! This writer is additive: it reads a parsed [`SegmentationParams`] together with the
+//! This writer reads a parsed [`SegmentationParams`] together with the
 //! same sequence-derived ([`CoreSeqSegView`]) and resolved multi-frame-header
 //! ([`MfhSegView`]) inputs the parser consumed, and serializes the structure back to
 //! bits via [`BitWriter`] in the parser's exact field order. The fresh-`seg_info()`

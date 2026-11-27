@@ -81,28 +81,6 @@ fn frame_header_core_eof_at_frame_size() {
 }
 
 #[test]
-fn frame_header_core_activation_prefix_mode_stops_at_prefix() {
-    let mut bits = Bits::default();
-    bits.uvlc(0); // cur_mfh_id == 0
-    bits.uvlc(1); // seq_header_id_in_frame_header
-    let data = bits.into_bytes();
-    let mut reader = BitReader::new(&data, ByteOffset::new(0));
-    let input = FrameHeaderParseInput {
-        obu_type: ObuType::ClosedLoopKey,
-        first_picture_in_tu: true,
-        active_sequence: None,
-        mfh_record: None,
-        reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::ActivationPrefix,
-    };
-    let core = parse_frame_header_core(&mut reader, &input).unwrap();
-    assert_eq!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
-    assert_eq!(core.seq_header_id_in_frame_header, Some(1));
-    assert_eq!(core.frame_type, None);
-    assert_eq!(core.frame_size, None);
-}
-
-#[test]
 fn frame_header_core_without_sequence_is_activation_fields_only() {
     let mut bits = Bits::default();
     bits.uvlc(0); // cur_mfh_id == 0
@@ -111,11 +89,12 @@ fn frame_header_core_without_sequence_is_activation_fields_only() {
     let mut reader = BitReader::new(&data, ByteOffset::new(0));
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_mlayer_id: crate::types::EmbeddedLayerId::BASE,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).unwrap();
     assert_eq!(core.status, FrameHeaderParseStatus::ActivationFieldsOnly);
@@ -131,11 +110,12 @@ fn frame_header_core_eof_at_cur_mfh_id() {
     let mut reader = BitReader::new(&[], ByteOffset::new(0));
     let input = FrameHeaderParseInput {
         obu_type: ObuType::ClosedLoopKey,
+        obu_mlayer_id: crate::types::EmbeddedLayerId::BASE,
+        obu_tlayer_id: crate::types::TemporalLayerId::BASE,
         first_picture_in_tu: true,
         active_sequence: None,
         mfh_record: None,
         reference_state: FrameReferenceStateView::unknown(),
-        mode: FrameHeaderParseMode::Core,
     };
     assert!(matches!(
         parse_frame_header_core(&mut reader, &input),
@@ -204,6 +184,8 @@ fn frame_header_core_inter_mfh_default_frame_size_uses_mfh_dims() {
 
 #[test]
 fn closed_loop_key_display_order_hint_is_not_extended_past_the_lsb_window() {
+    let mut seq = base_seq();
+    seq.order_hint_bits = 7;
     let valid = [true];
     let hints = [68];
     let lsbs = [68];
@@ -219,8 +201,9 @@ fn closed_loop_key_display_order_hint_is_not_extended_past_the_lsb_window() {
             Some(FrameType::Key),
             None,
             0,
-            7,
+            &seq,
             &reference_state,
+            FrameLayerIds::BASE,
         ),
         Some(0)
     );
@@ -230,9 +213,122 @@ fn closed_loop_key_display_order_hint_is_not_extended_past_the_lsb_window() {
             Some(FrameType::Inter),
             None,
             0,
-            7,
+            &seq,
             &reference_state,
+            FrameLayerIds::BASE,
         ),
         Some(128)
+    );
+}
+
+#[test]
+fn display_order_hint_filters_reference_slots_by_tlayer_dependency_map() {
+    use crate::headers::sequence::TLayerDependencyMap;
+    use crate::types::{EmbeddedLayerId, TemporalLayerId};
+
+    let mut seq = base_seq();
+    seq.order_hint_bits = 7;
+    seq.tlayer_dependency_map = TLayerDependencyMap::default_for(
+        TemporalLayerId::from_bits(2),
+        EmbeddedLayerId::from_bits(0),
+    );
+
+    let valid = [true, true];
+    let hints = [10, 118];
+    let lsbs = [10, 118];
+    let implicit = [false, false];
+    let immediate = [true, true];
+    let widths = [64, 64];
+    let heights = [64, 64];
+    let tlayers = [0u8, 2u8];
+    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+        .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate)
+        .with_tlayer_id_state(&tlayers);
+
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            &seq,
+            &reference_state,
+            FrameLayerIds::BASE,
+        ),
+        Some(8)
+    );
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            &seq,
+            &reference_state,
+            FrameLayerIds {
+                mlayer: EmbeddedLayerId::BASE,
+                tlayer: TemporalLayerId::from_bits(2),
+            },
+        ),
+        Some(136)
+    );
+}
+
+#[test]
+fn display_order_hint_filters_reference_slots_by_mlayer_dependency_map() {
+    use crate::headers::sequence::{MLayerDependencyMap, TLayerDependencyMap};
+    use crate::types::{EmbeddedLayerId, TemporalLayerId};
+
+    let mut seq = base_seq();
+    seq.order_hint_bits = 7;
+    seq.mlayer_dependency_map = MLayerDependencyMap::default_for(EmbeddedLayerId::from_bits(2));
+    seq.tlayer_dependency_map = TLayerDependencyMap::default_for(
+        TemporalLayerId::from_bits(1),
+        EmbeddedLayerId::from_bits(2),
+    );
+
+    let valid = [true, true];
+    let hints = [10, 118];
+    let lsbs = [10, 118];
+    let implicit = [false, false];
+    let immediate = [true, true];
+    let widths = [64, 64];
+    let heights = [64, 64];
+    let mlayers = [0u8, 2u8];
+    let tlayers = [0u8, 0u8];
+    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+        .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate)
+        .with_mlayer_id_state(&mlayers)
+        .with_tlayer_id_state(&tlayers);
+
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            &seq,
+            &reference_state,
+            FrameLayerIds {
+                mlayer: EmbeddedLayerId::from_bits(1),
+                tlayer: TemporalLayerId::BASE,
+            },
+        ),
+        Some(8)
+    );
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            &seq,
+            &reference_state,
+            FrameLayerIds {
+                mlayer: EmbeddedLayerId::from_bits(2),
+                tlayer: TemporalLayerId::BASE,
+            },
+        ),
+        Some(136)
     );
 }

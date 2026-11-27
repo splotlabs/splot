@@ -6,9 +6,19 @@ use crate::reference::buffer::RefSlots;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
+use splot_recon::CurrentFrameSurface;
 
 const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
+const BRU_INACTIVE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-frame-128x64-q220.ivf"
+);
+const BRU_INACTIVE_REFRESH_8BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-8bit.ivf"
+);
+const BRU_INACTIVE_REFRESH_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-refresh-10bit.ivf"
+);
 
 #[test]
 fn frame_decode_geometry_uses_av2_mi_rounding_and_motion_layout() {
@@ -154,16 +164,19 @@ fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
         PixelFormat::Yuv420,
     )
     .unwrap();
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        100,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            100,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("mismatched CCTX pair");
     assert!(matches!(
         error,
@@ -184,18 +197,21 @@ fn invalid_inter_residual_block_ranges_are_reconstruction_state() {
     .unwrap();
 
     for (start, end) in [(1, 2), (1, 0)] {
-        let error = super::super::add_inter_residual_to_workspace(
-            &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
-            &super::super::InterResidual {
-                block_range: start..end,
-            },
-            &[],
-            &[],
-            0,
-            false,
-            false,
-            BitDepth::Eight,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::add_inter_residual_to_workspace(
+                backend,
+                &mut CurrentFrameSurface::Frame(&mut workspace),
+                &super::super::InterResidual {
+                    block_range: start..end,
+                },
+                &[],
+                &[],
+                0,
+                false,
+                false,
+                BitDepth::Eight,
+            )
+        })
         .unwrap_err();
 
         assert!(matches!(
@@ -226,16 +242,19 @@ fn invalid_inter_residual_tx_size_is_reconstruction_state() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored transform size");
 
     assert!(matches!(
@@ -277,16 +296,19 @@ fn invalid_inter_residual_cctx_tx_size_fails_closed() {
     )
     .unwrap();
 
-    let error = super::super::add_inter_residual_to_workspace(
-        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
-        &residual,
-        &residual_blocks,
-        &[],
-        0,
-        false,
-        false,
-        BitDepth::Eight,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::add_inter_residual_to_workspace(
+            backend,
+            &mut CurrentFrameSurface::Frame(&mut workspace),
+            &residual,
+            &residual_blocks,
+            &[],
+            0,
+            false,
+            false,
+            BitDepth::Eight,
+        )
+    })
     .expect_err("invalid stored CCTX transform size");
 
     assert!(matches!(
@@ -1006,12 +1028,12 @@ fn sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
         envelope.size = u32::from(envelope.header.header_size_bytes)
             + u32::try_from(payload.len()).expect("payload length fits u32");
 
-        let error = super::super::parse_validated_inter_frame_core_with_mfh(
+        let error = super::super::parse_validated_inter_frame_core(
             envelope,
             &sequence,
             &reference,
             true,
-            None,
+            |_| panic!("unexpected multi-frame header reference"),
             Some(frame_index),
         )
         .expect_err("out-of-range SEF reference slot");
@@ -1287,12 +1309,12 @@ fn single_picture_tip_obu_is_a_malformed_source_diagnostic() {
     envelope.header.obu_type = splot_core::types::ObuType::RegularTip;
     envelope.payload = &payload;
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    let error = super::super::parse_validated_inter_frame_core_with_mfh(
+    let error = super::super::parse_validated_inter_frame_core(
         envelope,
         &sequence,
         &reference,
         true,
-        None,
+        |_| panic!("unexpected multi-frame header reference"),
         Some(frame_index),
     )
     .expect_err("TIP OBU under a single-picture sequence");
@@ -1378,15 +1400,18 @@ fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
                 continue;
             }
         };
-        let error = super::super::block::tip::reconstruct_output(
-            &mut super::super::InterDecodeScratch::default(),
-            splot_recon::FramePlaneSamples::default(),
-            &sequence,
-            &core,
-            &reference,
-            geometry,
-            offset,
-        )
+        let error = crate::test_support::with_auto_backend!(backend => {
+            super::super::block::tip::reconstruct_output(
+                backend,
+                &mut super::super::InterDecodeScratch::default(),
+                splot_recon::FramePlaneSamples::default(),
+                &sequence,
+                &core,
+                &reference,
+                geometry,
+                offset,
+            )
+        })
         .expect_err("TIP-output runtime state");
         assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
     }
@@ -1411,15 +1436,18 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
     )
     .expect("valid frame geometry");
 
-    let error = super::super::block::tip::reconstruct_output(
-        &mut super::super::InterDecodeScratch::default(),
-        splot_recon::FramePlaneSamples::default(),
-        &sequence,
-        &core,
-        &reference,
-        geometry,
-        offset,
-    )
+    let error = crate::test_support::with_auto_backend!(backend => {
+        super::super::block::tip::reconstruct_output(
+            backend,
+            &mut super::super::InterDecodeScratch::default(),
+            splot_recon::FramePlaneSamples::default(),
+            &sequence,
+            &core,
+            &reference,
+            geometry,
+            offset,
+        )
+    })
     .expect_err("unpublished TIP-output motion field");
     assert!(matches!(
         error,
@@ -1631,4 +1659,757 @@ fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
     let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
         .expect("malformed frame-header input must remain user-reportable");
     assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+pub(super) fn repack_frame_obu(
+    bytes: &[u8],
+    target_frame_index: usize,
+    mutate_payload: impl FnOnce(&[u8]) -> Vec<u8>,
+) -> Vec<u8> {
+    let parsed = parse_ivf_fixture(bytes, "bru inactive");
+    let mut header = parsed.header.expect("fixture has an IVF header");
+    header.frame_count = u32::try_from(parsed.frames.len()).expect("frame count fits u32");
+    let mut out = Vec::new();
+    write_repacked_ivf_header(&mut out, &header);
+    let mut mutate = Some(mutate_payload);
+    for (frame_index, frame) in parsed.frames.iter().enumerate() {
+        let mut frame_writer = BitWriter::new();
+        for envelope in &frame.obus {
+            let replaced;
+            let obu_payload = if frame_index == target_frame_index
+                && envelope.header.obu_type == splot_core::types::ObuType::RegularTileGroup
+            {
+                replaced = mutate.take().expect("single target frame OBU")(envelope.payload);
+                replaced.as_slice()
+            } else {
+                envelope.payload
+            };
+            write_annexb_obu(&mut frame_writer, &envelope.header, obu_payload)
+                .expect("repack fixture OBU");
+        }
+        write_repacked_ivf_frame(&mut out, frame.frame.pts, &frame_writer.into_bytes());
+    }
+    out
+}
+
+fn inspect_bru_refresh_fixture(
+    bytes: &[u8],
+    expected_frames: usize,
+    src_index: usize,
+    inactive_index: usize,
+    next_motion_cell: Option<(usize, usize)>,
+) {
+    let options = DecodeOptions::default();
+    let frames = crate::pipeline::collect_frames_from_plan(bytes, &options, 1, |frame| {
+        Ok((
+            frame.ccso_header.clone().expect("frame header"),
+            frame.motion_field.field().cloned(),
+            frame.segment_ids.product().cloned(),
+            frame.ready_frame()?,
+        ))
+    })
+    .expect("collect frames");
+    assert_eq!(frames.len(), expected_frames);
+
+    let (ref core_inactive, ref mf_inactive, ref seg_inactive, ref decoded_inactive) =
+        frames[inactive_index];
+    let inter_inactive = core_inactive
+        .inter
+        .as_ref()
+        .expect("bru_inactive inter control");
+    assert_eq!(inter_inactive.use_bru, Some(true));
+    assert_eq!(inter_inactive.bru_inactive, Some(true));
+    let bru_ref =
+        usize::try_from(inter_inactive.bru_ref.expect("bru_ref")).expect("bru_ref fits usize");
+    assert!(bru_ref > 0, "expected nonzero bru_ref, got {bru_ref}");
+    let ref_slot = inter_inactive.ref_frame_idx[bru_ref];
+    if next_motion_cell.is_some() {
+        assert_ne!(
+            usize::try_from(ref_slot).expect("ref_slot"),
+            bru_ref,
+            "bru_ref {bru_ref} should map to a different physical DPB slot"
+        );
+    }
+    assert_ne!(
+        core_inactive.refresh_frame_flags.expect("refresh flags") & (1 << ref_slot),
+        0,
+        "bru_inactive frame must refresh its bru_ref slot {ref_slot}"
+    );
+    assert_eq!(core_inactive.disable_cdf_update, Some(true));
+    assert!(core_inactive.ccso_params.is_none());
+    assert!(core_inactive.lr_params.is_none());
+
+    let mf_inactive = mf_inactive.as_ref().expect("bru_inactive motion field");
+    assert_eq!(
+        mf_inactive.stored_cell(0, 0),
+        Some([bru_ref as u8, 0, 0, bru_ref as u8, 0, 0])
+    );
+    assert!(seg_inactive.is_some());
+
+    let (_, _, _, ref decoded_src) = frames[src_index];
+    match (decoded_src, decoded_inactive) {
+        (PipelineDecodedFrame::Eight(src), PipelineDecodedFrame::Eight(inactive)) => {
+            assert_eq!(&**inactive, &**src);
+        }
+        (PipelineDecodedFrame::Ten(src), PipelineDecodedFrame::Ten(inactive)) => {
+            assert_eq!(&**inactive, &**src);
+        }
+        _ => panic!("mismatched frame bit depths"),
+    }
+
+    if let Some((row, col)) = next_motion_cell {
+        let (ref core_next, ref mf_next, _, ref decoded_next) = frames[inactive_index + 1];
+        let inter_next = core_next.inter.as_ref().expect("next inter control");
+        let mf_next = mf_next.as_ref().expect("next motion field");
+        let cell = mf_next.stored_cell(row, col).expect("next motion cell");
+        let inactive_hint = core_inactive
+            .display_order_hint()
+            .expect("inactive order hint");
+        assert_ne!(
+            core_inactive.display_order_hint(),
+            frames[src_index].0.display_order_hint()
+        );
+        assert!(
+            [cell[0], cell[3]].iter().any(|&index| {
+                let index = usize::from(index);
+                inter_next.ref_frame_idx.get(index) == Some(&ref_slot)
+                    && mf_next.stored_ref_order_hint(index) == Some(inactive_hint)
+            }),
+            "frame {} must use refreshed slot {ref_slot} at motion cell ({row}, {col})",
+            inactive_index + 1
+        );
+        match (decoded_inactive, decoded_next) {
+            (PipelineDecodedFrame::Eight(inactive), PipelineDecodedFrame::Eight(next)) => {
+                assert_ne!(&**next, &**inactive);
+            }
+            (PipelineDecodedFrame::Ten(inactive), PipelineDecodedFrame::Ten(next)) => {
+                assert_ne!(&**next, &**inactive);
+            }
+            _ => panic!("mismatched frame bit depths"),
+        }
+    }
+}
+
+#[test]
+fn bru_inactive_refresh_vectors_exercise_nonzero_bru_ref_slot_reuse() {
+    inspect_bru_refresh_fixture(BRU_INACTIVE_FIXTURE, 5, 2, 4, None);
+    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, 8, 3, 5, Some((0, 8)));
+    inspect_bru_refresh_fixture(BRU_INACTIVE_REFRESH_10BIT_FIXTURE, 8, 3, 5, Some((7, 8)));
+    for fixture in [
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-8bit.ivf"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-inactive-block-use-10bit.ivf"
+        ),
+    ] {
+        inspect_bru_refresh_fixture(fixture, 8, 3, 5, Some((0, 0)));
+    }
+}
+
+#[test]
+fn bru_inactive_truncated_header_and_trailing_bits_are_malformed_source_and_recoverable() {
+    let options = DecodeOptions::default();
+
+    let truncated = repack_frame_obu(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, 5, |payload| {
+        payload[..payload.len() - 1].to_vec()
+    });
+    let Err(err) = decode_frames_from_plan(&truncated, &options) else {
+        panic!("truncated bru_inactive header decoded successfully");
+    };
+    let DecodeError::MalformedSource { issue } = &err else {
+        panic!("expected malformed source for truncated bru_inactive header, got {err}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.2.1"));
+    assert_eq!(issue.frame_index(), Some(5));
+
+    for (flip_mask, label) in [(0x01u8, "nonzero zero-bit"), (0x08u8, "missing one-bit")] {
+        let bad_tail = repack_frame_obu(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, 5, |payload| {
+            let mut copy = payload.to_vec();
+            let last = copy.len() - 1;
+            copy[last] ^= flip_mask;
+            copy
+        });
+        let Err(err) = decode_frames_from_plan(&bad_tail, &options) else {
+            panic!("malformed bru_inactive trailing_bits ({label}) decoded successfully");
+        };
+        let DecodeError::MalformedSource { issue } = &err else {
+            panic!("expected malformed source ({label}), got {err}");
+        };
+        assert_eq!(issue.spec_section(), Some("5.19"));
+        assert_eq!(issue.frame_index(), Some(5));
+
+        for (threads, frame_delay) in [(1usize, 1usize), (2, 2), (4, 4)] {
+            let settings = crate::DecoderSettings::default()
+                .with_threads(crate::ThreadCount::from(threads))
+                .with_frame_delay(crate::FrameDelay::from(frame_delay));
+            let mut decoder = crate::Decoder::new(settings).unwrap();
+            let mut reader = splot_core::stream_reader::TemporalUnitReader::new(&bad_tail[..]);
+            let mut saw_malformed = false;
+            let poll_bad = |decoder: &mut crate::Decoder| -> bool {
+                loop {
+                    match decoder.get_picture() {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return false,
+                        Err(DecodeError::MalformedSource { issue }) => {
+                            assert_eq!(issue.spec_section(), Some("5.19"));
+                            return true;
+                        }
+                        Err(other) => panic!("unexpected error ({label}): {other}"),
+                    }
+                }
+            };
+            'feed: while let Some(unit) = reader.next_unit().unwrap() {
+                let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit else {
+                    continue;
+                };
+                if payload.is_empty() {
+                    continue;
+                }
+                loop {
+                    match decoder.send_data(payload, crate::DataProps::default()) {
+                        Ok(crate::SendStatus::Accepted) => {
+                            if poll_bad(&mut decoder) {
+                                saw_malformed = true;
+                                break 'feed;
+                            }
+                            break;
+                        }
+                        Ok(crate::SendStatus::Full) => {
+                            if poll_bad(&mut decoder) {
+                                saw_malformed = true;
+                                break 'feed;
+                            }
+                            std::thread::yield_now();
+                        }
+                        Err(DecodeError::MalformedSource { issue }) => {
+                            assert_eq!(issue.spec_section(), Some("5.19"));
+                            saw_malformed = true;
+                            break 'feed;
+                        }
+                        Err(other) => panic!("unexpected send error ({label}): {other}"),
+                    }
+                }
+            }
+            if !saw_malformed {
+                decoder.drain();
+                saw_malformed = poll_bad(&mut decoder);
+            }
+            assert!(
+                saw_malformed,
+                "streaming decoder missed error ({label}, threads={threads}, delay={frame_delay})"
+            );
+
+            decoder.flush();
+            let mut intact_reader = splot_core::stream_reader::TemporalUnitReader::new(
+                BRU_INACTIVE_REFRESH_8BIT_FIXTURE,
+            );
+            let mut recovered = 0usize;
+            while let Some(unit) = intact_reader.next_unit().unwrap() {
+                let splot_core::stream_reader::StreamUnit::IvfFrame { payload, .. } = unit else {
+                    continue;
+                };
+                if payload.is_empty() {
+                    continue;
+                }
+                while decoder
+                    .send_data(payload, crate::DataProps::default())
+                    .unwrap()
+                    == crate::SendStatus::Full
+                {
+                    while decoder.get_picture().unwrap().is_some() {
+                        recovered += 1;
+                    }
+                    std::thread::yield_now();
+                }
+                while decoder.get_picture().unwrap().is_some() {
+                    recovered += 1;
+                }
+            }
+            decoder.drain();
+            while decoder.get_picture().unwrap().is_some() {
+                recovered += 1;
+            }
+            assert_eq!(
+                recovered, 8,
+                "recovery after flush failed ({label}, threads={threads}, delay={frame_delay})"
+            );
+        }
+    }
+}
+
+#[test]
+fn bru_inactive_zero_remaining_trailing_bits_and_incompatible_refs_fail_closed() {
+    struct OrderHintObserver {
+        order_hint_start: Option<u64>,
+    }
+
+    impl splot_core::syntax::SyntaxObserver for OrderHintObserver {
+        fn enter_scope(&mut self, _: splot_core::syntax::ScopeKind) {}
+        fn exit_scope(&mut self) {}
+        fn on_field_read(&mut self, field: splot_core::syntax::SyntaxFieldRead) {
+            if field.name == "order_hint_lsb" {
+                self.order_hint_start = Some(field.span.start_bit);
+            }
+        }
+        fn on_field_absent(&mut self, _: splot_core::syntax::SyntaxFieldAbsent) {}
+        fn on_error(&mut self, _: splot_core::syntax::SyntaxErrorRef<'_>) {}
+    }
+
+    let parsed = parse_ivf_fixture(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, "bru refresh");
+    let frame5_obu = parsed.frames[5]
+        .obus
+        .iter()
+        .find(|o| o.header.obu_type == splot_core::types::ObuType::RegularTileGroup)
+        .copied()
+        .unwrap();
+    let frame5_candidate =
+        plan_fixture(BRU_INACTIVE_REFRESH_8BIT_FIXTURE, &DecodeOptions::default())
+            .frame_candidates_all()
+            .nth(5)
+            .expect("frame 5 candidate")
+            .clone();
+    let (mut sequence, _) = fixture_sequence_and_key_core(BRU_INACTIVE_REFRESH_8BIT_FIXTURE);
+    let mut reference = super::super::InterReferenceState::<u8>::with_slot_count(8).unwrap();
+    reference.ref_valid =
+        RefSlots::from_iter_checked([true, true, true, true, false, false, false, false]).unwrap();
+    reference.ref_order_hint = RefSlots::from_iter_checked([0, 2, 3, 4, 0, 0, 0, 0]).unwrap();
+    reference.ref_order_hint_lsbs = RefSlots::from_iter_checked([0, 2, 3, 4, 0, 0, 0, 0]).unwrap();
+    reference.ref_implicit_output_frame = RefSlots::from_iter_checked([false; 8]).unwrap();
+    reference.ref_immediate_output_frame = RefSlots::from_iter_checked([true; 8]).unwrap();
+    reference.ref_frame_width = RefSlots::from_iter_checked([128; 8]).unwrap();
+    reference.ref_frame_height = RefSlots::from_iter_checked([64; 8]).unwrap();
+    reference.ref_base_q_idx = RefSlots::from_iter_checked([220; 8]).unwrap();
+    reference.ref_chroma_ac_deltas = RefSlots::from_iter_checked([[0, 0]; 8]).unwrap();
+    reference.ref_num_total_refs = RefSlots::from_iter_checked([4; 8]).unwrap();
+    reference.ref_counter = RefSlots::from_iter_checked([0, 2, 3, 4, 0, 0, 0, 0]).unwrap();
+    reference.ref_is_inter =
+        RefSlots::from_iter_checked([false, true, true, true, false, false, false, false]).unwrap();
+
+    let intact_core = super::super::parse_inter_frame_core(
+        frame5_obu,
+        &sequence,
+        &reference,
+        true,
+        None,
+        Some(5),
+    )
+    .expect("intact frame 5 core");
+    assert_eq!(
+        intact_core.status,
+        FrameHeaderParseStatus::InterHeaderComplete,
+        "unexpected intact core: {intact_core:#?}"
+    );
+    assert_eq!(
+        intact_core.inter.as_ref().and_then(|i| i.bru_inactive),
+        Some(true)
+    );
+
+    let mut obs_reader = BitReader::new(frame5_obu.payload, ByteOffset::new(0));
+    assert_eq!(obs_reader.read_bit().unwrap(), 1);
+    let mut observer = OrderHintObserver {
+        order_hint_start: None,
+    };
+    let obs_input = splot_core::headers::frame::FrameHeaderParseInput {
+        obu_type: frame5_obu.header.obu_type,
+        obu_mlayer_id: frame5_obu.header.embedded_layer_id,
+        obu_tlayer_id: frame5_obu.header.temporal_layer_id,
+        first_picture_in_tu: true,
+        active_sequence: Some(&sequence),
+        mfh_record: None,
+        reference_state: reference.header_view(),
+    };
+    splot_core::headers::frame::parse_frame_header_core_observed(
+        &mut obs_reader,
+        &obs_input,
+        &mut observer,
+    )
+    .expect("observed frame 5 header");
+    let order_hint_payload_bit = 1 + observer.order_hint_start.expect("order_hint_lsb observed");
+
+    let header_plus_first_tg = 1 + intact_core.consumed_bits;
+    let extra_order_hint_bits = u8::try_from((8 - (header_plus_first_tg % 8)) % 8).unwrap();
+    sequence.inter.as_mut().unwrap().order_hint_bits += extra_order_hint_bits;
+
+    let mut reader = BitReader::new(frame5_obu.payload, ByteOffset::new(0));
+    let mut zero_tail_writer = BitWriter::new();
+    for _ in 0..order_hint_payload_bit {
+        zero_tail_writer
+            .write_bit(reader.read_bit().unwrap())
+            .unwrap();
+    }
+    zero_tail_writer
+        .write_bits(0, u32::from(extra_order_hint_bits))
+        .unwrap();
+    for _ in order_hint_payload_bit..header_plus_first_tg {
+        zero_tail_writer
+            .write_bit(reader.read_bit().unwrap())
+            .unwrap();
+    }
+    let zero_tail_payload = zero_tail_writer.into_bytes();
+    assert_eq!(
+        (header_plus_first_tg + u64::from(extra_order_hint_bits)) % 8,
+        0
+    );
+    let mut zero_tail_obu = frame5_obu;
+    zero_tail_obu.payload = &zero_tail_payload;
+    zero_tail_obu.size = u32::from(zero_tail_obu.header.header_size_bytes)
+        + u32::try_from(zero_tail_payload.len()).unwrap();
+    let err = super::super::parse_inter_frame_core(
+        zero_tail_obu,
+        &sequence,
+        &reference,
+        true,
+        None,
+        Some(5),
+    )
+    .unwrap_err();
+    let DecodeError::MalformedSource { issue } = &err else {
+        panic!("expected malformed source on 0 remaining trailing bits, got {err}");
+    };
+    assert_eq!(issue.spec_section(), Some("5.19"));
+
+    let bru_slot = super::super::bru_ref_slot(&intact_core).unwrap() as usize;
+    assert_eq!(bru_slot, 1);
+    super::super::validate_and_resolve_inter_frame_core(
+        &mut intact_core.clone(),
+        &sequence,
+        &reference,
+        frame5_obu.offset,
+        Some(5),
+    )
+    .expect("intact bru_inactive core validates");
+
+    reference.ref_frame_width[bru_slot] = 64;
+    let err = super::super::validate_and_resolve_inter_frame_core(
+        &mut intact_core.clone(),
+        &sequence,
+        &reference,
+        frame5_obu.offset,
+        Some(5),
+    )
+    .unwrap_err();
+    reference.ref_frame_width[bru_slot] = 128;
+    let DecodeError::MalformedSource { issue } = &err else {
+        panic!("expected malformed source on mismatched bru_ref size, got {err}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+
+    let mut non_imm_core = intact_core.clone();
+    non_imm_core.immediate_output_frame = Some(false);
+    let err = super::super::validate_and_resolve_inter_frame_core(
+        &mut non_imm_core,
+        &sequence,
+        &reference,
+        frame5_obu.offset,
+        Some(5),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DecodeError::MalformedSource { .. }));
+
+    let mut no_refresh_core = intact_core.clone();
+    no_refresh_core.refresh_frame_flags = Some(0);
+    let err = super::super::validate_and_resolve_inter_frame_core(
+        &mut no_refresh_core,
+        &sequence,
+        &reference,
+        frame5_obu.offset,
+        Some(5),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DecodeError::MalformedSource { .. }));
+
+    let mut products = super::super::FrameProductWriters::fresh().unwrap();
+    let Err(err) = crate::test_support::with_auto_backend!(backend => {
+        super::super::decode_bridge_frame(
+            backend,
+            &frame5_candidate,
+            frame5_obu,
+            std::sync::Arc::new(intact_core),
+            &sequence,
+            &DecodeOptions::default(),
+            &reference,
+            BitDepth::Eight,
+            &mut products,
+        )
+    }) else {
+        panic!("missing reference slot decoded successfully");
+    };
+    assert!(matches!(
+        err,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingFrame { slot }
+        } if slot == bru_slot
+    ));
+}
+
+#[test]
+fn bru_lr_vectors_exercise_partial_bru_shifted_stripes_and_reference_consumers() {
+    use crate::bitstream::tile_payload::{BRU_ACTIVE, LrUnitRestorationType};
+
+    let fixtures: [(&str, &[u8], LrUnitRestorationType, Option<bool>); 6] = [
+        (
+            "syn-bru-lr-stripe-wienerns-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf"
+            ),
+            LrUnitRestorationType::WienerNonsep,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-wienerns-10bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-10bit.ivf"
+            ),
+            LrUnitRestorationType::WienerNonsep,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-pcwiener-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            None,
+        ),
+        (
+            "syn-bru-lr-stripe-pcwiener-10bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-10bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            None,
+        ),
+        (
+            "syn-bru-lr-multitile-cross-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-cross-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            Some(false),
+        ),
+        (
+            "syn-bru-lr-multitile-isolated-8bit",
+            include_bytes!(
+                "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-multitile-isolated-8bit.ivf"
+            ),
+            LrUnitRestorationType::PcWiener,
+            Some(true),
+        ),
+    ];
+
+    for (name, bytes, expected_unit_type, expected_isolated_tiles) in fixtures {
+        let (frames, audits) =
+            crate::pipeline::collect_bru_lr_audit(bytes, &DecodeOptions::default())
+                .expect("audit decode");
+        assert_eq!(frames.len(), 6, "{name}: expected 6 frames");
+        assert_eq!(audits.len(), 6, "{name}: expected 6 filter audits");
+
+        let mut bru_lr_indices = Vec::new();
+        let mut shifted_gates = 0;
+        for (idx, audit) in audits.iter().enumerate() {
+            if let Some(isolated) = expected_isolated_tiles {
+                assert_eq!(
+                    audit.disable_loopfilters_across_tiles, isolated,
+                    "{name} f{idx}: tile-isolation flag mismatch"
+                );
+            }
+            if !audit.use_bru {
+                continue;
+            }
+            assert!(
+                !audit.bru_inactive,
+                "{name} f{idx}: expected active BRU frame"
+            );
+            let active_sbs = audit
+                .superblock_modes
+                .iter()
+                .filter(|(_, _, mode)| *mode == Some(BRU_ACTIVE))
+                .count();
+            let inactive_sbs = audit
+                .superblock_modes
+                .iter()
+                .filter(|(_, _, mode)| mode.is_some() && *mode != Some(BRU_ACTIVE))
+                .count();
+            assert!(
+                active_sbs > 0 && inactive_sbs > 0,
+                "{name} f{idx}: expected partial BRU"
+            );
+            if !audit.lr_uses_lr {
+                continue;
+            }
+            let expected_frame_rtype = match expected_unit_type {
+                LrUnitRestorationType::WienerNonsep => {
+                    splot_core::headers::frame::FrameRestorationType::WienerNonsep
+                }
+                LrUnitRestorationType::PcWiener => {
+                    splot_core::headers::frame::FrameRestorationType::PcWiener
+                }
+                LrUnitRestorationType::None => {
+                    splot_core::headers::frame::FrameRestorationType::None
+                }
+            };
+            assert!(
+                audit
+                    .plane_restoration_types
+                    .contains(&expected_frame_rtype)
+                    || audit
+                        .plane_restoration_types
+                        .contains(&splot_core::headers::frame::FrameRestorationType::Switchable),
+                "{name} f{idx}: expected plane restoration {expected_frame_rtype:?}, got {:?}",
+                audit.plane_restoration_types
+            );
+            let has_target_unit = audit
+                .pre_bru_blocks
+                .iter()
+                .any(|b| b.restoration_type == expected_unit_type);
+            if !has_target_unit {
+                continue;
+            }
+            bru_lr_indices.push(idx);
+            for &(row, col, mode) in &audit.superblock_modes {
+                let Some(next_mode) = mode.filter(|_| row >= 16) else {
+                    continue;
+                };
+                let previous_mode = audit
+                    .superblock_modes
+                    .iter()
+                    .find(|&&(prev_row, prev_col, _)| prev_row == row - 16 && prev_col == col)
+                    .and_then(|&(_, _, mode)| mode)
+                    .expect("previous superblock mode");
+                if (previous_mode == BRU_ACTIVE) == (next_mode == BRU_ACTIVE) {
+                    continue;
+                }
+                for plane in 0..3 {
+                    let shift = usize::from(plane != 0);
+                    let x = (col * 4) >> shift;
+                    let y = (row * 4 - 8) >> shift;
+                    let covers_stripe =
+                        |block: &crate::bitstream::tile_payload::WienerNsLrSourceBlock| {
+                            block.plane == plane
+                                && block.restoration_type == expected_unit_type
+                                && block.tile_mi_row_end > row
+                                && (block.x..block.x + block.width).contains(&x)
+                                && (block.y..block.y + block.height).contains(&y)
+                        };
+                    if !audit.pre_bru_blocks.iter().any(covers_stripe) {
+                        continue;
+                    }
+                    let restored = audit.post_bru_blocks.iter().any(covers_stripe);
+                    assert_eq!(
+                        restored,
+                        next_mode == BRU_ACTIVE,
+                        "{name} f{idx}: plane {plane} at ({x}, {y}) must use shifted BRU mode"
+                    );
+                    shifted_gates += 1;
+                }
+            }
+        }
+        assert!(
+            !bru_lr_indices.is_empty(),
+            "{name}: missing frame combining use_bru == 1 and active {expected_unit_type:?}"
+        );
+        assert!(
+            shifted_gates > 0,
+            "{name}: no restoration span tests a shifted BRU decision"
+        );
+        assert!(
+            bru_lr_indices.contains(&3),
+            "{name} f3: expected BRU and active restoration"
+        );
+        let refreshed_mask = frames[3].header.refresh_frame_flags.expect("refresh flags");
+        assert_eq!(refreshed_mask, 0x02, "{name} f3: expected slot 1 refresh");
+        let consumer_col = match name {
+            "syn-bru-lr-stripe-wienerns-8bit" => 8,
+            "syn-bru-lr-multitile-cross-8bit" | "syn-bru-lr-multitile-isolated-8bit" => 16,
+            _ => 0,
+        };
+        let consumer_mode = audits[4]
+            .superblock_modes
+            .iter()
+            .find(|&&(row, col, _)| row == 0 && col == consumer_col / 16 * 16)
+            .and_then(|&(_, _, mode)| mode);
+        assert_eq!(
+            consumer_mode,
+            Some(BRU_ACTIVE),
+            "{name} f4: consumer must be active"
+        );
+        let consumer = &frames[4];
+        let consumer_refs = &consumer
+            .header
+            .inter
+            .as_ref()
+            .expect("consumer inter control")
+            .ref_frame_idx;
+        let cell = consumer
+            .motion_field
+            .as_ref()
+            .expect("consumer motion field")
+            .stored_cell(0, consumer_col / 2)
+            .expect("consumer motion cell");
+        assert!(
+            [cell[0], cell[3]]
+                .iter()
+                .any(|&index| consumer_refs.get(usize::from(index)) == Some(&1)),
+            "{name} f4: active block must use slot 1 from f3"
+        );
+    }
+
+    let cross_frames =
+        crate::pipeline::decode_frames_from_plan(fixtures[4].1, &DecodeOptions::default())
+            .expect("cross decode");
+    let isolated_frames =
+        crate::pipeline::decode_frames_from_plan(fixtures[5].1, &DecodeOptions::default())
+            .expect("isolated decode");
+    let cross_samples = match &cross_frames[3] {
+        crate::pipeline::PipelineDecodedFrame::Eight(f) => &**f,
+        crate::pipeline::PipelineDecodedFrame::Ten(_) => panic!("expected 8-bit frame"),
+    };
+    let isolated_samples = match &isolated_frames[3] {
+        crate::pipeline::PipelineDecodedFrame::Eight(f) => &**f,
+        crate::pipeline::PipelineDecodedFrame::Ten(_) => panic!("expected 8-bit frame"),
+    };
+    assert_ne!(
+        cross_samples, isolated_samples,
+        "multitile cross and isolated BRU+LR outputs must diverge across tile borders"
+    );
+}
+
+#[test]
+fn bru_lr_corrupt_and_truncated_tile_payloads_fail_closed() {
+    for fixture in [
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-wienerns-8bit.ivf"
+        )
+        .as_slice(),
+        include_bytes!(
+            "../../../../../../tests/conformance/vectors/valid/syn-bru-lr-stripe-pcwiener-8bit.ivf"
+        )
+        .as_slice(),
+    ] {
+        let truncated =
+            repack_frame_obu(fixture, 3, |payload| payload[..payload.len() / 2].to_vec());
+        let err = crate::pipeline::decode_frames_from_plan(&truncated, &DecodeOptions::default())
+            .err()
+            .expect("truncated BRU+LR tile payload must fail");
+        assert!(
+            matches!(err, DecodeError::MalformedSource { .. }),
+            "expected MalformedSource for truncated BRU+LR tile payload, got {err}"
+        );
+
+        let flipped = repack_frame_obu(fixture, 3, |payload| {
+            let mut copy = payload.to_vec();
+            let last = copy.len() - 1;
+            copy[last] ^= 0xFF;
+            if last > 2 {
+                copy[last - 2] ^= 0x5A;
+            }
+            copy
+        });
+        assert!(
+            crate::pipeline::decode_frames_from_plan(&flipped, &DecodeOptions::default()).is_err(),
+            "corrupted BRU+LR tile payload must fail closed without panicking"
+        );
+    }
 }

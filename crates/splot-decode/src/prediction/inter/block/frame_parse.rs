@@ -239,6 +239,7 @@ impl<'payload> InterFrameParser<'payload> {
                 filter_states.ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
             (self.merged_units, cdef, gdf, ccso)
         };
+        super::validate_bru_regions(params.bru_modes.as_deref(), work_units)?;
         let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, &mut products)?;
         if let Some(previous) = previous {
             products.inherit_segment_ids(previous)?;
@@ -269,7 +270,7 @@ pub(crate) struct TileParse(tile::ParsedTile);
 
 impl OpenTile {
     /// Runs tile `index` of `tiles` through its whole § 8.2 pass.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn parse(
         self,
         tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
@@ -355,6 +356,8 @@ impl InterFrameParse {
             info,
             plane_sizes,
             InterFilterInputs {
+                #[cfg(feature = "block-evidence")]
+                stage_capture: None,
                 records,
                 cdef_grid,
                 ccso_grid,
@@ -380,7 +383,7 @@ pub(crate) struct PendingFilterAttach<T: ReconSample> {
 
 /// Runs the temporal prelude and builds the scheduled reconstruction from the
 /// half of the walk that is settled before the entropy pass reads a unit.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     scratch: InterDecodeScratch<T>,
     reusable: &mut tile::ScheduledTileWorkspace<T>,

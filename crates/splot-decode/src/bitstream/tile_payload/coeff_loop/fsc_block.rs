@@ -17,7 +17,9 @@ use super::super::coeff_state::{
     CoeffBlockLines, LEVEL_STRIDE, TileCoeffContextState, TileCoeffStateError,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
+use splot_recon::TransformClass;
+
+use super::max_level::{COEFF_BASE_RANGE, NUM_BASE_LEVELS};
 use super::ordinary_pass::CoeffOrdinaryPassError;
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, CoeffQuantStateWriteError,
@@ -59,7 +61,7 @@ pub(crate) fn decode_fsc_transform_block(
 ) -> Result<usize, CoeffFscBranchError> {
     let tx = start.tx();
     let seg_eob = start.coeff_count();
-    let scan = grid_scan(CoeffTransformClass::TwoD, tx, seg_eob)?;
+    let scan = grid_scan(TransformClass::TwoD, tx, seg_eob)?;
     let eob = start.eob_read();
     let bob = seg_eob.checked_sub(eob).ok_or_else(|| {
         CoeffOrdinaryPassError::from(super::CoeffLoopContextError::FscScanWalkEobOutOfRange {
@@ -76,12 +78,11 @@ pub(crate) fn decode_fsc_transform_block(
         width_log2: u32::from(tx.width_log2),
         size_ctx: usize::from(tx.size_ctx).min(2),
     };
-    let grids = (&mut *levels, &mut *nonzero);
-    let (owned, nonzero_len, result) = block.decode(cdfs, symbols, grids, quant);
+    let mut nonzero_len = 0;
+    let result = block.decode_levels(cdfs, symbols, (levels, nonzero, &mut nonzero_len), quant);
     for &entry in nonzero.get(..nonzero_len).unwrap_or_default() {
         levels[entry_grid(entry) + LEVEL_STRIDE + 1] = 0;
     }
-    *symbols = owned;
     let (quant_end, summary) = result?;
     state.commit_block(lines, summary.cul_level(), summary.dc_category());
     Ok(quant_end)
@@ -96,36 +97,17 @@ struct Block<'s> {
     size_ctx: usize,
 }
 
-/// The decoder after a block, its nonzero count and the block's result.
-type Decoded<'a> = (
-    SymbolDecoder<'a>,
-    usize,
-    Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError>,
-);
-
 impl Block<'_> {
-    /// Works on a copy of the decoder and a local nonzero count, so the
-    /// loops keep them in registers.
-    #[inline(never)]
-    fn decode<'a>(
-        &self,
-        cdfs: &mut TileCdfSubset,
-        symbols: &SymbolDecoder<'a>,
-        (levels, nonzero): (
-            &mut super::super::coeff_state::CoeffLevelWords,
-            &mut super::super::coeff_state::CoeffNonzeroList,
-        ),
-        quant: &mut [i32],
-    ) -> Decoded<'a> {
-        let mut symbols = symbols.clone();
-        let mut nonzero_len = 0;
-        let result = self.decode_levels(
-            cdfs,
-            &mut symbols,
-            (levels, nonzero, &mut nonzero_len),
-            quant,
-        );
-        (symbols, nonzero_len, result)
+    #[cfg(feature = "block-evidence")]
+    #[inline]
+    fn annotate_symbol(&self, symbols: &SymbolDecoder<'_>, key: &'static str, ctx: usize) {
+        if symbols.observes_entropy() {
+            symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                key,
+                "tx_size_ctx,ctx",
+                [self.size_ctx as u16, ctx as u16, 0],
+            ));
+        }
     }
 
     fn decode_levels(
@@ -140,9 +122,10 @@ impl Block<'_> {
         quant: &mut [i32],
     ) -> Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError> {
         let rows = cdfs.coeff_rows_mut();
-        let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), {
-            coeff_base_bob_ctx(self.bob, self.seg_eob)
-        });
+        let bob_ctx = coeff_base_bob_ctx(self.bob, self.seg_eob);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_symbol(symbols, "coeff_base_bob", bob_ctx);
+        let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), bob_ctx);
         let first = symbols.read_trusted(bob_row) + 1;
         let mut carried = (usize::MAX, 0);
         for (index, &entry) in self.entries.iter().enumerate() {
@@ -154,6 +137,8 @@ impl Block<'_> {
                 let ctx = (near & 0xff) as usize;
                 let word = (ctx == carried.0).then_some(carried.1);
                 let base = row_at(rows.coeff_base_idtx(), self.size_ctx);
+                #[cfg(feature = "block-evidence")]
+                self.annotate_symbol(symbols, "coeff_base_idtx", ctx);
                 let (level, word) = symbols.read_trusted_carried(row_at(base, ctx), word);
                 carried = (ctx, word);
                 level
@@ -161,6 +146,8 @@ impl Block<'_> {
             if level > NUM_BASE_LEVELS {
                 let ctx = (((near >> 8) & 0xff) as usize).min(6);
                 let br = row_at(rows.coeff_br_idtx(), self.size_ctx);
+                #[cfg(feature = "block-evidence")]
+                self.annotate_symbol(symbols, "coeff_br_idtx", ctx);
                 level += symbols.read_trusted(row_at(br, ctx));
             }
             levels[grid + LEVEL_STRIDE + 1] = LEVEL_WORD[level as usize & 15];
@@ -203,6 +190,8 @@ impl Block<'_> {
                 } else {
                     0
                 };
+            #[cfg(feature = "block-evidence")]
+            self.annotate_symbol(symbols, "idtx_sign", ctx);
             let sign = symbols.read_trusted(row_at(signs, ctx)) != 0;
             levels[at] = word | 1 << if sign { NEGATIVE_SHIFT } else { POSITIVE_SHIFT };
             let pos = entry_pos(entry);

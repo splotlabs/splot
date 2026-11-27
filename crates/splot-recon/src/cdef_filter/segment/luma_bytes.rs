@@ -16,22 +16,34 @@ pub(super) const LUMA_BYTE_STARTS: CdefTapStarts = cdef_tap_starts(
     2 * LUMA_BYTE_STRIDE + TAP_REACH,
 );
 
-/// [`gather_luma`] into the byte scratch alone.
-pub(super) fn gather_luma_bytes(
-    samples: &[u8],
-    width: usize,
-    stride: usize,
-    bytes: &mut [u8; LUMA_BYTES_AREA],
-    origin: (usize, usize),
-) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(avx2) = Level::baseline().as_avx2() {
-        return gather_luma_bytes_with(avx2, MinPos, samples, width, stride, bytes, origin);
-    }
-    baseline_simd!(simd => gather_luma_bytes_with(simd, Reduced, samples, width, stride, bytes, origin))
+pub(super) struct LumaBytesGather<'a> {
+    pub(super) samples: &'a [u8],
+    pub(super) width: usize,
+    pub(super) stride: usize,
+    pub(super) bytes: &'a mut [u8; LUMA_BYTES_AREA],
+    pub(super) origin: (usize, usize),
 }
 
-#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+impl SegmentGather<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> for LumaBytesGather<'_> {
+    #[inline]
+    fn run<S: SimdToken, R: LaneBounds<S>>(
+        self,
+        simd: S,
+        reduce: R,
+    ) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
+        gather_luma_bytes_with(
+            simd,
+            reduce,
+            self.samples,
+            self.width,
+            self.stride,
+            self.bytes,
+            self.origin,
+        )
+    }
+}
+
+#[expect(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
 fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
     simd: S,
@@ -73,7 +85,7 @@ fn gather_luma_bytes_with<S: SimdToken, R: LaneBounds<S>>(
 }
 
 /// The § 7.18.2 luma direction inputs from bytes already offset by 128.
-#[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 pub(super) fn direction_byte_rows<S: SimdToken>(
     simd: S,

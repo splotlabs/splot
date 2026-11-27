@@ -43,7 +43,9 @@ use core::num::NonZeroUsize;
 mod edges;
 
 pub use edges::{
-    DeblockEdge, deblock_horizontal_edges, deblock_vertical_edge_band, deblock_vertical_edges,
+    DeblockEdge, deblock_horizontal_edges, deblock_horizontal_edges_with,
+    deblock_vertical_edge_band, deblock_vertical_edge_band_with, deblock_vertical_edges,
+    deblock_vertical_edges_with,
 };
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
@@ -162,7 +164,7 @@ pub fn deblock_sample_filter_strided<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`deblock_sample_filter_strided`] when the
 /// storage type, widths, or a strided sample span is invalid.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 pub fn deblock_sample_filter_strided_4<T: ReconSample>(
     samples: &mut [T],
@@ -237,7 +239,7 @@ fn validate_sample_filter_span(
     Ok(())
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_sample_filter_inner<T: ReconSample>(
     line: &mut [T],
@@ -247,7 +249,7 @@ fn deblock_sample_filter_inner<T: ReconSample>(
     deblock_sample_filter_inner_lanes(line, params, stride, 1, 1)
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_sample_filter_inner_lanes<T: ReconSample>(
     line: &mut [T],
@@ -517,7 +519,7 @@ pub fn deblock_filter_choice<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`deblock_filter_choice`] when widths or either
 /// strided sample span are invalid.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 pub fn deblock_filter_choice_strided<T: ReconSample>(
     samples: &[T],
@@ -593,7 +595,7 @@ pub fn deblock_filter_choice_strided<T: ReconSample>(
     }))
 }
 
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_choice_progressive(
     params: &DeblockFilterChoice,
@@ -644,7 +646,7 @@ fn cascade_reach(mut load: impl FnMut(isize) -> (i32, i32)) -> CascadeDerivative
 /// The § 7.17.7.2 threshold cascade over `secondDeriv[-2..=1]`. `reach`
 /// produces the directional derivatives of the wide stage; it runs only when
 /// the cascade gets there, so an edge that stops earlier never pays for it.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[expect(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_choice_cascade(
     params: &DeblockFilterChoice,

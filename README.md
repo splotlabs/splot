@@ -98,6 +98,24 @@ splot decode movie.ivf -o clean.y4m --skip-film-grain      # no film grain
 The decoder reads IVF files and raw Annex B streams. A raw stream has no frame
 rate, so give one for Y4M output: `--frame-rate 30:1`.
 
+### Compose a multistream atlas
+
+```bash
+splot compose atlas.obu -o canvas.yuv
+```
+
+For atlas modes 3 and 4, this command writes raw Y, U and V planes in display order.
+Ten-bit samples use little-endian 16-bit words. Use `-o -` for standard output.
+Splot uses nearest-neighbor scaling and limited-range BT.709 color for this presentation operation.
+AV2 § 7.3.1 gives all extended layers in one temporal unit the same output time.
+The command groups pictures by their input temporal unit and checks its active global atlas.
+Use `--atlas-id ID` to select a layout when several global atlases apply.
+At a random access point, use `--external-atlas FILE` to supply a missing atlas OBU with its Annex B length prefix. Repeat the option for each atlas.
+
+`--max-bytes` sets three separate limits, each 256 MiB by default.
+They apply to one decoded frame, the sample storage of all pending pictures, and the compositor's canvas with row scratch.
+The command accepts pictures within a window of 32 input temporal units. It reports late, missing, or duplicate contributions.
+
 ## Validate. With proof.
 
 Find out if a stream is correct, and if not, exactly where and why.
@@ -153,12 +171,24 @@ fn show(decoder: &mut Decoder) -> splot_decode::Result<()> {
 }
 ```
 
+`Picture::provenance()` identifies the OBU that coded the samples, the OBU
+that caused display, and the sequence header in effect when the frame was
+coded. Each location contains the `DataProps::user_data` token and the byte
+offset of the OBU header within its submitted temporal unit.
+
+`Picture::decoded_frame()` borrows the current samples and their geometry.
+Use the existing `splot_recon` raw, Y4M, and hash routines on this frame.
+For the codec hash contract, open the decoder with `skip_film_grain`.
+
 **C.** The decoder has a stable C ABI with zero-copy pictures:
 `splot_open`, `splot_send_data`, `splot_get_picture`, `splot_wait_picture`,
 `splot_flush`, `splot_drain`, `splot_close`. The header is
 [`crates/splot-capi/include/splot.h`](./crates/splot-capi/include/splot.h), and
 [`examples/decode.c`](./crates/splot-capi/examples/decode.c) is a complete IVF
-decoder in about 100 lines.
+decoder in about 100 lines. `SplotPicture.provenance` gives the same input
+locations as the Rust picture API. The C interface gives hosts the planes,
+strides, and visible geometry. The borrowed Rust frame serves Rust writers
+and inspection.
 
 ```bash
 cargo build --release -p splot-capi
@@ -177,11 +207,12 @@ cargo install --path crates/splot-cli --locked
 splot --help
 ```
 
-> **Older x86 CPUs:** release builds use AVX2 (Intel Haswell 2013+, AMD
-> Excavator 2015+). On an older CPU, build with
-> `RUSTFLAGS="-C target-cpu=x86-64"`. Apple Silicon and ARM need nothing extra.
->
-> **Linux:** builds need glibc 2.36 or newer (Debian 12, Ubuntu 24.04).
+> **CPU requirements.** Release builds from this checkout target x86-64-v3.
+> The decoder detects AVX-512 at startup and can use it for selected operations.
+> AArch64 uses NEON. For older x86-64 CPUs, build with
+> `RUSTFLAGS="-C target-cpu=x86-64"`. That build can select SSE2, AVX2 or
+> AVX-512 at runtime. Its surrounding decoder code also targets baseline
+> x86-64, which can reduce throughput even when it selects an AVX2 kernel.
 
 ## Where it stands.
 

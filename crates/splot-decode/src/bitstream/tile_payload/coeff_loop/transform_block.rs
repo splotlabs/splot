@@ -14,8 +14,7 @@ use splot_recon::{TransformClass, coefficient_scan_position};
 use super::super::cdf::block_read::{BlockSymbolTraceReadError, read_row, row_at};
 use super::super::cdf::coeff_context::{
     CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
-    LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
-    coeff_base_eob_ctx, dc_sign_ctx,
+    LF_SIG_COEF_CONTEXTS_2D_UV, MAX_BASE_BR_RANGE, SIG_OFFSETS, coeff_base_eob_ctx, dc_sign_ctx,
 };
 use super::super::cdf::{CoeffLevelRows, TileCdfSubset};
 use super::super::coeff_state::{
@@ -26,8 +25,8 @@ use super::base_level_pass::{CoeffBaseDerivedLevelPassError, tx_class_index};
 use super::base_symbol::CoeffBaseSymbolReadError;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
-    COEFF_BASE_RANGE, CoeffMaxLevelConfig, CoeffTransformClass, LF_NUM_BASE_LEVELS,
-    NUM_BASE_LEVELS, derive_coeff_max_level, visible_max_level,
+    COEFF_BASE_RANGE, CoeffMaxLevelConfig, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS,
+    derive_coeff_max_level, visible_max_level,
 };
 use super::ordinary_pass::{CoeffOrdinaryBranchError, CoeffOrdinaryPassError};
 use super::quant_pass::CoeffQuantPassError;
@@ -58,21 +57,6 @@ const SIG_GRID: [[usize; 5]; 3] = {
         while k < 5 {
             let [row, col] = SIG_OFFSETS[class][k];
             out[class][k] = grid_offset([row as usize, col as usize]);
-            k += 1;
-        }
-        class += 1;
-    }
-    out
-};
-
-/// `Mag_Ref_Offset_With_Tx_Class` per class as level-grid offsets.
-const MAG_GRID: [[usize; 3]; 3] = {
-    let mut out = [[0; 3]; 3];
-    let mut class = 0;
-    while class < 3 {
-        let mut k = 0;
-        while k < 3 {
-            out[class][k] = grid_offset(MAG_REF_OFFSET_WITH_TX_CLASS[class][k]);
             k += 1;
         }
         class += 1;
@@ -145,37 +129,14 @@ const fn min(a: usize, b: usize) -> usize {
     if a < b { a } else { b }
 }
 
-/// `HALF_CAPPED[cap][mag]` is `min((mag + 1) >> 1, cap)`, the capped
-/// context of a neighbour sum, as a load instead of a data-dependent branch.
-static HALF_CAPPED: [[u8; 32]; 16] = {
-    let mut table = [[0; 32]; 16];
-    let mut cap = 0;
-    while cap < 16 {
-        let mut mag = 0;
-        while mag < 32 {
-            let half = (mag + 1) >> 1;
-            table[cap][mag] = if half < cap { half } else { cap } as u8;
-            mag += 1;
-        }
-        cap += 1;
-    }
-    table
-};
-
 const SCAN_DIMS: usize = 4;
 const GRID_SCAN_LEN: usize = 3600;
 
-/// Where the `4 << wi` by `4 << hi` shape starts in [`GRID_SCANS`].
+/// Where the `4 << wi` by `4 << hi` shape starts in [`GRID_SCANS`]. Earlier widths span 60 rows each.
 pub(super) const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
-    let (mut offset, mut w, mut h) = (0, 0, 0);
-    while w < wi || (w == wi && h < hi) {
-        offset += (4 << w) * (4 << h);
-        h += 1;
-        if h == SCAN_DIMS {
-            (w, h) = (w + 1, 0);
-        }
-    }
-    offset
+    let w = 4usize << wi;
+    let h = 4usize << hi;
+    (w - 4) * 60 + w * (h - 4)
 }
 
 /// The § 5.20.7.30 scan of every block shape per transform class, each
@@ -246,12 +207,12 @@ static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
 };
 
 /// One past the largest raster position the scan can reach at this EOB.
-#[allow(
+#[expect(
     clippy::inline_always,
     reason = "measured: out of line it costs 30 instructions per block"
 )]
 #[inline(always)]
-pub(crate) fn scan_extent(class: CoeffTransformClass, tx: &TxGeometry, eob: usize) -> usize {
+pub(crate) fn scan_extent(class: TransformClass, tx: &TxGeometry, eob: usize) -> usize {
     let len = usize::from(tx.width) * usize::from(tx.height);
     if eob == 0 || eob > len {
         return len;
@@ -263,7 +224,7 @@ pub(crate) fn scan_extent(class: CoeffTransformClass, tx: &TxGeometry, eob: usiz
 
 /// The transform's coefficient scan through its EOB.
 pub(super) fn grid_scan(
-    class: CoeffTransformClass,
+    class: TransformClass,
     tx: &TxGeometry,
     eob: usize,
 ) -> Result<&'static [u32], CoeffOrdinaryPassError> {
@@ -279,10 +240,8 @@ pub(super) fn grid_scan(
     Ok(scans.get(start..start + eob).unwrap_or_default())
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
-#[inline(always)]
 fn half_capped(mag: u32, cap: usize) -> usize {
-    usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
+    (mag as usize).div_ceil(2).min(cap)
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
@@ -306,28 +265,69 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
 pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) plane: usize,
-    pub(crate) tx_class: CoeffTransformClass,
+    pub(crate) tx_class: TransformClass,
+    pub(crate) scan_order: bool,
     pub(crate) parity_hiding: bool,
     pub(crate) use_tcq: bool,
     pub(crate) lines: &'l CoeffBlockLines,
     pub(crate) lossless: bool,
 }
 
-/// Decodes the block's coefficients into `quant` (zero on entry, one entry
-/// per adjusted position up to at least the [`scan_extent`] of the EOB),
-/// commits its above and left contexts, and returns one past its last
-/// nonzero entry.
+#[cfg(feature = "block-evidence")]
+pub(crate) struct OrdinaryTransformCoefficients {
+    pub(crate) quant_end: usize,
+    pub(crate) dc_parity_hidden: bool,
+}
+
+#[cfg(not(feature = "block-evidence"))]
+pub(crate) type OrdinaryTransformCoefficients = usize;
+
+/// Writes decoded coefficients into the zeroed output slice in raster or
+/// scan order and returns one past its last written nonzero coefficient.
 pub(crate) fn decode_ordinary_transform_block(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     mut input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryBranchError> {
+) -> Result<OrdinaryTransformCoefficients, CoeffOrdinaryBranchError> {
+    use TransformClass::{Horizontal, TwoD, Vertical};
+
     input.parity_hiding &= !input.lossless;
     input.use_tcq &= !input.lossless;
     preflight(&input, quant.len())?;
-    Ok(dispatch(&input)(state, cdfs, symbols, &input, quant)?)
+    let result = match (
+        input.tx_class,
+        input.plane == 0,
+        input.use_tcq,
+        input.parity_hiding,
+    ) {
+        (TwoD, true, true, _) => run::<0, true, true, false>(state, cdfs, symbols, &input, quant),
+        (TwoD, true, false, true) => {
+            run::<0, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (TwoD, true, false, false) => {
+            run::<0, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Horizontal, true, _, true) => {
+            run::<1, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (Horizontal, true, _, false) => {
+            run::<1, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, true, _, true) => {
+            run::<2, true, false, true>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, true, _, false) => {
+            run::<2, true, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (TwoD, false, ..) => run::<0, false, false, false>(state, cdfs, symbols, &input, quant),
+        (Horizontal, false, ..) => {
+            run::<1, false, false, false>(state, cdfs, symbols, &input, quant)
+        }
+        (Vertical, false, ..) => run::<2, false, false, false>(state, cdfs, symbols, &input, quant),
+    };
+    Ok(result?)
 }
 
 fn preflight(
@@ -338,7 +338,7 @@ fn preflight(
         return Err(CoeffBaseDerivedLevelPassError::InconsistentParityAndTcq.into());
     }
     if (input.plane > 0 && (input.parity_hiding || input.use_tcq))
-        || (input.use_tcq && input.tx_class != CoeffTransformClass::TwoD)
+        || (input.use_tcq && input.tx_class != TransformClass::TwoD)
     {
         return Err(CoeffBaseDerivedLevelPassError::UnsupportedToolClass.into());
     }
@@ -365,43 +365,13 @@ struct Block<'a> {
     width_log2: u32,
     dc: CoeffSignSourceDeriveConfig<'a>,
     lossless: bool,
+    scan_order: bool,
 }
 
 struct BlockSummary {
     state: NonZeroCoeffQuantState,
     quant_end: usize,
 }
-
-#[allow(clippy::inline_always, reason = "measured: one body per tool set")]
-#[inline(always)]
-fn dispatch(input: &CoeffTransformBlockInput<'_>) -> RunFn {
-    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
-    match (
-        input.tx_class,
-        input.plane == 0,
-        input.use_tcq,
-        input.parity_hiding,
-    ) {
-        (TwoD, true, true, _) => run::<0, true, true, false>,
-        (TwoD, true, false, true) => run::<0, true, false, true>,
-        (TwoD, true, false, false) => run::<0, true, false, false>,
-        (Horizontal, true, _, true) => run::<1, true, false, true>,
-        (Horizontal, true, _, false) => run::<1, true, false, false>,
-        (Vertical, true, _, true) => run::<2, true, false, true>,
-        (Vertical, true, _, false) => run::<2, true, false, false>,
-        (TwoD, false, ..) => run::<0, false, false, false>,
-        (Horizontal, false, ..) => run::<1, false, false, false>,
-        (Vertical, false, ..) => run::<2, false, false, false>,
-    }
-}
-
-type RunFn = fn(
-    &mut TileCoeffContextState,
-    &mut TileCdfSubset,
-    &mut SymbolDecoder<'_>,
-    &CoeffTransformBlockInput<'_>,
-    &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError>;
 
 /// One specialised block body per class, plane type and tool set, kept out
 /// of line so its loops own the registers.
@@ -412,13 +382,13 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     symbols: &mut SymbolDecoder<'_>,
     input: &CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError> {
+) -> Result<OrdinaryTransformCoefficients, CoeffOrdinaryPassError> {
     let tx = input.start.tx();
     let width_log2 = u32::from(tx.width_log2);
     let tx_class = [
-        CoeffTransformClass::TwoD,
-        CoeffTransformClass::Horizontal,
-        CoeffTransformClass::Vertical,
+        TransformClass::TwoD,
+        TransformClass::Horizontal,
+        TransformClass::Vertical,
     ][CLASS];
     let eob = input.start.eob_read();
     let scan = grid_scan(tx_class, tx, eob)?;
@@ -427,6 +397,7 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     let block = Block {
         scan,
         width_log2,
+        scan_order: input.scan_order,
         dc: CoeffSignSourceDeriveConfig {
             plane: input.plane,
             plane_type: usize::from(!LUMA),
@@ -465,10 +436,14 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         nonzero: &mut *nonzero,
         nonzero_len: 0,
     };
-    pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
+    let dc_level =
+        pass.levels_pass::<CLASS, LUMA, TCQ, PH>(&mut rows, scan, eob_entry, eob_level, lf_end);
+    let dc_q0 = TCQ && pass.tcq_q0 & 1 != 0;
     let (mut owned, ph, nonzero_len) = (pass.symbols, pass.ph, pass.nonzero_len);
     let nonzero = nonzero.get(..nonzero_len).unwrap_or_default();
     let facts = SignFacts {
+        dc_level,
+        dc_q0,
         lf_end,
         is_hidden: PH && (ph >> 1) >= PHTHRESH,
         sum_abs1: if PH { ph & 1 } else { 0 },
@@ -485,11 +460,18 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         summary.state.cul_level(),
         summary.state.dc_category(),
     );
-    Ok(summary.quant_end)
+    #[cfg(feature = "block-evidence")]
+    let quant_end = OrdinaryTransformCoefficients {
+        quant_end: summary.quant_end,
+        dc_parity_hidden: facts.is_hidden,
+    };
+    #[cfg(not(feature = "block-evidence"))]
+    let quant_end = summary.quant_end;
+    Ok(quant_end)
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).
-#[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
+#[expect(clippy::inline_always, reason = "measured: per-block symbol read")]
 #[inline(always)]
 fn read_eob_base<const LUMA: bool>(
     symbols: &mut SymbolDecoder<'_>,
@@ -497,6 +479,25 @@ fn read_eob_base<const LUMA: bool>(
     ctx: usize,
     lf: bool,
 ) -> u32 {
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        use splot_core::symbol::EntropySyntax;
+
+        symbols.annotate_entropy(match (LUMA, lf) {
+            (true, true) => EntropySyntax::new(
+                "coeff_base_lf_eob",
+                "tx_size_ctx,ctx",
+                [rows.tx_size as u16, ctx as u16, 0],
+            ),
+            (true, false) => EntropySyntax::new(
+                "coeff_base_eob",
+                "tx_size_ctx,ctx",
+                [rows.tx_size as u16, ctx as u16, 0],
+            ),
+            (false, true) => EntropySyntax::new("coeff_base_lf_eob_uv", "ctx", [ctx as u16, 0, 0]),
+            (false, false) => EntropySyntax::new("coeff_base_eob_uv", "ctx", [ctx as u16, 0, 0]),
+        });
+    }
     match (LUMA, lf) {
         (true, true) => symbols.read_trusted(row_at(rows.base_lf_eob(), ctx)),
         (true, false) => symbols.read_trusted(row_at(rows.base_eob(), ctx)),
@@ -505,7 +506,7 @@ fn read_eob_base<const LUMA: bool>(
     }
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
+#[expect(clippy::inline_always, reason = "measured: per-coefficient index")]
 #[inline(always)]
 pub(super) const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
@@ -516,8 +517,6 @@ pub(super) const fn entry_pos(entry: u32) -> usize {
     (((entry >> 11) & 0x3fc) | (entry & 3)) as usize
 }
 
-#[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
-#[inline(always)]
 const fn ctx_class_of(entry: u32) -> usize {
     (entry >> CTX_CLASS_SHIFT) as usize & 3
 }
@@ -548,8 +547,6 @@ const NONZERO_LIST: usize = 1024;
 
 impl LevelPass<'_, '_> {
     /// The sum of the grid words at `offsets` from `grid`.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
     fn sum(&self, grid: usize, offsets: &[usize]) -> u32 {
         offsets
             .iter()
@@ -557,38 +554,8 @@ impl LevelPass<'_, '_> {
             .sum()
     }
 
-    /// The clamped `coeff_base` neighbour sum (§ 8.3.2): `NEAR5` and `FAR5`
-    /// cap the first two and the remaining `Sig_Ref_Diff_Offset` entries at
-    /// 5 instead of 3.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
-    fn base_mag<const CLASS: usize, const LUMA: bool, const NEAR5: bool, const FAR5: bool>(
-        &self,
-        grid: usize,
-    ) -> u32 {
-        let count = if LUMA {
-            5
-        } else if CLASS == 0 {
-            3
-        } else {
-            2
-        };
-        let offsets = &SIG_GRID[CLASS][..count];
-        if NEAR5 == FAR5 {
-            let shift = if NEAR5 { 8 } else { 0 };
-            (self.sum(grid, offsets) >> shift) & 0xff
-        } else {
-            ((self.sum(grid, &offsets[..2]) >> 8) & 0xff) + (self.sum(grid, &offsets[2..]) & 0xff)
-        }
-    }
-
-    /// The `coeff_br` context (§ 8.3.2); `lf_bump` is whether the context
-    /// takes the low-frequency offset of 7.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
-    fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
-        let count = if LUMA || CLASS == 0 { 3 } else { 2 };
-        let mag = (self.sum(grid, &MAG_GRID[CLASS][..count]) >> 8) & 0xff;
+    fn br_ctx_from_word_sum<const LUMA: bool>(sum: u32, lf_bump: bool) -> usize {
+        let mag = (sum >> 8) & 0xff;
         if !LUMA {
             half_capped(mag, 3)
         } else {
@@ -596,16 +563,10 @@ impl LevelPass<'_, '_> {
         }
     }
 
-    /// Adds `coeff_br` when the base symbol saturates.
-    #[allow(
-        clippy::inline_always,
-        reason = "measured: per-coefficient symbol read"
-    )]
-    #[inline(always)]
-    fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
+    /// Adds `coeff_br` at EOB, where the neighbour sum is zero.
+    fn add_eob_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
-        grid: usize,
         is_dc: bool,
         level: u32,
     ) -> u32 {
@@ -617,22 +578,45 @@ impl LevelPass<'_, '_> {
         if level <= base_levels || (LF && !LUMA) {
             return level;
         }
-        let ctx = self.br_ctx::<CLASS, LUMA>(grid, LF && (!is_dc || CLASS != 0));
-        level
-            + if !LUMA {
-                let row = row_at(rows.cdf.coeff_br_uv(), ctx);
-                self.symbols.read_trusted(row)
-            } else if LF {
-                let row = row_at(rows.cdf.coeff_br_lf(), ctx);
-                self.symbols.read_trusted(row)
-            } else {
-                let row = row_at(rows.cdf.coeff_br(), ctx);
-                self.symbols.read_trusted(row)
-            }
+        let ctx = if LF && (!is_dc || CLASS != 0) { 7 } else { 0 };
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, LF>(ctx);
+        let row = Self::range_row::<LUMA, LF>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
-    #[inline(always)]
+    #[cfg(feature = "block-evidence")]
+    #[inline]
+    fn annotate_range<const LUMA: bool, const LF: bool>(&self, ctx: usize) {
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    if !LUMA {
+                        "coeff_br_uv"
+                    } else if LF {
+                        "coeff_br_lf"
+                    } else {
+                        "coeff_br"
+                    },
+                    "ctx",
+                    [ctx as u16, 0, 0],
+                ));
+        }
+    }
+
+    fn range_row<'a, const LUMA: bool, const LF: bool>(
+        rows: &'a mut CoeffLevelRows<'_>,
+        ctx: usize,
+    ) -> &'a mut [u16; 5] {
+        if !LUMA {
+            row_at(rows.cdf.coeff_br_uv(), ctx)
+        } else if LF {
+            row_at(rows.cdf.coeff_br_lf(), ctx)
+        } else {
+            row_at(rows.cdf.coeff_br(), ctx)
+        }
+    }
+
     fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
         half_capped(mag, 3)
             + if CLASS != 0 {
@@ -642,29 +626,47 @@ impl LevelPass<'_, '_> {
             }
     }
 
-    /// Reads a low-frequency base symbol; `DC` is whether the position is
+    /// Reads a low-frequency level, retaining the near-neighbour sum for
+    /// a saturated luma base symbol. `DC` is whether the position is
     /// scan index 0.
-    #[allow(
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
+    fn read_lf_level<const CLASS: usize, const LUMA: bool, const DC: bool, const TCQ: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
         let (grid, pos) = (entry_grid(entry), entry_pos(entry));
-        let mag = if CLASS == 0 {
-            self.base_mag::<CLASS, LUMA, true, true>(grid)
-        } else {
-            self.base_mag::<CLASS, LUMA, true, false>(grid)
-        };
+        let offsets = &SIG_GRID[CLASS];
         if !LUMA {
+            let count = if CLASS == 0 { 3 } else { 2 };
+            let mag = (self.sum(grid, &offsets[..count]) >> 8) & 0xff;
             let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_lf_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
             return self.symbols.read_trusted(row);
         }
+        let (mag, range_sum) = if CLASS == 0 {
+            let near = self.sum(grid, &offsets[..3]);
+            let far = self.sum(grid, &offsets[3..]);
+            (((near + far) >> 8) & 0xff, near)
+        } else {
+            let near = self.sum(grid, &offsets[..2]);
+            let third = self.sum(grid, &offsets[2..3]);
+            let far = self.sum(grid, &offsets[3..]);
+            (((near >> 8) & 0xff) + ((third + far) & 0xff), near + third)
+        };
         let ctx = if CLASS == 0 {
             if DC {
                 let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[0];
@@ -684,54 +686,117 @@ impl LevelPass<'_, '_> {
                 LF_SIG_COEF_CONTEXTS_2D + 7 + half_capped(mag, 4)
             }
         };
-        let q0 = self.tcq_q0 & 1;
+        let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+        #[cfg(feature = "block-evidence")]
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_base_lf",
+                    "tx_size_ctx,ctx,tcq_ctx",
+                    [rows.tx_size as u16, ctx as u16, q0 as u16],
+                ));
+        }
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
-        self.symbols.read_trusted(row)
+        let level = self.symbols.read_trusted(row);
+        if level <= LF_NUM_BASE_LEVELS {
+            return level;
+        }
+        let ctx = Self::br_ctx_from_word_sum::<LUMA>(range_sum, !DC || CLASS != 0);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, true>(ctx);
+        let row = Self::range_row::<LUMA, true>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
-    /// Reads one high-frequency base symbol.
-    #[allow(
+    /// Reads a high-frequency level, sharing the packed neighbour sum of
+    /// the base and range contexts.
+    #[expect(
         clippy::inline_always,
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_base<const CLASS: usize, const LUMA: bool>(
+    fn read_hf_level<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         entry: u32,
     ) -> u32 {
-        let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
-        if !LUMA {
-            let ctx = self.uv_ctx::<CLASS>(mag);
-            let row = row_at(rows.cdf.coeff_base_uv(), ctx);
-            return self.symbols.read_trusted(row);
-        }
-        let q0 = self.tcq_q0 & 1;
-        let row = if CLASS == 0 {
-            let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
-            &mut rows.base().as_flattened_mut()[(first | q0) & 31]
+        let grid = entry_grid(entry);
+        let count = if LUMA || CLASS == 0 { 3 } else { 2 };
+        let offsets = &SIG_GRID[CLASS];
+        let near = self.sum(grid, &offsets[..count]);
+        let far = if LUMA {
+            self.sum(grid, &offsets[count..])
         } else {
-            &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
+            0
         };
-        self.symbols.read_trusted(row)
+        let mag = (near + far) & 0xff;
+        let level = if !LUMA {
+            let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
+            let row = row_at(rows.cdf.coeff_base_uv(), ctx);
+            self.symbols.read_trusted(row)
+        } else {
+            let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+            let row = if CLASS == 0 {
+                let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
+                let row_index = (first | q0) & 31;
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, (row_index >> 1) as u16, q0 as u16],
+                        ));
+                }
+                &mut rows.base().as_flattened_mut()[row_index]
+            } else {
+                let ctx = half_capped(mag, 4) + 15;
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, ctx as u16, q0 as u16],
+                        ));
+                }
+                &mut row_at(rows.base(), ctx)[q0]
+            };
+            self.symbols.read_trusted(row)
+        };
+        if level <= NUM_BASE_LEVELS {
+            return level;
+        }
+        let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, false>(ctx);
+        let row = Self::range_row::<LUMA, false>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
-    /// Records a decoded level and advances the TCQ and parity state.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    /// Records a decoded AC level and advances the TCQ and parity state.
+    #[expect(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
-    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32, ac: bool) {
+    fn finish<const TCQ: bool, const PH: bool>(&mut self, entry: u32, level: u32) {
         let nonzero = level != 0;
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
         self.levels[entry_grid(entry)] = LEVEL_WORD[(q0 << 4) | (level as usize & 15)];
-        if ac {
-            self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
-            self.nonzero_len += usize::from(nonzero);
-        }
+        self.nonzero[self.nonzero_len & (NONZERO_LIST - 1)] = entry;
+        self.nonzero_len += usize::from(nonzero);
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = next_tcq_state(self.tcq, level);
         }
-        if PH && ac {
+        if PH {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.ph = (self.ph ^ (clipped & 1)) + (u32::from(level != 0) << 1);
         }
@@ -746,10 +811,8 @@ impl LevelPass<'_, '_> {
         hf: &[u32],
     ) {
         for &entry in hf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, false>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(entry, level, true);
+            let level = self.read_hf_level::<CLASS, LUMA, TCQ>(&mut rows, entry);
+            self.finish::<TCQ, PH>(entry, level);
         }
     }
 
@@ -762,18 +825,17 @@ impl LevelPass<'_, '_> {
         lf: &[u32],
     ) {
         for &entry in lf.iter().rev() {
-            let grid = entry_grid(entry);
-            let level = self.read_lf_base::<CLASS, LUMA, false>(&mut rows, entry);
-            let level = self.add_range::<CLASS, LUMA, true>(&mut rows, grid, false, level);
-            self.finish::<TCQ, PH>(entry, level, true);
+            let level = self.read_lf_level::<CLASS, LUMA, false, TCQ>(&mut rows, entry);
+            self.finish::<TCQ, PH>(entry, level);
         }
     }
 
     /// The base and range symbols of every scan index below the EOB, in
     /// reverse scan order: the high-frequency indices, the low-frequency
     /// indices above 0 (a scan prefix, see [`lf_scan_end`]), and DC, so each
-    /// phase reads one row family with its context arithmetic folded.
-    #[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+    /// phase reads one row family with its context arithmetic folded. Returns
+    /// DC directly because no later context reads its grid cell.
+    #[expect(clippy::inline_always, reason = "measured: one loop per tool set")]
     #[inline(always)]
     fn levels_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         &mut self,
@@ -782,18 +844,17 @@ impl LevelPass<'_, '_> {
         eob_entry: u32,
         eob_level: u32,
         lf_end: usize,
-    ) {
+    ) -> u32 {
         let eob_index = scan.len() - 1;
-        let eob_grid = entry_grid(eob_entry);
         let eob_level = if eob_index < lf_end {
-            self.add_range::<CLASS, LUMA, true>(rows, eob_grid, eob_index == 0, eob_level)
+            self.add_eob_range::<CLASS, LUMA, true>(rows, eob_index == 0, eob_level)
         } else {
-            self.add_range::<CLASS, LUMA, false>(rows, eob_grid, false, eob_level)
+            self.add_eob_range::<CLASS, LUMA, false>(rows, false, eob_level)
         };
-        self.finish::<TCQ, PH>(eob_entry, eob_level, eob_index != 0);
         if eob_index == 0 {
-            return;
+            return eob_level;
         }
+        self.finish::<TCQ, PH>(eob_entry, eob_level);
         if lf_end < eob_index {
             self.hf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[lf_end..eob_index]);
         }
@@ -801,21 +862,27 @@ impl LevelPass<'_, '_> {
         if end > 1 {
             self.lf_pass::<CLASS, LUMA, TCQ, PH>(rows.reborrow(), &scan[1..end]);
         }
-        let dc_grid = entry_grid(scan[0]);
-        let level = if PH && (self.ph >> 1) >= PHTHRESH {
-            let mag = self.base_mag::<CLASS, LUMA, false, false>(dc_grid);
+        if PH && (self.ph >> 1) >= PHTHRESH {
+            let count = if LUMA {
+                5
+            } else if CLASS == 0 {
+                3
+            } else {
+                2
+            };
+            let mag = self.sum(entry_grid(scan[0]), &SIG_GRID[CLASS][..count]) & 0xff;
             let row = row_at(rows.cdf.coeff_base_ph(), half_capped(mag, 4));
             self.symbols.read_trusted(row)
         } else {
-            let level = self.read_lf_base::<CLASS, LUMA, true>(rows, scan[0]);
-            self.add_range::<CLASS, LUMA, true>(rows, dc_grid, true, level)
-        };
-        self.finish::<TCQ, PH>(scan[0], level, false);
+            self.read_lf_level::<CLASS, LUMA, true, TCQ>(rows, scan[0])
+        }
     }
 }
 
 #[derive(Clone, Copy)]
 struct SignFacts {
+    dc_level: u32,
+    dc_q0: bool,
     lf_end: usize,
     is_hidden: bool,
     sum_abs1: u32,
@@ -825,7 +892,7 @@ struct SignFacts {
 /// again, reads each one's sign and Golomb remainder, writes its `Quant`
 /// entry and clears the level grid behind it. A zero level's grid word is
 /// already zero.
-#[allow(clippy::inline_always, reason = "measured: one loop per tool set")]
+#[expect(clippy::inline_always, reason = "measured: one loop per tool set")]
 #[inline(always)]
 fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     cdfs: &mut TileCdfSubset,
@@ -837,9 +904,9 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     nonzero: &[u32],
 ) -> Result<BlockSummary, CoeffOrdinaryPassError> {
     let tx_class = [
-        CoeffTransformClass::TwoD,
-        CoeffTransformClass::Horizontal,
-        CoeffTransformClass::Vertical,
+        TransformClass::TwoD,
+        TransformClass::Horizontal,
+        TransformClass::Vertical,
     ][CLASS];
     let plane = if LUMA { 0 } else { block.dc.plane.max(1) };
     let scan = block.scan;
@@ -872,6 +939,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     let lf_end = facts.lf_end.min(eob);
+    let scan_order = LUMA && block.scan_order;
     for &scan_entry in nonzero {
         let scan_index = (scan_entry >> 22) as usize;
         let max_level = if scan_index < lf_end { max_lf } else { max_hf };
@@ -894,6 +962,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             run = symbols.bypass_run();
             sign
         } else {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             symbols.read_bool_in(&mut run)
         };
         let magnitude = if level + u32::from(TCQ) < max_level {
@@ -923,27 +999,43 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 .ac_magnitude(index, read.quant, tcq_q0)
                 .map_err(CoeffQuantPassError::from)?
         } as i32;
-        if let Some(slot) = quant.get_mut(pos) {
+        let output = if scan_order { scan_index } else { pos };
+        if let Some(slot) = quant.get_mut(output) {
             *slot = if sign { -magnitude } else { magnitude };
-            end = end.max(pos + 1);
+            end = end.max(output + 1);
         }
     }
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
-    let (pos, grid) = (entry_pos(scan[0]), entry_grid(scan[0]));
-    let word = levels[grid];
-    levels[grid] = 0;
-    let level = (word >> 16) & 0xff;
+    let pos = entry_pos(scan[0]);
+    let dc_output = if scan_order { 0 } else { pos };
+    let level = facts.dc_level;
     if !facts.is_hidden && level != 0 {
         let sign = if LUMA {
             let dc = &block.dc;
             let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "dc_sign",
+                    "ctx",
+                    [ctx as u16, 0, 0],
+                ));
+            }
             read_row(
                 symbols,
                 row_at(&mut cdfs.block_rows_mut().dc_sign()[0][0], ctx),
             ) != 0
         } else {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             symbols.read_bool_trusted()
         };
         let index = eob - 1;
@@ -961,11 +1053,11 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         };
         quant_state.set_dc_sign(sign);
         let magnitude = quant_state
-            .ac_magnitude(index, dc_quant, word >> Q0_BIT != 0)
+            .ac_magnitude(index, dc_quant, facts.dc_q0)
             .map_err(CoeffQuantPassError::from)? as i32;
-        if let Some(slot) = quant.get_mut(pos) {
+        if let Some(slot) = quant.get_mut(dc_output) {
             *slot = if sign { -magnitude } else { magnitude };
-            end = end.max(pos + 1);
+            end = end.max(dc_output + 1);
         }
     } else if facts.is_hidden {
         let index = eob - 1;
@@ -994,14 +1086,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        quant_state.set_tcq_q0(word >> Q0_BIT != 0);
+        quant_state.set_tcq_q0(facts.dc_q0);
         let write = quant_state
             .apply_entry(index, entry, sign.sign(), read)
             .map_err(CoeffQuantPassError::from)?;
-        if let Some(slot) = quant.get_mut(pos) {
+        if let Some(slot) = quant.get_mut(dc_output) {
             *slot = write.quant();
             if write.quant() != 0 {
-                end = end.max(pos + 1);
+                end = end.max(dc_output + 1);
             }
         }
     }

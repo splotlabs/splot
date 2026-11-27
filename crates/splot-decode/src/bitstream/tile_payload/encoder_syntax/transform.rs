@@ -104,7 +104,6 @@ fn only_type(tx_type: TxType) -> TxTypeOptions {
     options
 }
 
-/// `steps` inline.
 fn inline_steps(steps: &[Step]) -> Result<Steps> {
     let mut out = NO_STEPS;
     if steps.len() > MAX_STEPS {

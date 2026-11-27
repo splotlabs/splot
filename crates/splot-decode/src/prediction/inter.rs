@@ -7,25 +7,25 @@ use splot_core::bitio::BitReader;
 use std::sync::Arc;
 
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf,
-    SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseStatus, FrameType,
+    QuantizationParams, RESTRICTED_ORDER_HINT, RefIdxBuf, SefTrailingBits, SlotFrameFilterTaps,
+    TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::hls::MultiFrameHeaderRecord;
+use splot_core::hls::{MfhId, MultiFrameHeaderRecord};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, InterpolationFilter as ReconInterpolationFilter,
-    IntraRectBlockSize, PlaneId as ReconPlaneId, QuantizerDeltas, ReconSample, ReferenceFrameStore,
-    ReferenceSlot,
+    BitDepth, CurrentFrameSurface, DecodedFrame, DecodedFrameInfo,
+    InterpolationFilter as ReconInterpolationFilter, IntraRectBlockSize, PlaneId as ReconPlaneId,
+    QuantizerDeltas, ReconSample, ReferenceFrameStore, ReferenceSlot,
 };
 
 use crate::bitstream::byte_stream::SourceBytes;
 use crate::bitstream::tile_payload::{
     CoeffBlock, FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap,
-    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place,
-    reconstruct_inter_coeff_block_residual_rect_into, with_residual_scratch,
+    GeneralIntraResidualError, ResidualScratch, add_cctx_pair_residual_in_place_with,
+    reconstruct_inter_coeff_block_residual_rect_into_with, with_residual_scratch,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
@@ -56,13 +56,16 @@ const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 pub(crate) const SINGLE_MODE_NEARMV: u8 = 0;
 pub(crate) const SINGLE_MODE_GLOBALMV: u8 = 1;
 pub(crate) const SINGLE_MODE_NEWMV: u8 = 2;
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Mv {
-    pub(crate) row: i32,
-    pub(crate) col: i32,
+/// A motion vector in `1/8` luma samples (§ 7.12).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+pub struct MotionVector {
+    /// Vertical component.
+    pub row: i32,
+    /// Horizontal component.
+    pub col: i32,
 }
 
-impl Mv {
+impl MotionVector {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
@@ -77,8 +80,9 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn walk_inter_frame<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'_>,
@@ -95,6 +99,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait()?;
         return decode_bridge_frame(
+            backend,
             candidate,
             frame_envelope,
             core,
@@ -117,6 +122,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             .wait()?;
         let planes = scratch.pooled_planes();
         return decode_tip_output_frame(
+            backend,
             scratch,
             planes,
             candidate,
@@ -169,6 +175,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         filter_inputs,
         segment_ids,
     } = decode_inter_blocks(
+        backend,
         scratch,
         tile_plan,
         sequence,
@@ -190,8 +197,9 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     ))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_tip_output_frame<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn decode_tip_output_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
@@ -207,7 +215,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         &core, candidate, offset, sequence, options, reference, &geometry, products,
     )?;
     let (frame, motion_field) = reconstruct_tip_output(
-        scratch, planes, &core, sequence, reference, geometry, offset,
+        backend, scratch, planes, &core, sequence, reference, geometry, offset,
     )?;
     Ok((frame, core, frame_cdfs, None, motion_field, segment_ids))
 }
@@ -215,7 +223,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 /// The entropy products of a TIP output frame, which parses no blocks: the
 /// initial CDFs pass through unchanged and the segment-id map is empty. They
 /// do not depend on the frame's samples, so a caller may publish them first.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn tip_output_products(
     core: &FrameHeaderCore,
     candidate: &DecodePlannedObu,
@@ -246,7 +254,9 @@ pub(crate) fn tip_output_products(
 }
 
 /// Predicts a TIP output frame's samples and its stored motion field.
-pub(crate) fn reconstruct_tip_output<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_tip_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     core: &FrameHeaderCore,
@@ -255,11 +265,14 @@ pub(crate) fn reconstruct_tip_output<T: ReconSample>(
     geometry: FrameDecodeGeometry,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
-    block::tip::reconstruct_output(scratch, planes, sequence, core, reference, geometry, offset)
+    block::tip::reconstruct_output(
+        backend, scratch, planes, sequence, core, reference, geometry, offset,
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn decode_bridge_frame<T: ReconSample>(
+#[expect(clippy::too_many_arguments)]
+fn decode_bridge_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
@@ -299,12 +312,30 @@ fn decode_bridge_frame<T: ReconSample>(
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
-    let motion_field = bridge::motion_field(frame_size, current_order_hint, reference_order_hint)
-        .ok_or(inter_allocation!("bridge temporal motion field"))?;
+    let bru_ref_hints = bru_inactive_frame(&core)
+        .then(|| {
+            core.inter.as_ref().map(|inter| {
+                find_mv_stack::reference_order_hints(
+                    &inter.ref_frame_idx,
+                    &reference.ref_valid,
+                    &reference.ref_order_hint,
+                )
+            })
+        })
+        .flatten();
+    let single_hint = [Some(reference_order_hint)];
+    let ref_order_hints = bru_ref_hints.as_deref().unwrap_or(&single_hint);
+    let motion_field = bridge::motion_field(
+        frame_size,
+        current_order_hint,
+        reference_order_hint,
+        ref_order_hints,
+    )
+    .ok_or(inter_allocation!("bridge temporal motion field"))?;
     let frame_cdfs =
         resolve_initial_frame_cdfs(&core, sequence, reference, Some(candidate), offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let frame = bridge::reconstruct(&source, frame_size, visible, 0, offset)?;
+    let frame = bridge::reconstruct(backend, &source, frame_size, visible, 0, offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = segment_id_map_dimensions(&core)?;
@@ -363,7 +394,11 @@ fn frame_cdf_load(
         &reference.ref_frame_height,
         current_base_q_idx,
         current_order_hint,
-        cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
+        cdf_blending_enabled(
+            enable_avg_cdf,
+            inter_ctrl.tip_frame_mode,
+            inter_ctrl.bru_inactive == Some(true),
+        ),
         avg_cdf_type,
     )
 }
@@ -655,8 +690,12 @@ fn previous_segment_ids(
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }
 
-const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
-    enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
+const fn cdf_blending_enabled(
+    enable_avg_cdf: bool,
+    tip_frame_mode: Option<TipFrameMode>,
+    bru_inactive: bool,
+) -> bool {
+    enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput)) && !bru_inactive
 }
 
 /// Reference lists a frame header can name: `REFS_PER_FRAME` (AV2 § 3) plus
@@ -777,15 +816,17 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     ///
     /// As [`mc::motion_compensate_single_block_into`] and
     /// [`mc::predict_inter_block`].
-    pub(in crate::prediction::inter) fn predict_into(
+    pub(in crate::prediction::inter) fn predict_into<B: splot_core::simd::SimdBackend>(
         &self,
-        sink: &mut mc::WorkspaceSink<'_, '_, T>,
+        backend: B,
+        sink: &mut CurrentFrameSurface<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
         offset: ByteOffset,
     ) -> Result<()> {
         if !self.compound && placed.block.warp_params[0].is_none() {
             return mc::motion_compensate_single_block_into(
+                backend,
                 sink,
                 self.reference0,
                 rect,
@@ -795,7 +836,7 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
                 offset,
             );
         }
-        mc::predict_inter_block(sink, &self.block_params(placed, rect), offset)
+        mc::predict_inter_block(backend, sink, &self.block_params(placed, rect), offset)
     }
 
     /// Builds the § 7.13.3 prediction parameters for the held block.
@@ -900,7 +941,7 @@ impl CompoundOrderHint {
     }
 
     const fn reference(value: u32) -> Self {
-        if value == u32::MAX {
+        if value == RESTRICTED_ORDER_HINT {
             Self::Restricted
         } else {
             Self::Value(value as i64)
@@ -943,9 +984,13 @@ fn compound_is_joint_context_from_order_hints(
     let one_restricted = first_order_hint.is_restricted() != second_order_hint.is_restricted();
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
-#[allow(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+#[expect(clippy::too_many_arguments)]
+pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<
+    B: splot_core::simd::SimdBackend,
+    T: ReconSample,
+>(
+    backend: B,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
     residual_coeffs: &[i32],
@@ -972,6 +1017,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
                 let v_block = inter_residual_chroma_pair(blocks, index, block)
                     .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
                 reconstruct_inter_residual_chroma_cctx_pair(
+                    backend,
                     sink,
                     scratch,
                     [block, v_block],
@@ -987,12 +1033,18 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             let (log2_width, log2_height) = inter_residual_log2(block)
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
             if block.coeffs.eob == 0 {
+                #[cfg(feature = "block-evidence")]
+                crate::block_evidence::stages::skip_inter_residual(
+                    block,
+                    (log2_width, log2_height),
+                );
                 continue;
             }
             let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
             let block_size = IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
-            reconstruct_inter_coeff_block_residual_rect_into(
+            reconstruct_inter_coeff_block_residual_rect_into_with(
+                backend,
                 sink,
                 scratch,
                 coeffs,
@@ -1059,10 +1111,11 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
     v.plane == ReconPlaneId::V && u.x == v.x && u.y == v.y && u.tx_size == v.tx_size
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+fn reconstruct_inter_residual_chroma_cctx_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    backend: B,
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],
     residual_coeffs: &[i32],
@@ -1082,7 +1135,8 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
     let coeffs = crate::bitstream::tile_payload::CoeffBlock::new;
-    add_cctx_pair_residual_in_place(
+    add_cctx_pair_residual_in_place_with(
+        backend,
         sink,
         scratch,
         [
@@ -1108,8 +1162,8 @@ fn inter_residual_log2(
 pub(crate) struct InterBlock {
     pub(crate) ref_frame0: i8,
     pub(crate) ref_frame1: Option<i8>,
-    pub(crate) mv: Mv,
-    pub(crate) mv1: Mv,
+    pub(crate) mv: MotionVector,
+    pub(crate) mv1: MotionVector,
     pub(crate) interp: ReconInterpolationFilter,
     /// Per-list § 7.13.3.23 warp models; slot 1 is only compound LOCALWARP and a
     /// `None` slot uses translational motion compensation.
@@ -1291,6 +1345,8 @@ pub(crate) struct ReferenceMetadata {
     /// The § 7.9 `RefFrameType` is `KEY_FRAME` or `INTRA_ONLY_FRAME`.
     pub(crate) ref_is_intra_frame: RefSlots<bool>,
     pub(crate) ref_long_term_id: RefSlots<Option<u32>>,
+    pub(crate) ref_tlayer_id: RefSlots<u8>,
+    pub(crate) ref_mlayer_id: RefSlots<u8>,
     pub(crate) ref_num_total_refs: RefSlots<u32>,
     pub(crate) saved_global_motion_order_hints:
         RefSlots<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
@@ -1548,38 +1604,14 @@ impl ReferenceMetadata {
             .and_then(|header| header.ccso_params.as_ref())
             .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
-
-    pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
-        FrameReferenceStateView::from_slots_with_base_q_idx(
-            &self.ref_valid,
-            &self.ref_order_hint,
-            &self.ref_frame_width,
-            &self.ref_frame_height,
-            &self.ref_base_q_idx,
-        )
-        .with_quantizer_delta_state(&self.ref_chroma_ac_deltas)
-        .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
-        .with_long_term_id_state(&self.ref_long_term_id)
-        .with_global_motion_state(
-            &self.ref_num_total_refs,
-            &self.saved_global_motion_order_hints,
-            &self.saved_global_motion_params,
-        )
-        .with_single_layer_order_hint_state(
-            &self.ref_order_hint_lsbs,
-            &self.ref_implicit_output_frame,
-            &self.ref_immediate_output_frame,
-        )
-        .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
-        .with_lr_frame_filter_taps(self.lr_frame_filter_taps.as_deref().unwrap_or_default())
-        .with_allowed_frames(self.allowed_frames)
-    }
 }
-pub(crate) fn parse_inter_frame_activation(
+
+fn parse_inter_or_sef_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
     if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
@@ -1588,7 +1620,7 @@ pub(crate) fn parse_inter_frame_activation(
             sequence,
             reference,
             first_picture_in_tu,
-            None,
+            mfh_record,
             frame_index,
         )
     } else {
@@ -1597,51 +1629,86 @@ pub(crate) fn parse_inter_frame_activation(
             sequence,
             reference,
             first_picture_in_tu,
-            None,
+            mfh_record,
             frame_index,
         )
     }
 }
 
-pub(crate) fn parse_validated_inter_frame_core_with_mfh(
+pub(crate) fn parse_inter_frame_activation(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &ReferenceMetadata,
     first_picture_in_tu: bool,
-    mfh_record: Option<&MultiFrameHeaderRecord>,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    let mut core = if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
-        parse_sef_or_tip_frame_core(
+    validate_obu_layer_ids(envelope, sequence, frame_index)?;
+    parse_inter_or_sef_core(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        None,
+        frame_index,
+    )
+}
+
+pub(crate) fn parse_validated_inter_frame_core<'a>(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &ReferenceMetadata,
+    first_picture_in_tu: bool,
+    resolve_mfh: impl FnOnce(MfhId) -> Result<&'a MultiFrameHeaderRecord>,
+    frame_index: Option<usize>,
+) -> Result<FrameHeaderCore> {
+    let mut core = parse_inter_frame_activation(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        frame_index,
+    )?;
+    if !core.cur_mfh_id.is_zero() {
+        let record = resolve_mfh(core.cur_mfh_id)?;
+        core = parse_inter_or_sef_core(
             envelope,
             sequence,
             reference,
             first_picture_in_tu,
-            mfh_record,
+            Some(record),
             frame_index,
-        )?
-    } else {
-        parse_inter_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            mfh_record,
-            frame_index,
-        )?
-    };
+        )?;
+    }
     if envelope.header.obu_type.is_sef() {
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
-    } else if envelope.header.obu_type.is_tip_frame() {
-        resolve_tip_output_core(&mut core, sequence, reference, envelope.offset, frame_index)?;
-    } else {
-        validate_and_resolve_inter_frame_core(
-            &mut core,
+        validate_sef_layer_dependency(
+            envelope.header,
+            &core,
             sequence,
             reference,
             envelope.offset,
             frame_index,
         )?;
+    } else {
+        validate_inter_layer_dependencies(
+            envelope.header,
+            &core,
+            sequence,
+            reference,
+            envelope.offset,
+            frame_index,
+        )?;
+        if envelope.header.obu_type.is_tip_frame() {
+            resolve_tip_output_core(&mut core, sequence, reference, envelope.offset, frame_index)?;
+        } else {
+            validate_and_resolve_inter_frame_core(
+                &mut core,
+                sequence,
+                reference,
+                envelope.offset,
+                frame_index,
+            )?;
+        }
     }
     Ok(core)
 }
@@ -1660,6 +1727,9 @@ fn validate_and_resolve_inter_frame_core(
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
     validate_inter_frame_core(core, sequence)?;
+    if bru_inactive_frame(core) {
+        validate_bru_inactive_reference(core, reference, offset, frame_index)?;
+    }
     if core.inter.as_ref().is_some_and(|inter| {
         matches!(
             inter.tip_frame_mode,
@@ -1682,11 +1752,12 @@ fn parse_sef_or_tip_frame_core(
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
+        obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
         malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
@@ -1704,7 +1775,7 @@ fn parse_sef_or_tip_frame_core(
     Ok(core)
 }
 
-fn malformed_frame_header(
+pub(super) fn malformed_frame_header(
     offset: ByteOffset,
     frame_index: Option<usize>,
     spec_section: &'static str,
@@ -2029,20 +2100,28 @@ fn parse_inter_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
+        obu_mlayer_id: envelope.header.embedded_layer_id,
+        obu_tlayer_id: envelope.header.temporal_layer_id,
         first_picture_in_tu,
         active_sequence: Some(sequence),
         mfh_record,
         reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
     };
-    parse_frame_header_core(&mut reader, &input).map_err(|error| DecodeError::MalformedSource {
-        issue: DecodeSourceIssue::frame_header_conformance(
-            envelope.offset,
-            frame_index,
-            SPEC_HEADER,
-            error.to_string(),
-        ),
-    })
+    let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
+        malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
+    })?;
+    if bru_inactive_frame(&core) && core.status == FrameHeaderParseStatus::InterHeaderComplete {
+        let remaining_bits = reader.remaining_bits();
+        splot_core::obu::parse_trailing_bits(&mut reader, remaining_bits).map_err(|error| {
+            malformed_frame_header(
+                envelope.offset,
+                frame_index,
+                SPEC_TILE_GROUP,
+                format!("bru_inactive tile group trailing_bits() are malformed: {error}"),
+            )
+        })?;
+    }
+    Ok(core)
 }
 
 fn validate_inter_frame_parse(
@@ -2151,6 +2230,55 @@ fn validate_inter_frame_core(core: &FrameHeaderCore, sequence: &SequenceHeader) 
         || core.ccso_params.is_none();
     if incomplete_tools {
         return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
+    }
+    Ok(())
+}
+
+fn validate_bru_inactive_reference(
+    core: &FrameHeaderCore,
+    reference: &ReferenceMetadata,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    let slot = bru_ref_slot(core).ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+    let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+    if core.immediate_output_frame != Some(true) {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            "use_bru == 1 frame must set immediate_output_frame == 1".to_owned(),
+        ));
+    }
+    let refresh_mask = 1u32.checked_shl(slot).unwrap_or(0);
+    if core
+        .refresh_frame_flags
+        .is_none_or(|flags| flags & refresh_mask == 0)
+    {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            format!("use_bru == 1 frame must refresh its bru_ref reference slot {slot}"),
+        ));
+    }
+    if reference.ref_valid.get(slot_index) == Some(&true)
+        && let (Some(frame_size), Some(&ref_w), Some(&ref_h)) = (
+            core.frame_size,
+            reference.ref_frame_width.get(slot_index),
+            reference.ref_frame_height.get(slot_index),
+        )
+        && (ref_w != frame_size.width || ref_h != frame_size.height)
+    {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            SPEC_FRAME_HEADER_INFO_SEMANTICS,
+            format!(
+                "bru_inactive reference slot {slot} size {ref_w}x{ref_h} does not match frame size {}x{}",
+                frame_size.width, frame_size.height
+            ),
+        ));
     }
     Ok(())
 }
@@ -2287,6 +2415,7 @@ pub(crate) mod cross_frame;
 mod find_mv_stack;
 mod frame_products;
 mod frame_walk;
+mod layer_dependencies;
 pub(crate) mod mc;
 mod mode_symbols;
 mod motion_field;
@@ -2298,7 +2427,7 @@ mod single_ref;
 pub use block::encoder_leaf::{Bawp, CompoundType};
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
-    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,
+    EncoderMotion, EncoderSingleMotion, EncoderWarpMotion, EncoderWarpSource,
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM, MvdCoding, chroma_inter_tx_type,
     encoder_motion_field, encoder_temporal_context,
 };
@@ -2309,7 +2438,7 @@ pub(crate) use block::{
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, deblock_tip_output, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
-pub(crate) use compound::CompoundYMode;
+pub use compound::CompoundMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
@@ -2323,6 +2452,9 @@ pub(crate) use frame_products::{
 pub(crate) use frame_walk::{
     DeferredInterWalk, FrameDecodeGeometry, InterFrameStart, InterWalkEarly, TileParseJobs,
     splittable_inter_frame,
+};
+use layer_dependencies::{
+    validate_inter_layer_dependencies, validate_obu_layer_ids, validate_sef_layer_dependency,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 
