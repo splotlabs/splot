@@ -527,8 +527,8 @@ pub struct PresetParams {
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
     /// Inter frames code `allow_intrabc = 1` with the local area only
-    /// (§ 5.18.3.4), and their intra leaves get the IntraBC RD trial of
-    /// `intrabc`. Needs `intrabc_local`. Off in every row, the
+    /// (§ 5.18.3.4), and their intra leaves get an IntraBC RD trial, also
+    /// with `intrabc` off. Needs `intrabc_local`. Off in every row, the
     /// screen-content rows too: not measured.
     pub intrabc_inter: bool,
     /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
