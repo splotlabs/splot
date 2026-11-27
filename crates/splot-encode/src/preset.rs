@@ -520,6 +520,11 @@ pub struct PresetParams {
     /// § 5.20.6.1). 0 in every row. On, the lossless switch-off keeps
     /// `tx_type_depth` 1 for that type choice, so `reduced_tx_set` is 0.
     pub lossless_inter_tx: u8,
+    /// A lossless intra leaf: 1 keeps `enable_idtx_intra` and gives the
+    /// winning luma mode RD trials with `fsc_mode` (IDTX, § 5.20.7.29) at
+    /// `lossless_tx_size` 0 and 1 (§ 5.20.6.1); 2 also codes `enable_fsc`,
+    /// whose FSC coefficient path inter IDTX luma takes too. 0 in every row.
+    pub lossless_fsc: u8,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -1042,8 +1047,8 @@ impl PresetParams {
             inter_ist_rd = false;
             inter_ddt = false;
             cctx = false;
-            fsc = false;
-            idtx_intra = false;
+            fsc = self.lossless_fsc == 2;
+            idtx_intra = self.lossless_fsc > 0;
             palette = false;
             intrabc = false;
             intrabc_inter = false;
@@ -1143,6 +1148,7 @@ impl PresetParams {
         check!(drl_bits)?;
         check!(intrabc_drl)?;
         check!(lossless_inter_tx)?;
+        check!(lossless_fsc)?;
         check!(tpl_delta_q)?;
         check!(ssim_aq)?;
         check!(segmentation)?;
@@ -1809,6 +1815,8 @@ preset_table! {
         lossless_dpcm:         [false, false, false, false, false, false, false, false, false, false, false],
         "Test DCT_DCT or IDTX on each 4x4 luma unit of lossless inter leaves (1), and also one IDTX per 32x32 (2)." [0, 2]
         lossless_inter_tx:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Test FSC on lossless intra leaves with plain IDTX coefficients (1), or with the FSC coefficient path (2)." [0, 2]
+        lossless_fsc:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     Gop {
         "Number of frames per mini-GOP. One shows every frame directly." [1, 32]
@@ -2241,6 +2249,7 @@ mod tests {
             (&[("max_block_log2", "9")], "max_block_log2"),
             (&[("sb256_min_height", "63")], "sb256_min_height"),
             (&[("drl_bits", "6")], "drl_bits"),
+            (&[("lossless_fsc", "3")], "lossless_fsc"),
             (&[("drl_bits", "0")], "drl_bits"),
             (&[("lookahead_frames", "3")], "lookahead_frames"),
             (&[("mini_gop_size", "0")], "mini_gop_size"),

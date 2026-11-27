@@ -11,6 +11,17 @@ use crate::test_support::{avm_decode, avm_decoder};
 /// `bit_depth`, coded lossless at `preset` with the `intra_only` field and
 /// `overrides` on `threads` threads with a key frame every 6 frames.
 fn lossless_stream(
+    case: (PixelFormat, BitDepth, u8, u8),
+    threads: usize,
+    frames: u32,
+    overrides: &[(&str, &str)],
+) -> (Vec<Vec<u8>>, Vec<u8>) {
+    lossless_stream_of(panning_frame, case, threads, frames, overrides)
+}
+
+/// [`lossless_stream`] of the frames that `content` makes.
+fn lossless_stream_of(
+    content: fn(&Config, u32) -> SourceFrame,
     (chroma, bit_depth, preset, intra_only): (PixelFormat, BitDepth, u8, u8),
     threads: usize,
     frames: u32,
@@ -31,7 +42,7 @@ fn lossless_stream(
     let mut encoder = Encoder::new(config.clone()).unwrap();
     let mut source = Vec::new();
     for index in 0..frames {
-        let frame = panning_frame(&config, index);
+        let frame = content(&config, index);
         source.extend(raw_bytes(
             frame.planes().iter().map(Vec::as_slice),
             bit_depth,
@@ -162,8 +173,65 @@ fn lossless_inter_chroma_follows_each_luma_rule() {
     }
 }
 
-/// AVM decodes the lossless streams, with and without DPCM and
-/// `lossless_inter_tx`, to the source samples.
+const TEXT: fn(&Config, u32) -> SourceFrame = super::intra_tools::screen_frame;
+
+const FSC: [&[(&str, &str)]; 3] = [
+    &[("lossless_fsc", "1")],
+    &[("lossless_fsc", "2"), ("lossless_dpcm", "1")],
+    &[("lossless_fsc", "2"), ("lossless_inter_tx", "2")],
+];
+
+/// With `lossless_fsc`, intra leaves of drawn text code `fsc_mode` at
+/// `lossless_tx_size` 0 and 1, on the plain IDTX coefficients (1) or on the
+/// FSC coefficient path (2, next to DPCM, and next to `lossless_inter_tx`,
+/// whose inter IDTX luma takes that path too); the streams decode to the
+/// source samples with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn lossless_fsc_streams_decode_to_the_source_on_any_thread_count() {
+    each_case(CASES, |case| {
+        for overrides in FSC {
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::LOSSLESS_FSC_CODED.set([0; 3]);
+            let (units, source) = lossless_stream_of(TEXT, case, 1, 8, overrides);
+            let [small, large, inter] = crate::tile_writer::LOSSLESS_FSC_CODED.get();
+            if overrides[1..]
+                .iter()
+                .all(|&(field, _)| field != "lossless_inter_tx")
+            {
+                assert!(small + large > 0, "{name}: no FSC leaf");
+            } else if case.3 == 0 {
+                assert!(inter > 0, "{name}: no inter FSC coefficients");
+            }
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+            for threads in [2, 8] {
+                let other = lossless_stream_of(TEXT, case, threads, 8, overrides).0;
+                assert_eq!(other, units, "{name} {threads}");
+            }
+        }
+    });
+}
+
+/// Lossless FSC leaves forced to `lossless_tx_size = 1` (one IDTX per
+/// `find_tx_size(Min(32, W), Min(32, H))`, § 5.20.6.1) on both coefficient
+/// paths decode to the source samples.
+#[test]
+fn lossless_fsc_large_transforms_decode_to_the_source() {
+    for case in [CASES[0], CASES[1], CASES[3]] {
+        for overrides in [FSC[0], FSC[2]] {
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::LOSSLESS_FSC_CODED.set([0; 3]);
+            crate::mode_decision::FORCE_LOSSLESS_FSC.set(true);
+            let (units, source) = lossless_stream_of(TEXT, case, 1, 4, overrides);
+            crate::mode_decision::FORCE_LOSSLESS_FSC.set(false);
+            let [_, large, _] = crate::tile_writer::LOSSLESS_FSC_CODED.get();
+            assert!(large > 0, "{name}: no lossless_tx_size = 1 FSC leaf");
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+        }
+    }
+}
+
+/// AVM decodes the lossless streams, with and without DPCM,
+/// `lossless_inter_tx` and `lossless_fsc`, to the source samples.
 #[test]
 #[ignore = "needs SPLOT_AVM_DECODER"]
 fn avm_decodes_lossless_streams_to_the_source() {
@@ -171,7 +239,15 @@ fn avm_decodes_lossless_streams_to_the_source() {
         return;
     };
     for case in CASES {
-        for overrides in [&[][..], DPCM, INTER_TX[0], INTER_TX[1]] {
+        for overrides in [
+            &[][..],
+            DPCM,
+            INTER_TX[0],
+            INTER_TX[1],
+            FSC[0],
+            FSC[1],
+            FSC[2],
+        ] {
             let (units, source) = lossless_stream(case, 1, 8, overrides);
             let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
             assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));
