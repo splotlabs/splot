@@ -158,6 +158,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         explicit_refs: None,
                         implicit_output: false,
                         leading: false,
+                        tlayer: TemporalLayerId::BASE,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -252,6 +253,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         explicit_refs: None,
         implicit_output: false,
         leading: false,
+        tlayer: TemporalLayerId::BASE,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -359,6 +361,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             explicit_refs: None,
             implicit_output: false,
             leading: false,
+            tlayer: TemporalLayerId::BASE,
         },
     )
     .unwrap();
@@ -402,7 +405,9 @@ fn tile_group_ranges_split_the_tiles_evenly() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5, None, None, (false, false)).unwrap();
+    let obu =
+        encode_show_existing_frame_obu(&view, 5, None, None, (false, false, TemporalLayerId::BASE))
+            .unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -427,7 +432,10 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8, None, None, (false, false)).is_err());
+    assert!(
+        encode_show_existing_frame_obu(&view, 8, None, None, (false, false, TemporalLayerId::BASE))
+            .is_err()
+    );
 }
 
 /// The multi-frame header OBU parses to `mfh_id 1` of sequence header 0 with
@@ -475,8 +483,14 @@ fn multi_frame_header_obu_and_references_parse_back() {
             core.seq_header_id_in_frame_header.is_none(),
             multi_frame_header
         );
-        let sef = encode_show_existing_frame_obu(&view, 5, None, None, (multi_frame_header, false))
-            .unwrap();
+        let sef = encode_show_existing_frame_obu(
+            &view,
+            5,
+            None,
+            None,
+            (multi_frame_header, false, TemporalLayerId::BASE),
+        )
+        .unwrap();
         let sef = parse_annex_b_obus_partial(&sef).obus[0].payload;
         let mut reader = BitReader::new(sef, ByteOffset::new(0));
         assert_eq!(reader.read_uvlc().unwrap(), u32::from(multi_frame_header));
@@ -500,8 +514,14 @@ fn show_existing_frame_obu_codes_an_explicit_order_hint() {
         mfh_record: None,
         reference_state: slots.view(),
     };
-    let obu =
-        encode_show_existing_frame_obu(&view, 5, Some(9 + 256), None, (false, false)).unwrap();
+    let obu = encode_show_existing_frame_obu(
+        &view,
+        5,
+        Some(9 + 256),
+        None,
+        (false, false, TemporalLayerId::BASE),
+    )
+    .unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     let payload = parsed.obus[0].payload;
     let core =
@@ -553,12 +573,28 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         (grain.apply_grain, grain.fgm_id, grain.grain_seed),
         (true, Some(0), Some(0xa5c3))
     );
-    let sef = encode_show_existing_frame_obu(&view, 2, None, Some(0x0f0f), (false, false)).unwrap();
+    let sef = encode_show_existing_frame_obu(
+        &view,
+        2,
+        None,
+        Some(0x0f0f),
+        (false, false, TemporalLayerId::BASE),
+    )
+    .unwrap();
     assert!(parse_annex_b_obus_partial(&sef).error.is_none());
     params.tools.film_grain = false;
     let plain =
         CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
-    assert!(encode_show_existing_frame_obu(&plain, 2, None, Some(1), (false, false)).is_err());
+    assert!(
+        encode_show_existing_frame_obu(
+            &plain,
+            2,
+            None,
+            Some(1),
+            (false, false, TemporalLayerId::BASE)
+        )
+        .is_err()
+    );
     assert!(
         crate::headers::frame::build_key_frame_header(
             &plain,
@@ -738,6 +774,7 @@ fn rejects_out_of_range_inter_inputs() {
         explicit_refs: None,
         implicit_output: false,
         leading: false,
+        tlayer: TemporalLayerId::BASE,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -1274,6 +1311,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         tip_global_mv: TipGlobalMv::default(),
         tip_filter: None,
         tip_deblocking: false,
+        tlayer: TemporalLayerId::BASE,
     };
     let with = |tx: KeyFrameTxParams| {
         build_inter_frame_header(&view, &slots.view(), &InterFrameParams { tx, ..params }).unwrap()
@@ -1377,6 +1415,7 @@ fn inter_frames_code_allow_intrabc_with_the_implied_local_area() {
             tip_filter: None,
             tip_deblocking: false,
             leading: false,
+            tlayer: TemporalLayerId::BASE,
         };
         let with = |allow_intrabc, allow_local_intrabc| {
             let tx = KeyFrameTxParams {
@@ -1479,6 +1518,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         explicit_refs: None,
         implicit_output: false,
         leading: false,
+        tlayer: TemporalLayerId::BASE,
     };
     let build = |filters| build_inter_frame_header(&view, &slots.view(), &params(filters));
     let fresh = build(coded).unwrap();
@@ -1983,7 +2023,9 @@ fn open_loop_key_headers_keep_the_other_slots() {
     let obu = encode_inter_frame_obu(&intra, &[&[0x5a; 3]], 1).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert_eq!(parsed.obus[0].header.obu_type, ObuType::LeadingTileGroup);
-    let sef = encode_show_existing_frame_obu(&view, 2, None, None, (false, true)).unwrap();
+    let sef =
+        encode_show_existing_frame_obu(&view, 2, None, None, (false, true, TemporalLayerId::BASE))
+            .unwrap();
     let parsed = parse_annex_b_obus_partial(&sef);
     assert_eq!(parsed.obus[0].header.obu_type, ObuType::LeadingSef);
 }
@@ -2043,4 +2085,56 @@ fn hidden_frames_code_implicit_output() {
     assert!(
         build_inter_frame_header(&monotonic, &slots.view(), &params(false, true, None)).is_err()
     );
+}
+
+/// With `max_tlayer_id = 1` a frame reads only the slots of its own or a
+/// lower temporal layer (§ 7.7, § 5.18.2): slot 1 holds a shown temporal
+/// layer 1 frame with `OrderHint` 255 beside the key frame at 0. A layer 1
+/// frame at 256 references both and derives 256; a layer 0 frame references
+/// the key frame alone and, with only the key frame as its shown reference,
+/// derives 0 from the 8 `OrderHintBits`. This is why temporal layers need
+/// key frame intervals of at most 255. The OBUs code the frame's layer.
+#[test]
+fn temporal_layer_headers_read_only_the_slots_of_their_layer() {
+    let seq = build_encoder_sequence_header(&EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            max_tlayer_id: TemporalLayerId::from_bits(1),
+            ..EncoderToolFlags::default()
+        },
+    })
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let mut slots = Slots::after_key(64, 64, 0);
+    slots.valid[1] = true;
+    slots.hints[1] = 255;
+    slots.counters[1] = 1;
+    let tlayers = [0, 1, 0, 0, 0, 0, 0, 0];
+    let refs = slots.view().with_tlayer_id_state(&tlayers);
+    for (tlayer, refs_expected, derived) in [(1, 2, 256), (0, 1, 0)] {
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 256,
+            show_frame: true,
+            tlayer: TemporalLayerId::from_bits(tlayer),
+            ..InterFrameParams::default()
+        };
+        let header = build_inter_frame_header(&view, &refs, &params).unwrap();
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(inter.num_total_refs, Some(refs_expected), "tlayer {tlayer}");
+        assert_eq!(
+            header.core.display_order_hint(),
+            Some(derived),
+            "tlayer {tlayer}"
+        );
+        let tiles: Vec<&[u8]> = vec![&[0x80]];
+        let obus = encode_inter_frame_obu(&header, &tiles, 1).unwrap();
+        let parsed = parse_annex_b_obus_partial(&obus);
+        assert!(parsed.error.is_none());
+        assert_eq!(parsed.obus[0].header.temporal_layer_id.get(), tlayer);
+    }
 }

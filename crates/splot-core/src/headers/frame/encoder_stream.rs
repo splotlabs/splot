@@ -189,6 +189,9 @@ pub struct EncoderToolFlags {
     /// `monotonic_output_order_flag = 0` (§ 5.4.1): hidden frames code
     /// `implicit_output_frame`.
     pub implicit_output: bool,
+    /// `max_tlayer_id` (§ 5.4.1), with the default `TLayerDependencyMap`
+    /// (`tlayer_dependency_present_flag = 0`).
+    pub max_tlayer_id: TemporalLayerId,
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
@@ -599,7 +602,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_uvlc(u32::from(params.bit_depth.get()))?;
     w.write_bits(0, 3)?; // seq_lcr_id
     w.write_flag(false)?; // still_picture
-    w.write_bits(0, 2)?; // max_tlayer_id
+    w.write_bits(u32::from(tools.max_tlayer_id.get()), 2)?;
     w.write_bits(0, 3)?; // max_mlayer_id
     w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
     w.write_bits(width_bits - 1, 4)?;
@@ -621,6 +624,9 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(false)?; // seq_initial_display_delay_present_flag
     w.write_flag(false)?; // decoder_model_info_present_flag
+    if tools.max_tlayer_id.get() > 0 {
+        w.write_flag(false)?; // tlayer_dependency_present_flag
+    }
 
     w.write_flag(params.sb_size == SuperblockSize::Block256x256)?;
     if params.sb_size != SuperblockSize::Block256x256 {
@@ -1442,7 +1448,7 @@ pub fn encode_key_frame_temporal_unit(
         )?;
         write_annexb_obu(
             &mut w,
-            &obu_header(ObuType::SequenceHeader),
+            &obu_header(ObuType::SequenceHeader, TemporalLayerId::BASE),
             &payload.into_bytes(),
         )?;
     }
@@ -1450,7 +1456,7 @@ pub fn encode_key_frame_temporal_unit(
     unit.extend_from_slice(key_obus);
     let groups = crate::headers::frame::encoder_inter_stream::write_tile_groups(
         core,
-        core.obu_type,
+        obu_header(core.obu_type, TemporalLayerId::BASE),
         (tiles, tile_groups),
         |structure, tiles| {
             let mut payload = BitWriter::new();
@@ -1483,11 +1489,11 @@ pub(super) fn tile_framing(core: &FrameHeaderCore, tiles: &[&[u8]]) -> TileGroup
     TileGroupFraming::tiles(&sizes, size_bytes)
 }
 
-pub(super) const fn obu_header(obu_type: ObuType) -> ObuHeader {
+pub(super) const fn obu_header(obu_type: ObuType, tlayer: TemporalLayerId) -> ObuHeader {
     ObuHeader {
         has_header_extension: false,
         obu_type,
-        temporal_layer_id: TemporalLayerId::from_bits(0),
+        temporal_layer_id: tlayer,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
         extended_layer_id: ExtendedLayerId::from_bits(0),
         header_size_bytes: 1,
