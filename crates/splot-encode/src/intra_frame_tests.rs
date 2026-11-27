@@ -2267,6 +2267,8 @@ mod mds;
 mod mfh;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_profile_tests.rs"]
+mod profile;
 #[path = "intra_frame_qm_tests.rs"]
 mod qm;
 #[path = "intra_frame_refine_tests.rs"]
@@ -2275,6 +2277,8 @@ mod refine;
 mod repeat;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
+#[path = "intra_frame_switch_tests.rs"]
+mod switch;
 #[path = "intra_frame_tf_tests.rs"]
 mod tf;
 #[path = "intra_frame_tile_group_tests.rs"]

@@ -366,6 +366,7 @@ impl IntraFrameCoder {
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
                 max_tlayer_id: splot_core::types::TemporalLayerId::from_bits(preset.max_tlayer_id),
+                profile: config.profile,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: match config.tiles {
@@ -847,6 +848,9 @@ impl IntraFrameCoder {
         let qindex = u32::from(qp);
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), &self.tiles, qindex);
+        if plan.switch.is_some() {
+            (tools.2.1, tools.2.3, tools.2.9) = (false, None, None);
+        }
         tools.0.allow_tcq = self.preset.tcq.at(context);
         if plan.frame_type == FrameType::Inter {
             tools.0.allow_intrabc = self.preset.intrabc_inter && !plan.intra_only;

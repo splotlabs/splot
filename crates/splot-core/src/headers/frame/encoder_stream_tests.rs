@@ -205,6 +205,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         num_ref_frames: Some(5),
         explicit_ref_frame_map: true,
         implicit_output: true,
+        profile: Some(ProfileIdc::Configurable),
         seq_tiles: None,
         disable_loopfilters_across_tiles: false,
         plane_delta_q: [0; 3],
@@ -258,6 +259,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);
     assert_eq!(filter.df_par_bits_minus_2, 2);
+    assert!(seq.general.seq_profile_idc.is_configurable());
     assert_eq!(
         seq.screen_content.unwrap().seq_force_screen_content_tools,
         2
@@ -1335,4 +1337,47 @@ fn max_tlayer_id_reaches_the_parsed_sequence() {
         assert!(parsed.map_or(true, |header| !header.is_fully_parsed()));
     }
     assert!(build_encoder_sequence_header(&stream(4)).is_err());
+}
+
+/// Annex A.2 Table A.1: the chroma formats each profile allows.
+fn table_a1_allows(profile: u8, chroma: ChromaFormatIdc) -> bool {
+    use ChromaFormatIdc::{Monochrome, Yuv420, Yuv422, Yuv444};
+    match profile {
+        0..=2 => matches!(chroma, Monochrome | Yuv420),
+        3 => matches!(chroma, Monochrome | Yuv420 | Yuv422),
+        4 => matches!(chroma, Monochrome | Yuv420 | Yuv444),
+        31 => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn requested_profile_reaches_the_parsed_header_or_is_refused() {
+    use ChromaFormatIdc::{Monochrome, Yuv420, Yuv422, Yuv444};
+    let mut p = params(64, 64, BitDepthIdc::Ten, SuperblockSize::Block64x64);
+    for (chroma, lowest) in [(Monochrome, 0), (Yuv420, 0), (Yuv422, 3), (Yuv444, 4)] {
+        p.chroma = chroma;
+        p.tools.profile = None;
+        let seq = build_encoder_sequence_header(&p).unwrap();
+        assert_eq!(seq.general.seq_profile_idc.get(), lowest, "{chroma:?}");
+        for value in 0..=31 {
+            p.tools.profile = Some(ProfileIdc::from_bits(value));
+            let built = build_encoder_sequence_header(&p);
+            if table_a1_allows(value, chroma) {
+                let seq = built.unwrap();
+                assert_eq!(seq.general.seq_profile_idc.get(), value);
+                assert_eq!(seq.general.chroma_format_idc, chroma);
+                assert_eq!(reparse_sequence(&seq), seq);
+            } else {
+                assert!(
+                    matches!(built, Err(EncoderHeaderError::InvalidProfile { profile, .. }) if profile.get() == value),
+                    "{value} {chroma:?}"
+                );
+            }
+        }
+    }
+    p.chroma = Yuv420;
+    p.tools.profile = Some(ProfileIdc::Configurable);
+    let bytes = sequence_header_bits(&p).unwrap();
+    assert!(parse_sequence_header(&mut BitReader::new(&bytes[..1], ByteOffset::new(0))).is_err());
 }

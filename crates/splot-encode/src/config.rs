@@ -7,7 +7,7 @@ pub mod options;
 
 use core::num::NonZeroU32;
 
-use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
+use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow, ProfileIdc};
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
@@ -198,6 +198,10 @@ pub struct Config {
     /// header (§ 5.4.1) and decodes to the window (§ 5.18.4.4). `None`, the
     /// default, codes no window.
     pub crop: Option<CroppingWindow>,
+    /// The `seq_profile_idc` of the stream (Annex A.2 Table A.1). `None`, the
+    /// default, codes the lowest profile that allows [`Self::chroma`]: 0 for
+    /// 4:0:0 and 4:2:0, 3 for 4:2:2, 4 for 4:4:4.
+    pub profile: Option<ProfileIdc>,
     /// Film grain: every key frame codes a grain model fitted to the noise of
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
@@ -275,6 +279,7 @@ impl Config {
             keyint: Self::DEFAULT_KEYINT,
             resize_denominator: None,
             crop: None,
+            profile: None,
             film_grain: false,
             cbr_padding: false,
             tune: Tune::Psnr,
@@ -288,7 +293,7 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
-    /// [`Error::InvalidCrop`],
+    /// [`Error::InvalidCrop`], [`Error::InvalidProfile`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
     /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
@@ -350,6 +355,14 @@ impl Config {
                 height: coded.height,
             });
         }
+        if let Some(profile) = self.profile
+            && !chroma.is_some_and(|chroma| profile.allows_chroma(chroma))
+        {
+            return Err(Error::InvalidProfile {
+                profile,
+                chroma: self.chroma,
+            });
+        }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
             return Err(Error::InvalidFrameRate {
                 numerator: self.frame_rate.0,
@@ -381,6 +394,16 @@ impl Config {
                 tiles: self.tiles.clone(),
                 reason,
             });
+        }
+        if self.keyint.get() > 256 && rows.iter().any(|row| row.switch_type > 0) {
+            return Err(crate::preset::PresetError::OutOfRange {
+                field: "switch_type",
+                value: 1,
+                allowed: "0 with a keyint above 256: a RAS frame codes an OrderHint under \
+                          256, 1 << OrderHintBits (§ 7.4.5)"
+                    .to_owned(),
+            }
+            .into());
         }
         if self.cbr_padding && !matches!(self.rate_control, RateControlMode::Cbr { .. }) {
             return Err(Error::PaddingWithoutCbr);

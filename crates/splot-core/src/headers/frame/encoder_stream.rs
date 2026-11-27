@@ -21,8 +21,8 @@ use crate::headers::frame::{
     init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
-    BitDepthIdc, ChromaFormatIdc, CroppingWindow, LevelIdx, SequenceHeader, SuperblockSize, Tier,
-    parse_sequence_header,
+    BitDepthIdc, ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc, SequenceHeader,
+    SuperblockSize, Tier, parse_sequence_header,
 };
 use crate::headers::tile_group::TileGroupFraming;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -192,6 +192,9 @@ pub struct EncoderToolFlags {
     /// `max_tlayer_id` (§ 5.4.1), with the default `TLayerDependencyMap`
     /// (`tlayer_dependency_present_flag = 0`).
     pub max_tlayer_id: TemporalLayerId,
+    /// `seq_profile_idc` (§ 5.4.1); `None` codes the lowest Annex A.2 Table A.1
+    /// profile that allows the chroma format.
+    pub profile: Option<ProfileIdc>,
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
@@ -518,6 +521,15 @@ pub enum EncoderHeaderError {
         /// The maximum frame height.
         height: u32,
     },
+    /// The profile does not allow the chroma format (Annex A.2 Table A.1), or
+    /// it is reserved.
+    #[error("seq_profile_idc {} does not allow {chroma:?} (Annex A.2 Table A.1)", profile.get())]
+    InvalidProfile {
+        /// The rejected profile.
+        profile: ProfileIdc,
+        /// The chroma format of the sequence.
+        chroma: ChromaFormatIdc,
+    },
     /// `base_q_idx` does not fit the § 5.18.6.1 field.
     #[error("base_q_idx {base_q_idx} is outside 0..{limit}")]
     InvalidBaseQIdx {
@@ -569,8 +581,9 @@ pub enum EncoderHeaderError {
 /// the maximum frame size, and quantizer offsets are zero.
 ///
 /// # Errors
-/// Returns [`EncoderHeaderError`] for an out-of-range dimension, or if the
-/// canonical bits do not parse completely.
+/// Returns [`EncoderHeaderError`] for an out-of-range dimension, a profile
+/// that does not allow the chroma format, or if the canonical bits do not
+/// parse completely.
 pub fn build_encoder_sequence_header(
     params: &EncoderStreamParams,
 ) -> Result<SequenceHeader, EncoderHeaderError> {
@@ -595,9 +608,16 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     let monochrome = params.chroma.is_monochrome();
     let width_bits = dimension_bits(params.width)?;
     let height_bits = dimension_bits(params.height)?;
+    let profile = tools.profile.unwrap_or(lowest_profile(params.chroma));
+    if !profile.allows_chroma(params.chroma) {
+        return Err(EncoderHeaderError::InvalidProfile {
+            profile,
+            chroma: params.chroma,
+        });
+    }
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // seq_header_id
-    w.write_bits(profile_idc(params.chroma), 5)?;
+    w.write_bits(u32::from(profile.get()), 5)?;
     w.write_flag(false)?; // single_picture_header_flag
     w.write_bits(UNCONSTRAINED_LEVEL_IDX, 5)?;
     w.write_flag(false)?; // seq_tier
@@ -717,11 +737,11 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     Ok(w.into_bytes())
 }
 
-const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
+const fn lowest_profile(chroma: ChromaFormatIdc) -> ProfileIdc {
     match chroma {
-        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => 0,
-        ChromaFormatIdc::Yuv422 => 3,
-        ChromaFormatIdc::Yuv444 => 4,
+        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => ProfileIdc::Main420Ip0,
+        ChromaFormatIdc::Yuv422 => ProfileIdc::Main422Ip1,
+        ChromaFormatIdc::Yuv444 => ProfileIdc::Main444Ip1,
     }
 }
 
@@ -944,7 +964,7 @@ pub(super) fn write_intra_frame_tail(
         seq,
         (base_q_idx, tiles, tx),
         filters,
-        (true, LrReferenceFilters::default(), None),
+        (true, false, LrReferenceFilters::default(), None),
     )?;
     if base_q_idx > 0 {
         w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
@@ -1022,13 +1042,18 @@ pub(super) fn plane_quantization(
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
 /// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
-/// frame codes no CCSO reuse.
+/// frame codes no CCSO reuse, and an intra or `switch_frame` no reuse flags (§ 5.18.7.12).
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     (base_q_idx, tiles, tx): (u32, FrameTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
-    (frame_is_intra, lr_refs, coded_map): (bool, LrReferenceFilters<'_>, Option<bool>),
+    (frame_is_intra, switch_frame, lr_refs, coded_map): (
+        bool,
+        bool,
+        LrReferenceFilters<'_>,
+        Option<bool>,
+    ),
 ) -> Result<(), EncoderHeaderError> {
     let allow_tcq = tx.allow_tcq;
     if tx.delta_q_res.is_some() && base_q_idx == 0 {
@@ -1122,7 +1147,7 @@ pub(super) fn write_quant_and_filters(
         for plane in planes.iter().filter(|_| on) {
             w.write_flag(plane.ccso_planes)?;
             if plane.ccso_planes {
-                write_ccso_reuse(w, plane, frame_is_intra, num_refs)?;
+                write_ccso_reuse(w, plane, frame_is_intra || switch_frame, num_refs)?;
                 if !plane.reuse_ccso {
                     let coded = CcsoPlaneParams {
                         reuse_ccso: false,

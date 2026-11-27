@@ -156,6 +156,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         global_motion: [None; 7],
                         global_motion_predict: false,
                         explicit_refs: None,
+                        switch: None,
                         implicit_output: false,
                         leading: false,
                         tlayer: TemporalLayerId::BASE,
@@ -251,6 +252,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        switch: None,
         implicit_output: false,
         leading: false,
         tlayer: TemporalLayerId::BASE,
@@ -359,6 +361,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             global_motion: [None; 7],
             global_motion_predict: false,
             explicit_refs: None,
+            switch: None,
             implicit_output: false,
             leading: false,
             tlayer: TemporalLayerId::BASE,
@@ -804,6 +807,7 @@ fn rejects_out_of_range_inter_inputs() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        switch: None,
         implicit_output: false,
         leading: false,
         tlayer: TemporalLayerId::BASE,
@@ -1338,6 +1342,7 @@ fn cdf_controls_parse_back_and_cut_headers_fail() {
         global_motion: [None; 7],
         global_motion_predict: false,
         explicit_refs: None,
+        switch: None,
         implicit_output: false,
         leading: false,
         tip_global_mv: TipGlobalMv::default(),
@@ -1442,6 +1447,7 @@ fn inter_frames_code_allow_intrabc_with_the_implied_local_area() {
             global_motion: [None; 7],
             global_motion_predict: false,
             explicit_refs: None,
+            switch: None,
             implicit_output: false,
             tip_global_mv: TipGlobalMv::default(),
             tip_filter: None,
@@ -1548,6 +1554,7 @@ fn ccso_reuse_planes_parse_back_and_cut_headers_fail() {
         tip_deblocking: false,
         global_motion_predict: false,
         explicit_refs: None,
+        switch: None,
         implicit_output: false,
         leading: false,
         tlayer: TemporalLayerId::BASE,
@@ -2169,4 +2176,157 @@ fn temporal_layer_headers_read_only_the_slots_of_their_layer() {
         assert!(parsed.error.is_none());
         assert_eq!(parsed.obus[0].header.temporal_layer_id.get(), tlayer);
     }
+}
+
+/// A switch frame (§ 5.18.2) codes `OBU_SWITCH` with
+/// `restricted_prediction_switch = 0`, `frame_size()`, `PRIMARY_REF_NONE`, the
+/// full `refresh_frame_flags` and the default map as an explicit map. A RAS
+/// frame (§ 7.4.5) codes `OBU_RAS_FRAME` with one `ref_long_term_id`,
+/// references only the valid slot that holds it and refreshes every other
+/// slot. Both parse back from their OBU; a cut header, the restricted form, a
+/// leading switch frame, and a RAS frame with another refresh, an id no valid
+/// slot holds, the reserved id or no long-term ids are refused.
+#[test]
+fn switch_and_ras_headers_parse_back() {
+    let stream = |long_term_frame_id_bits| EncoderStreamParams {
+        width: 200,
+        height: 136,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            long_term_frame_id_bits,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seq = build_encoder_sequence_header(&stream(3)).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let mut slots = Slots::after_key(200, 136, 0);
+    for slot in 1..3 {
+        slots.valid[slot] = true;
+        slots.hints[slot] = 2 * slot as u32;
+        slots.counters[slot] = slot as u32;
+    }
+    let ids = [
+        Some(2),
+        None,
+        None,
+        Some(2),
+        Some(2),
+        Some(2),
+        Some(2),
+        Some(2),
+    ];
+    let refs = FrameReferenceStateView {
+        ref_long_term_id: Some(&ids),
+        ..slots.view()
+    };
+    let switch = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        refresh_frame_flags: 0b1000,
+        show_frame: true,
+        primary_slot: Some(1),
+        use_ref_frame_mvs: true,
+        switch: Some(SwitchFrameParams::default()),
+        ..InterFrameParams::default()
+    };
+    let ras = InterFrameParams {
+        refresh_frame_flags: 0b1111_1110,
+        show_frame: false,
+        switch: Some(SwitchFrameParams {
+            restricted_prediction_switch: false,
+            ras_long_term_id: Some(2),
+        }),
+        ..switch
+    };
+    let regular = InterFrameParams {
+        switch: None,
+        ..switch
+    };
+    let default = build_inter_frame_header(&view, &refs, &regular).unwrap();
+    let default_map = default.core.inter.unwrap().ref_frame_idx;
+    for (params, obu_type, map, refresh) in [
+        (switch, ObuType::Switch, &default_map[..], 0b1000),
+        (ras, ObuType::RasFrame, &[0][..], 0b1111_1110),
+    ] {
+        let header = build_inter_frame_header(&view, &refs, &params).unwrap();
+        let core = &header.core;
+        assert_eq!(core.obu_type, obu_type);
+        assert_eq!(core.frame_type, Some(FrameType::Switch));
+        assert_eq!(core.restricted_prediction_switch, Some(false));
+        assert_eq!(core.refresh_frame_flags, Some(refresh));
+        assert_eq!(core.display_order_hint(), Some(6));
+        let inter = core.inter.as_ref().unwrap();
+        assert_eq!(inter.ref_frame_idx[..], *map, "{obu_type:?}");
+        assert_eq!(inter.primary_ref_frame, Some(7), "{obu_type:?}");
+        assert_eq!(inter.use_ref_frame_mvs, Some(false), "{obu_type:?}");
+        let lists_id = obu_type == ObuType::RasFrame;
+        assert_eq!(
+            core.ref_long_term_ids,
+            if lists_id { vec![2] } else { vec![] }
+        );
+        let obu = encode_inter_frame_obu(&header, &[&[0x5a; 3]], 1).unwrap();
+        let parsed = parse_annex_b_obus_partial(&obu);
+        assert_eq!(parsed.obus[0].header.obu_type, obu_type);
+        let mut reader = BitReader::new(parsed.obus[0].payload, ByteOffset::new(0));
+        assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+        let input = FrameHeaderParseInput {
+            obu_type,
+            obu_mlayer_id: crate::types::EmbeddedLayerId::BASE,
+            obu_tlayer_id: crate::types::TemporalLayerId::BASE,
+            first_picture_in_tu: true,
+            active_sequence: Some(&seq),
+            mfh_record: None,
+            reference_state: refs,
+        };
+        assert_eq!(parse_frame_header_core(&mut reader, &input).unwrap(), *core);
+        let mut w = BitWriter::new();
+        for index in 0..header.bits.num_frame_header_bits() {
+            w.write_flag(header.bits.bit(index).unwrap()).unwrap();
+        }
+        let full = w.into_bytes();
+        for len in 0..core.consumed_bits.div_ceil(8) as usize {
+            let mut cut = BitReader::new(&full[..len], ByteOffset::new(0));
+            let parsed =
+                parse_frame_header_prefix(&mut cut, obu_type, Some(true)).and_then(|prefix| {
+                    let mut cut_core = init_core_from_prefix(&prefix, obu_type, true);
+                    parse_core_body(&mut cut, &mut cut_core, &view, None, &refs)?;
+                    Ok(cut_core.status)
+                });
+            let complete = FrameHeaderParseStatus::InterHeaderComplete;
+            assert!(
+                parsed.map_or(true, |s| s != complete),
+                "{obu_type:?} cut at {len}"
+            );
+        }
+    }
+    let bad = |params: InterFrameParams| build_inter_frame_header(&view, &refs, &params).is_err();
+    let ras_of = |id, refresh_frame_flags| InterFrameParams {
+        refresh_frame_flags,
+        switch: Some(SwitchFrameParams {
+            restricted_prediction_switch: false,
+            ras_long_term_id: Some(id),
+        }),
+        ..ras
+    };
+    assert!(bad(InterFrameParams {
+        switch: Some(SwitchFrameParams {
+            restricted_prediction_switch: true,
+            ras_long_term_id: None,
+        }),
+        ..switch
+    }));
+    assert!(bad(InterFrameParams {
+        leading: true,
+        ..switch
+    }));
+    assert!(bad(ras_of(2, 0b1000)));
+    assert!(bad(ras_of(5, 0b1111_1110)));
+    assert!(bad(ras_of(7, 0b1111_1110)));
+    let no_ids = build_encoder_sequence_header(&stream(0)).unwrap();
+    let no_ids = CoreSeqView::from_sequence(&no_ids).unwrap();
+    assert!(build_inter_frame_header(&no_ids, &refs, &ras).is_err());
 }

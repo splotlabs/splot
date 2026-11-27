@@ -104,6 +104,19 @@ pub(crate) struct GopFrame {
     /// A frame of the mini-GOP of an open-loop key frame that precedes it in
     /// display order, coded with a leading OBU type (§ 7.4.4).
     pub(crate) leading: bool,
+    /// A layer-0 inter frame coded as a `SWITCH_FRAME` (§ 5.18.2).
+    pub(crate) switch: Option<SwitchKind>,
+}
+
+/// The OBU type of a switch frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SwitchKind {
+    /// `OBU_SWITCH` over the default references; it refreshes one slot.
+    Switch,
+    /// `OBU_RAS_FRAME` (§ 7.4.5) that references only the key frame, by its
+    /// long-term id; after it only its own slot and the key frame's stay
+    /// valid.
+    Ras,
 }
 
 /// One step of the coding order.
@@ -186,6 +199,14 @@ pub(crate) struct GopPlanner {
     /// The display index of the open-loop key frame of the mini-GOP being
     /// planned.
     open_loop_display: Option<u64>,
+    /// Every this many mini-GOPs code their layer-0 frame as a switch frame;
+    /// `0` never.
+    switch_frames: u64,
+    /// The switch frames are RAS frames, and no frame refreshes the key
+    /// frame's slot.
+    switch_ras: bool,
+    /// The next layer-0 inter frame is a switch frame.
+    switch_next: bool,
     /// `max_tlayer_id`: the highest temporal layer a frame takes.
     max_tlayer_id: u8,
 }
@@ -217,6 +238,21 @@ impl GopPlanner {
             periodic_keys: 0,
             open_loop_display: None,
             max_tlayer_id: 0,
+            switch_frames: 0,
+            switch_ras: false,
+            switch_next: false,
+        }
+    }
+
+    /// The planner that codes the layer-0 frame of every `every`th mini-GOP,
+    /// other than one of an open-loop key frame, as a switch frame: with
+    /// `switch_type = 0` an `OBU_SWITCH`, else an `OBU_RAS_FRAME`; `0` never
+    /// codes one. Such a mini-GOP codes no intra-only frame.
+    pub(crate) fn with_switch_frames(self, every: u8, switch_type: u8) -> Self {
+        Self {
+            switch_frames: u64::from(every),
+            switch_ras: switch_type > 0,
+            ..self
         }
     }
 
@@ -424,7 +460,11 @@ impl GopPlanner {
         }
         if last > anchor {
             self.mini_gops += 1;
+            self.switch_next = self.open_loop_display.is_none()
+                && self.switch_frames > 0
+                && self.mini_gops.is_multiple_of(self.switch_frames);
             self.intra_only_next = self.open_loop_display.is_none()
+                && !self.switch_next
                 && self.intra_only > 0
                 && self.mini_gops.is_multiple_of(self.intra_only);
             self.last_display = last;
@@ -497,6 +537,19 @@ impl GopPlanner {
         layer: u8,
     ) -> Result<GopStep> {
         let open_loop = frame_type == FrameType::Key && !show_frame;
+        let switch = (frame_type == FrameType::Inter && layer == 0)
+            .then(|| core::mem::take(&mut self.switch_next))
+            .filter(|&next| next)
+            .map(|_| {
+                if self.switch_ras {
+                    SwitchKind::Ras
+                } else {
+                    SwitchKind::Switch
+                }
+            });
+        if switch == Some(SwitchKind::Ras) {
+            return self.code_ras(display_index, show_frame);
+        }
         let tlayer = self.tlayer(layer);
         let (slot, refresh_frame_flags) = if open_loop {
             let slot = self.refresh_slot(false, tlayer)?;
@@ -529,7 +582,7 @@ impl GopPlanner {
         let intra_only = frame_type == FrameType::Inter
             && layer == 0
             && core::mem::take(&mut self.intra_only_next);
-        let primary_slot = primary_slot.filter(|_| !intra_only && !open_loop);
+        let primary_slot = primary_slot.filter(|_| !intra_only && !open_loop && switch.is_none());
         if let Some(slot) = slot {
             self.slots[slot] = Some(Slot {
                 display_index,
@@ -554,10 +607,67 @@ impl GopPlanner {
             implicit_output: self.implicit_output && !show_frame,
             open_loop,
             leading: self.leading(display_index),
+            switch,
         };
         self.next_frame += 1;
         self.after_output = show_frame || self.implicit_output;
         Ok(GopStep::Code(frame))
+    }
+
+    /// Codes `display_index` as a RAS frame (§ 7.4.5) that references the
+    /// key frame alone: it refreshes every other slot, and only the first one
+    /// it refreshes stays valid (§ 7.23).
+    #[cold]
+    #[inline(never)]
+    fn code_ras(&mut self, display_index: u64, show_frame: bool) -> Result<GopStep> {
+        let key_slot = self.key_slot().ok_or(Error::Unsupported {
+            what: "a RAS frame without its key frame",
+        })?;
+        let own = (0..self.ref_slots)
+            .find(|&slot| slot != key_slot)
+            .ok_or(Error::Unsupported {
+                what: "a RAS frame without a slot of its own",
+            })?;
+        let all = (1u32 << self.ref_slots) - 1;
+        for (slot, held) in self.slots.iter_mut().enumerate() {
+            if slot != key_slot {
+                *held = None;
+            }
+        }
+        self.slots[own] = Some(Slot {
+            display_index,
+            layer: 0,
+            awaiting_show: !show_frame,
+            shown: show_frame,
+        });
+        let frame = GopFrame {
+            frame_index: self.next_frame,
+            display_index,
+            frame_type: FrameType::Inter,
+            order_hint: (display_index - self.key_display) as u32,
+            show_frame,
+            layer: 0,
+            refresh_frame_flags: all & !(1 << key_slot),
+            ref_slots: 1 << key_slot,
+            primary_slot: None,
+            opens_temporal_unit: self.after_output,
+            intra_only: false,
+            implicit_output: self.implicit_output && !show_frame,
+            open_loop: false,
+            leading: false,
+            switch: Some(SwitchKind::Ras),
+            tlayer: TemporalLayerId::BASE,
+        };
+        self.next_frame += 1;
+        self.after_output = show_frame || self.implicit_output;
+        Ok(GopStep::Code(frame))
+    }
+
+    /// The slot of the last key frame, while it holds it.
+    fn key_slot(&self) -> Option<usize> {
+        (0..self.ref_slots).find(|&slot| {
+            self.slots[slot].is_some_and(|held| held.display_index == self.key_display)
+        })
     }
 
     /// Whether `display_index` precedes the open-loop key frame being planned.
@@ -584,7 +694,11 @@ impl GopPlanner {
             .filter(|held| held.shown)
             .map(|held| held.display_index)
             .max();
+        let pinned = (self.switch_ras && self.switch_frames > 0)
+            .then(|| self.key_slot())
+            .flatten();
         (0..self.ref_slots)
+            .filter(|&slot| Some(slot) != pinned)
             .filter_map(|slot| {
                 self.slots[slot]
                     .filter(|held| !held.awaiting_show && self.tlayer(held.layer) >= tlayer)

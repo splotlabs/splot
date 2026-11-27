@@ -3,7 +3,7 @@
 
 //! Error and result types for the splot encoder API.
 
-use splot_core::headers::sequence::CroppingWindow;
+use splot_core::headers::sequence::{CroppingWindow, ProfileIdc};
 use splot_recon::{BitDepth, PixelFormat};
 
 /// An error from the splot encoder API.
@@ -43,6 +43,16 @@ pub enum Error {
         width: u32,
         /// Coded height.
         height: u32,
+    },
+
+    /// The requested profile is reserved or does not allow the chroma format
+    /// (Annex A.2 Table A.1).
+    #[error("profile {} does not allow {chroma:?} (Annex A.2 Table A.1)", profile.get())]
+    InvalidProfile {
+        /// Requested profile.
+        profile: ProfileIdc,
+        /// Chroma format of the input.
+        chroma: PixelFormat,
     },
 
     /// A frame-rate term is zero.

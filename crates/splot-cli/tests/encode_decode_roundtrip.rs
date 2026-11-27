@@ -166,6 +166,26 @@ fn chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats() {
     }
 }
 
+/// `--profile 2` on 4:2:0 and `--profile 31` on 4:4:4 give streams that
+/// validate with `--strict` and decode to the encoder stats; a reserved
+/// profile, or one that does not allow the chroma format, is refused.
+#[test]
+fn requested_profiles_validate_and_decode() {
+    round_trip(8, YUV420, &["--qp", "90", "--profile", "2"]);
+    round_trip(10, YUV444, &["--qp", "90", "--profile", "31"]);
+    let (y4m, _) = synthetic_y4m(8, YUV444, 1);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    for bad in ["3", "5", "32"] {
+        let bad = splot(&["encode", input_s, "-o", ivf_s, "--profile", bad]);
+        assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    }
+    for path in [input, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// `--low-delay` is the `mini_gop_size=1`, `bitrate_mini_gop_size=1` and
 /// `lookahead_frames=1` overrides: every frame is coded and shown in input order.
 /// With `implicit_output` the IVF holds one frame per input frame, in coding
