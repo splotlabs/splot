@@ -465,11 +465,22 @@ fn read_eob_base<const LUMA: bool>(
 ) -> u32 {
     #[cfg(feature = "block-evidence")]
     if symbols.observes_entropy() {
-        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
-            "coeff_base_eob",
-            "ctx,luma,low_frequency",
-            [ctx as u16, u16::from(LUMA), u16::from(lf)],
-        ));
+        use splot_core::symbol::EntropySyntax;
+
+        symbols.annotate_entropy(match (LUMA, lf) {
+            (true, true) => EntropySyntax::new(
+                "coeff_base_lf_eob",
+                "tx_size_ctx,ctx",
+                [rows.tx_size as u16, ctx as u16, 0],
+            ),
+            (true, false) => EntropySyntax::new(
+                "coeff_base_eob",
+                "tx_size_ctx,ctx",
+                [rows.tx_size as u16, ctx as u16, 0],
+            ),
+            (false, true) => EntropySyntax::new("coeff_base_lf_eob_uv", "ctx", [ctx as u16, 0, 0]),
+            (false, false) => EntropySyntax::new("coeff_base_eob_uv", "ctx", [ctx as u16, 0, 0]),
+        });
     }
     match (LUMA, lf) {
         (true, true) => symbols.read_trusted(row_at(rows.base_lf_eob(), ctx)),
@@ -552,21 +563,42 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = if LF && (!is_dc || CLASS != 0) { 7 } else { 0 };
-        let row = Self::range_row::<LUMA, LF>(rows, ctx);
-        level + self.symbols.read_trusted(row)
+        level + self.read_range::<LUMA, LF>(rows, ctx)
     }
 
-    fn range_row<'a, const LUMA: bool, const LF: bool>(
-        rows: &'a mut CoeffLevelRows<'_>,
+    #[expect(
+        clippy::inline_always,
+        reason = "measured: per-coefficient symbol read"
+    )]
+    #[inline(always)]
+    fn read_range<const LUMA: bool, const LF: bool>(
+        &mut self,
+        rows: &mut CoeffLevelRows<'_>,
         ctx: usize,
-    ) -> &'a mut [u16; 5] {
-        if !LUMA {
+    ) -> u32 {
+        #[cfg(feature = "block-evidence")]
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    if !LUMA {
+                        "coeff_br_uv"
+                    } else if LF {
+                        "coeff_br_lf"
+                    } else {
+                        "coeff_br"
+                    },
+                    "ctx",
+                    [ctx as u16, 0, 0],
+                ));
+        }
+        let row = if !LUMA {
             row_at(rows.cdf.coeff_br_uv(), ctx)
         } else if LF {
             row_at(rows.cdf.coeff_br_lf(), ctx)
         } else {
             row_at(rows.cdf.coeff_br(), ctx)
-        }
+        };
+        self.symbols.read_trusted(row)
     }
 
     fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
@@ -597,6 +629,15 @@ impl LevelPass<'_, '_> {
             let count = if CLASS == 0 { 3 } else { 2 };
             let mag = (self.sum(grid, &offsets[..count]) >> 8) & 0xff;
             let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_lf_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
             return self.symbols.read_trusted(row);
         }
@@ -630,14 +671,22 @@ impl LevelPass<'_, '_> {
             }
         };
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
+        #[cfg(feature = "block-evidence")]
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_base_lf",
+                    "tx_size_ctx,ctx,tcq_ctx",
+                    [rows.tx_size as u16, ctx as u16, q0 as u16],
+                ));
+        }
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
         let level = self.symbols.read_trusted(row);
         if level <= LF_NUM_BASE_LEVELS {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(range_sum, !DC || CLASS != 0);
-        let row = Self::range_row::<LUMA, true>(rows, ctx);
-        level + self.symbols.read_trusted(row)
+        level + self.read_range::<LUMA, true>(rows, ctx)
     }
 
     /// Reads a high-frequency level, sharing the packed neighbour sum of
@@ -663,15 +712,45 @@ impl LevelPass<'_, '_> {
         };
         let mag = (near + far) & 0xff;
         let level = if !LUMA {
-            let row = row_at(rows.cdf.coeff_base_uv(), self.uv_ctx::<CLASS>(mag));
+            let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
+            let row = row_at(rows.cdf.coeff_base_uv(), ctx);
             self.symbols.read_trusted(row)
         } else {
             let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
             let row = if CLASS == 0 {
                 let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
-                &mut rows.base().as_flattened_mut()[(first | q0) & 31]
+                let row_index = (first | q0) & 31;
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, (row_index >> 1) as u16, q0 as u16],
+                        ));
+                }
+                &mut rows.base().as_flattened_mut()[row_index]
             } else {
-                &mut row_at(rows.base(), half_capped(mag, 4) + 15)[q0]
+                let ctx = half_capped(mag, 4) + 15;
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, ctx as u16, q0 as u16],
+                        ));
+                }
+                &mut row_at(rows.base(), ctx)[q0]
             };
             self.symbols.read_trusted(row)
         };
@@ -679,8 +758,7 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
-        let row = Self::range_row::<LUMA, false>(rows, ctx);
-        level + self.symbols.read_trusted(row)
+        level + self.read_range::<LUMA, false>(rows, ctx)
     }
 
     /// Records a decoded AC level and advances the TCQ and parity state.
@@ -862,6 +940,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             run = symbols.bypass_run();
             sign
         } else {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             symbols.read_bool_in(&mut run)
         };
         let magnitude = if level + u32::from(TCQ) < max_level {
@@ -920,6 +1006,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 row_at(&mut cdfs.block_rows_mut().dc_sign()[0][0], ctx),
             ) != 0
         } else {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             symbols.read_bool_trusted()
         };
         let index = eob - 1;

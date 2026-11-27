@@ -830,6 +830,14 @@ impl<'a> SymbolDecoder<'a> {
         self.observe_entropy
     }
 
+    /// Sets the caller's scope tag for subsequent captured reads.
+    #[cfg(feature = "entropy-observation")]
+    pub fn set_entropy_scope_tag(&self, tag: Option<[u32; 4]>) {
+        if let Some(observer) = &self.observer {
+            observer.set_scope_tag(tag);
+        }
+    }
+
     /// Adds syntax context to the next arithmetic read.
     #[cfg(feature = "entropy-observation")]
     pub fn annotate_entropy(&self, syntax: EntropySyntax) {
@@ -854,6 +862,7 @@ impl<'a> SymbolDecoder<'a> {
             observer.push(EntropySymbol {
                 ordinal: 0,
                 syntax: None,
+                scope_tag: None,
                 value,
                 coding: EntropyCoding::Cdf,
                 bypass_bits: 0,
@@ -873,6 +882,7 @@ impl<'a> SymbolDecoder<'a> {
             observer.push(EntropySymbol {
                 ordinal: 0,
                 syntax: None,
+                scope_tag: None,
                 value,
                 coding,
                 bypass_bits: bits as u8,

@@ -16,7 +16,7 @@
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use splot_core::stream_reader::TemporalUnitReader;
 use splot_decode::block_evidence::{
@@ -621,9 +621,7 @@ fn tile_decode_failure_preserves_the_selected_identity() {
 
 #[test]
 fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
-    use splot_decode::block_evidence::{
-        BlockEntropyScope, BlockEvidenceId, BlockTransformId, EntropyCoding,
-    };
+    use splot_decode::block_evidence::{BlockEntropyScope, EntropyCoding};
     use splot_recon::PlaneId;
 
     // AVM a1ec4594, pre-update aom_read_symbol observations from av2_read_coeffs_txb.
@@ -635,6 +633,7 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
         fixture: &'static [u8],
         tile: usize,
         coded: PlaneRect,
+        skip_context: u16,
         cdf: &'static [(usize, u32, &'static [u16])],
         bypass: &'static [(usize, u32, u8)],
     }
@@ -643,6 +642,7 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
             fixture: TILES,
             tile: 0,
             coded: rect(0, 0, 64, 64),
+            skip_context: 0,
             cdf: &[
                 (0, 0, &[85]),
                 (1, 0, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
@@ -656,6 +656,7 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
             fixture: TILES,
             tile: 1,
             coded: rect(64, 0, 64, 32),
+            skip_context: 0,
             cdf: &[
                 (0, 0, &[85]),
                 (1, 4, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
@@ -668,18 +669,37 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
             fixture: FILTERS,
             tile: 0,
             coded: rect(0, 0, 32, 32),
+            skip_context: 1,
             cdf: &[
                 (0, 0, &[32164]),
                 (1, 7, &[32134, 30991, 28895, 26475, 20115, 8943, 8056]),
                 (3, 1, &[14442]),
                 (5, 0, &[477, 20]),
+                (9, 1, &[4677, 126, 20]),
             ],
             bypass: &[(2, 3, 2), (4, 255, 8)],
         },
     ];
     for case in cases {
-        let block = BlockEvidenceId::new(case.tile, BlockEvidenceTree::Shared, case.coded);
-        let transform = BlockTransformId::new(block, PlaneId::Y, case.coded);
+        let (geometry, _) = capture(
+            case.fixture,
+            1,
+            BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX)
+                .with_kind(BlockEvidenceKind::Transforms),
+        );
+        let transform = geometry
+            .records
+            .iter()
+            .find_map(|record| {
+                let BlockEvidenceData::Transform(transform) = record.data else {
+                    return None;
+                };
+                (transform.id.block.tile == case.tile
+                    && transform.id.plane == PlaneId::Y
+                    && transform.id.coded == case.coded)
+                    .then_some(transform.id)
+            })
+            .unwrap();
         let scope = BlockEntropyScope::Transform(transform);
         let (report, pictures) = capture(
             case.fixture,
@@ -697,14 +717,21 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
         assert_eq!(evidence.scope, scope);
         assert!(evidence.tile_payload_bytes > 0);
         let mut ordinal = 0;
-        for symbol in &evidence.symbols {
+        for (index, symbol) in evidence.symbols.iter().enumerate() {
+            assert_eq!(evidence.transform_for(index), Some(transform));
             assert_eq!(symbol.ordinal, ordinal);
             assert!(symbol.estimated_bits().unwrap().is_finite());
             ordinal += u64::from(symbol.bypass_bits.max(1));
         }
         assert_eq!(ordinal, evidence.end_ordinal);
-        assert_eq!(evidence.symbols[0].syntax.unwrap().key, "all_zero");
-        assert_eq!(evidence.symbols[1].syntax.unwrap().key, "eob_pt");
+        let skip = evidence.symbols[0].syntax.unwrap();
+        assert_eq!(skip.key, "all_zero");
+        assert_eq!(skip.context, "plane_type,tx_size_ctx,txb_skip_ctx");
+        assert_eq!(skip.values[2], case.skip_context);
+        let eob = evidence.symbols[1].syntax.unwrap();
+        assert_eq!(eob.key, "eob_pt");
+        assert_eq!(eob.context, "eob_multi_size,eob_ctx");
+        assert_eq!(eob.values[..2], [6, 0]);
         for &(index, value, cutoffs) in case.cdf {
             let symbol = evidence.symbols[index];
             assert_eq!(symbol.coding, EntropyCoding::Cdf);
@@ -722,6 +749,40 @@ fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
             assert_eq!(symbol.value, value);
             assert_eq!(symbol.bypass_bits, bits);
             assert_eq!(symbol.estimated_bits(), Some(f64::from(bits)));
+        }
+    }
+}
+
+#[test]
+fn block_entropy_attributes_only_transform_reads_to_the_native_plane() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId, BlockTransformId};
+    use splot_recon::PlaneId;
+
+    let block = BlockEvidenceId::new(1, BlockEvidenceTree::Shared, rect(64, 0, 64, 32));
+    let (report, _) = capture(
+        TILES,
+        4,
+        BlockEvidenceRequest::new(|_| true, None, 1000, usize::MAX)
+            .with_entropy(BlockEntropyScope::Block(block)),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Complete);
+    let entropy = report.entropy.unwrap();
+    assert_eq!(entropy.transform_for(0), None);
+    assert_eq!(entropy.transform_for(entropy.symbols.len()), None);
+    let owners: std::collections::HashSet<_> = (0..entropy.symbols.len())
+        .filter_map(|index| entropy.transform_for(index))
+        .collect();
+    assert_eq!(
+        owners,
+        std::collections::HashSet::from([
+            BlockTransformId::new(block, PlaneId::Y, rect(64, 0, 64, 32)),
+            BlockTransformId::new(block, PlaneId::U, rect(32, 0, 32, 16)),
+            BlockTransformId::new(block, PlaneId::V, rect(32, 0, 32, 16)),
+        ])
+    );
+    for (index, symbol) in entropy.symbols.iter().enumerate() {
+        if symbol.syntax.is_some_and(|syntax| syntax.key == "all_zero") {
+            assert!(entropy.transform_for(index).is_some());
         }
     }
 }
@@ -752,13 +813,43 @@ fn entropy_capture_respects_record_byte_and_cancellation_limits() {
         assert_eq!(picture_hashes(&pictures), expected);
     }
 
+    let polls = AtomicUsize::new(0);
     let (report, pictures) = capture(
         TILES,
         1,
         BlockEvidenceRequest::new(|_| true, None, 100, usize::MAX)
             .with_entropy(scope)
-            .with_cancellation(|| true),
+            .with_cancellation(move || polls.fetch_add(1, Ordering::Relaxed) >= 2),
     );
     assert_eq!(report.status, BlockEvidenceStatus::Cancelled);
+    let evidence = report.entropy.unwrap();
+    assert_eq!(evidence.symbols.len(), 2);
+    assert!(evidence.end_ordinal > evidence.symbols[1].ordinal);
     assert_eq!(picture_hashes(&pictures), expected);
+}
+
+#[test]
+fn entropy_range_keeps_reports_bound_to_their_coded_frames() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId};
+
+    let scope = BlockEntropyScope::Block(BlockEvidenceId::new(
+        0,
+        BlockEvidenceTree::Shared,
+        rect(0, 0, 64, 64),
+    ));
+    let request = BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX)
+        .with_entropy(scope)
+        .with_frame_limit(NonZeroUsize::new(2).unwrap());
+    let (mut decoder, capture) = Decoder::new_with_block_evidence(settings(4), request).unwrap();
+    let pictures = decode(&mut decoder, SUBPEL).unwrap();
+
+    let first = capture.take().unwrap();
+    assert_eq!(first.frame.unwrap().provenance, pictures[0].provenance());
+    assert_eq!(first.status, BlockEvidenceStatus::Complete);
+    assert_eq!(first.entropy.unwrap().scope, scope);
+    let second = capture.take().unwrap();
+    assert_eq!(second.frame.unwrap().provenance, pictures[1].provenance());
+    assert_eq!(second.status, BlockEvidenceStatus::Unavailable);
+    assert!(second.entropy.is_none());
+    assert!(capture.is_finished());
 }

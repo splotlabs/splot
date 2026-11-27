@@ -98,6 +98,18 @@ struct Block<'s> {
 }
 
 impl Block<'_> {
+    #[cfg(feature = "block-evidence")]
+    #[inline]
+    fn annotate_symbol(&self, symbols: &SymbolDecoder<'_>, key: &'static str, ctx: usize) {
+        if symbols.observes_entropy() {
+            symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                key,
+                "tx_size_ctx,ctx",
+                [self.size_ctx as u16, ctx as u16, 0],
+            ));
+        }
+    }
+
     fn decode_levels(
         &self,
         cdfs: &mut TileCdfSubset,
@@ -110,9 +122,10 @@ impl Block<'_> {
         quant: &mut [i32],
     ) -> Result<(usize, super::quant_state::NonZeroCoeffQuantState), CoeffFscBranchError> {
         let rows = cdfs.coeff_rows_mut();
-        let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), {
-            coeff_base_bob_ctx(self.bob, self.seg_eob)
-        });
+        let bob_ctx = coeff_base_bob_ctx(self.bob, self.seg_eob);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_symbol(symbols, "coeff_base_bob", bob_ctx);
+        let bob_row = row_at(row_at(rows.coeff_base_bob(), self.size_ctx), bob_ctx);
         let first = symbols.read_trusted(bob_row) + 1;
         let mut carried = (usize::MAX, 0);
         for (index, &entry) in self.entries.iter().enumerate() {
@@ -124,6 +137,8 @@ impl Block<'_> {
                 let ctx = (near & 0xff) as usize;
                 let word = (ctx == carried.0).then_some(carried.1);
                 let base = row_at(rows.coeff_base_idtx(), self.size_ctx);
+                #[cfg(feature = "block-evidence")]
+                self.annotate_symbol(symbols, "coeff_base_idtx", ctx);
                 let (level, word) = symbols.read_trusted_carried(row_at(base, ctx), word);
                 carried = (ctx, word);
                 level
@@ -131,6 +146,8 @@ impl Block<'_> {
             if level > NUM_BASE_LEVELS {
                 let ctx = (((near >> 8) & 0xff) as usize).min(6);
                 let br = row_at(rows.coeff_br_idtx(), self.size_ctx);
+                #[cfg(feature = "block-evidence")]
+                self.annotate_symbol(symbols, "coeff_br_idtx", ctx);
                 level += symbols.read_trusted(row_at(br, ctx));
             }
             levels[grid + LEVEL_STRIDE + 1] = LEVEL_WORD[level as usize & 15];
@@ -173,6 +190,8 @@ impl Block<'_> {
                 } else {
                     0
                 };
+            #[cfg(feature = "block-evidence")]
+            self.annotate_symbol(symbols, "idtx_sign", ctx);
             let sign = symbols.read_trusted(row_at(signs, ctx)) != 0;
             levels[at] = word | 1 << if sign { NEGATIVE_SHIFT } else { POSITIVE_SHIFT };
             let pos = entry_pos(entry);

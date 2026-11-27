@@ -127,10 +127,12 @@ impl BlockEvidenceRequest {
     }
 
     /// Collects symbols from one exact block or transform within each selected frame.
-    /// The event and byte budgets apply to the symbol records.
+    /// The exact selection replaces the region filter. The event and byte
+    /// budgets apply to the symbol records.
     #[must_use]
     pub fn with_entropy(mut self, scope: BlockEntropyScope) -> Self {
         self.entropy = Some(scope);
+        self.region = None;
         self.transform_details = None;
         self
     }

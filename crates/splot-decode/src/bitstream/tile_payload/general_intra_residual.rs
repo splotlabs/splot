@@ -998,9 +998,24 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     if scoped {
         symbols.set_entropy_observation_active(true);
     }
+    #[cfg(feature = "block-evidence")]
+    let record_transform = symbols.observes_entropy();
+    #[cfg(feature = "block-evidence")]
+    if record_transform {
+        symbols.set_entropy_scope_tag(Some([
+            block.plane as u32,
+            block.x as u32,
+            block.y as u32,
+            tx_size as u32,
+        ]));
+    }
     let result = read_plane_coeffs(
         work_unit, symbols, context, arena, block, tx, tx_size, lossless,
     );
+    #[cfg(feature = "block-evidence")]
+    if record_transform {
+        symbols.set_entropy_scope_tag(None);
+    }
     #[cfg(feature = "block-evidence")]
     if scoped {
         symbols.set_entropy_observation_active(false);

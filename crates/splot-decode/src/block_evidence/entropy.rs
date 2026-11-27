@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use splot_core::symbol::{EntropyCaptureStop, EntropyObserver};
 pub use splot_core::symbol::{EntropyCdf, EntropyCoding, EntropySymbol, EntropySyntax};
+use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
+use splot_recon::{PlaneId, PlaneRect};
 
 use super::{BlockEvidenceId, BlockEvidenceStatus, BlockEvidenceTile, BlockTransformId};
 use crate::bitstream::tile_payload::DecodeBlockFrontier;
@@ -51,6 +53,23 @@ pub struct BlockEntropyEvidence {
 }
 
 impl BlockEntropyEvidence {
+    /// Returns the transform that owns the read at the zero-based record index.
+    /// Shared or block-only reads have no transform owner.
+    #[must_use]
+    pub fn transform_for(&self, symbol_index: usize) -> Option<BlockTransformId> {
+        let [plane, x, y, size] = self.symbols.get(symbol_index)?.scope_tag()?;
+        let plane = match plane {
+            0 => PlaneId::Y,
+            1 => PlaneId::U,
+            2 => PlaneId::V,
+            _ => return None,
+        };
+        let width = *TX_WIDTH.get(size as usize)? as usize;
+        let height = *TX_HEIGHT.get(size as usize)? as usize;
+        let coded = PlaneRect::new(x as usize, y as usize, width, height).ok()?;
+        Some(BlockTransformId::new(self.scope.block(), plane, coded))
+    }
+
     pub(super) fn status(&self) -> Option<BlockEvidenceStatus> {
         match self.stopped? {
             EntropyCaptureStop::Limit => Some(BlockEvidenceStatus::Truncated),

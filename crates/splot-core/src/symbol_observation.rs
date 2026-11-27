@@ -82,6 +82,7 @@ pub struct EntropySymbol {
     pub ordinal: u64,
     /// Syntax identity and CDF selection arguments, when captured.
     pub syntax: Option<EntropySyntax>,
+    pub(super) scope_tag: Option<[u32; 4]>,
     /// The decoded symbol or bypass value.
     pub value: u32,
     /// The coding operation.
@@ -97,6 +98,12 @@ pub struct EntropySymbol {
 }
 
 impl EntropySymbol {
+    /// Returns the scope tag supplied by the caller for this read.
+    #[must_use]
+    pub const fn scope_tag(&self) -> Option<[u32; 4]> {
+        self.scope_tag
+    }
+
     /// Estimates the coding cost as `log2(range / interval)` for CDF reads.
     /// Each equiprobable bypass bit costs one bit. Returns `None` for an empty
     /// interval. The estimate excludes termination and padding.
@@ -133,6 +140,7 @@ pub struct EntropyCapture {
     /// The observed scope's end ordinal. Counts units after a recording limit.
     pub end_ordinal: u64,
     next_syntax: Option<EntropySyntax>,
+    scope_tag: Option<[u32; 4]>,
 }
 
 struct Observation {
@@ -183,10 +191,15 @@ impl EntropyObserver {
         self.lock().next_syntax = Some(syntax);
     }
 
+    pub(super) fn set_scope_tag(&self, tag: Option<[u32; 4]>) {
+        self.lock().scope_tag = tag;
+    }
+
     pub(super) fn push(&self, mut event: EntropySymbol) {
         let mut capture = self.lock();
         event.ordinal = capture.end_ordinal;
         event.syntax = capture.next_syntax.take();
+        event.scope_tag = capture.scope_tag;
         capture.end_ordinal += u64::from(event.bypass_bits.max(1));
         if capture.stopped.is_some() {
             return;
@@ -215,10 +228,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cdf_observation_precedes_each_adaptation() {
+        use crate::symbol::SymbolDecoder;
+
+        let mut decoder = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
+        let observer = EntropyObserver::new(2, usize::MAX, || false);
+        decoder.set_entropy_observer(Some(observer.clone()));
+        let mut row = [16384, 0, 0];
+        assert_eq!(decoder.read_trusted(&mut row), 0);
+        assert_eq!(row, [17408, 1 << CDF_COUNT_SHIFT, 0]);
+        assert_eq!(decoder.read_trusted(&mut row), 0);
+        decoder.set_entropy_observer(None);
+
+        let capture = observer.take();
+        assert_eq!(capture.stopped, None);
+        assert_eq!(capture.end_ordinal, 2);
+        let first = capture.symbols[0].cdf.unwrap();
+        let second = capture.symbols[1].cdf.unwrap();
+        assert_eq!((first.cutoffs[0], first.adaptation_count), (16384, 0));
+        assert_eq!((second.cutoffs[0], second.adaptation_count), (17408, 1));
+    }
+
+    #[test]
     fn entropy_estimate_uses_the_effective_interval() {
         let mut symbol = EntropySymbol {
             ordinal: 0,
             syntax: None,
+            scope_tag: None,
             value: 0,
             coding: EntropyCoding::Cdf,
             bypass_bits: 0,

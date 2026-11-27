@@ -224,6 +224,10 @@ fn read_bypass_symbol(
     syntax: &'static str,
     kind: BypassSyntax,
 ) -> Result<u32, CoeffReadQuantError> {
+    #[cfg(feature = "block-evidence")]
+    if bits != 0 && symbols.observes_entropy() {
+        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(syntax, "", [0; 3]));
+    }
     let value = kind
         .read(symbols, bits)
         .map_err(|source| CoeffReadQuantError::LiteralRead {
