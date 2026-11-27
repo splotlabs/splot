@@ -206,6 +206,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         explicit_ref_frame_map: true,
         implicit_output: true,
         seq_tiles: None,
+        disable_loopfilters_across_tiles: false,
         plane_delta_q: [0; 3],
         short_refresh: true,
         masked_compound: true,

@@ -91,6 +91,7 @@ impl Case {
                 explicit_ref_frame_map: false,
                 implicit_output: false,
                 seq_tiles: None,
+                disable_loopfilters_across_tiles: false,
                 plane_delta_q: [0; 3],
                 short_refresh: false,
                 masked_compound: false,

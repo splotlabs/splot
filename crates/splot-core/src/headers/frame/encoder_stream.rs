@@ -198,6 +198,9 @@ pub struct EncoderToolFlags {
     /// `seq_tile_info_present_flag` (§ 5.4.2): the sequence codes this
     /// uniform layout, which frames reuse (§ 5.18.7.2).
     pub seq_tiles: Option<SeqTiles>,
+    /// `disable_loopfilters_across_tiles` (§ 5.4.10): the in-loop filters do
+    /// not read samples of another tile (§ 6.4.10).
+    pub disable_loopfilters_across_tiles: bool,
     /// The plane quantizer deltas `[DeltaQYDc, DeltaQU*, DeltaQV*]` frames may
     /// code (§ 5.4.8): a non-zero luma value codes `equal_ac_dc_q = 0` with
     /// `y_dc_delta_q_enabled`, a non-zero chroma value codes the chroma
@@ -662,7 +665,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
 
     write_transform_quant_entropy_config(&mut w, tools, monochrome)?;
 
-    w.write_flag(false)?; // disable_loopfilters_across_tiles
+    w.write_flag(tools.disable_loopfilters_across_tiles)?;
     w.write_flag(tools.cdef)?;
     w.write_flag(tools.gdf)?;
     if tools.gdf && params.sb_size == SuperblockSize::Block64x64 {

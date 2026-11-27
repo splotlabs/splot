@@ -176,6 +176,9 @@ pub struct Config {
     /// tile group OBUs of consecutive tiles (§ 5.19), at most one per tile.
     /// `1`, the default, codes one tile group.
     pub tile_groups: NonZeroU32,
+    /// The in-loop filters stop at tile edges: the sequence codes
+    /// `disable_loopfilters_across_tiles = 1` (§ 5.4.10). Off by default.
+    pub disable_loopfilters_across_tiles: bool,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
     /// Fixed-ratio resize: every frame is coded at `8 / denominator` of the
@@ -259,6 +262,7 @@ impl Config {
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
             tile_groups: NonZeroU32::MIN,
+            disable_loopfilters_across_tiles: false,
             keyint: Self::DEFAULT_KEYINT,
             resize_denominator: None,
             crop: None,
