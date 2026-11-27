@@ -1208,11 +1208,13 @@ fn decode_nonzero_plane_coeffs(
             &mut arena[start_idx..],
         );
         arena.truncate(start_idx + ordinary.as_ref().map_or(0, |block| block.quant_end));
-        let _ordinary =
+        let ordinary =
             ordinary.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        #[cfg(not(feature = "block-evidence"))]
+        let _ = ordinary;
         #[cfg(feature = "block-evidence")]
         {
-            coding = if _ordinary.dc_parity_hidden {
+            coding = if ordinary.dc_parity_hidden {
                 CoefficientCoding::HiddenDcParity
             } else {
                 CoefficientCoding::Ordinary

@@ -97,17 +97,17 @@ pub struct BlockCoefficientQuantization {
     pub denominator: u32,
     /// The bit depth that determines the dequantized clipping range.
     pub bit_depth: BitDepth,
-    /// The active matrix, indexed by row and column in the coefficient grid.
+    /// The selected matrix. Its weights apply by row and column in the coefficient grid.
     pub matrix: Option<BlockCoefficientMatrix>,
 }
 
-/// The secondary transform syntax for an intra luma transform.
+/// The signaled secondary transform syntax for a luma transform.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct BlockSecondaryTransform {
-    /// The nonzero signaled AV2 `sec_tx_type`.
+    /// The AV2 `sec_tx_type`. Zero signals no secondary transform.
     pub sec_tx_type: u8,
-    /// The signaled `most_probable_stx_set`, when present.
+    /// The signaled `most_probable_stx_set` for an active intra secondary transform.
     pub most_probable_stx_set: Option<u8>,
 }
 
@@ -138,8 +138,8 @@ pub struct BlockTransformCoefficients {
     pub quantization: Option<BlockCoefficientQuantization>,
     /// The coefficient parser used trellis-coded quantization.
     pub use_tcq: bool,
-    /// The active secondary transform syntax, when present.
-    pub intra_secondary: Option<BlockSecondaryTransform>,
+    /// The secondary transform syntax, when the parser reads it.
+    pub secondary: Option<BlockSecondaryTransform>,
     /// The coefficient parser used forward skip coding.
     pub forward_scan: bool,
     /// The parser derived the DC magnitude parity from the other levels.
@@ -270,14 +270,10 @@ impl DecodedTransformUnit<'_> {
             domain,
             quantization,
             use_tcq: self.coeffs.use_tcq,
-            intra_secondary: self
-                .coeffs
-                .intra_ist
-                .filter(|ist| ist.sec_tx_type != 0)
-                .map(|ist| BlockSecondaryTransform {
-                    sec_tx_type: ist.sec_tx_type,
-                    most_probable_stx_set: ist.most_probable_stx_set,
-                }),
+            secondary: self.coeffs.intra_ist.map(|ist| BlockSecondaryTransform {
+                sec_tx_type: ist.sec_tx_type,
+                most_probable_stx_set: ist.most_probable_stx_set,
+            }),
             forward_scan: self.coeffs.coding == CoefficientCoding::ForwardSkip,
             dc_parity_hidden: self.coeffs.coding == CoefficientCoding::HiddenDcParity,
         })

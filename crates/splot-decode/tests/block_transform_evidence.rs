@@ -246,7 +246,7 @@ fn assert_quantization(
     assert_eq!(quantization.matrix, None);
     assert!(!coefficients.use_tcq);
     assert!(!coefficients.forward_scan);
-    assert_eq!(coefficients.intra_secondary, None);
+    assert_eq!(coefficients.secondary, None);
     assert_eq!(coefficients.domain, BlockCoefficientDomain::Plane);
 }
 
@@ -440,7 +440,7 @@ fn secondary_transform_keeps_the_pre_ist_values_in_raster_order() {
         nonzero_grid(&coefficients.dequantized),
         [(1, -132), (2, -66), (8, 66)]
     );
-    let secondary = coefficients.intra_secondary.unwrap();
+    let secondary = coefficients.secondary.unwrap();
     assert_eq!(secondary.sec_tx_type, 3);
 }
 
@@ -473,4 +473,95 @@ fn cross_component_pair_labels_both_slots_even_when_v_is_zero() {
     assert_eq!(v.quantized, vec![0; 16]);
     assert_eq!(v.dequantized, vec![0; 16]);
     assert_eq!(v.quantization, None);
+}
+
+#[test]
+fn forward_skip_reports_the_coded_suffix() {
+    let input =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-fsc-intra-128x128.ivf");
+    let coded = rect(24, 0, 8, 8);
+    let report = capture_fixture_transform(input, PlaneId::Y, coded);
+    let details = transforms(&report).next().unwrap().1.details.unwrap();
+    assert_eq!(details.plane_tx_type.map(TxType::av2_name), Some("IDTX"));
+    let coefficients = report.coefficients.unwrap();
+    assert!(coefficients.forward_scan);
+    assert_eq!(coefficients.eob, 6);
+    assert_eq!(
+        &coefficients.scan.unwrap()[58..64],
+        &[61, 54, 47, 62, 55, 63]
+    );
+    assert_eq!(
+        nonzero_grid(&coefficients.quantized),
+        [(54, 12), (55, 12), (61, 12), (62, 12)]
+    );
+    assert_eq!(
+        nonzero_grid(&coefficients.dequantized),
+        [(54, 792), (55, 792), (61, 792), (62, 792)]
+    );
+}
+
+#[test]
+fn reports_derived_dc_parity_and_tcq_levels() {
+    let parity =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-parity-intra-128x128.ivf");
+    let parity = capture_fixture_transform(parity, PlaneId::Y, rect(84, 80, 4, 16))
+        .coefficients
+        .unwrap();
+    assert!(parity.dc_parity_hidden);
+    assert!(!parity.use_tcq);
+    assert_eq!(parity.quantized[0], 3);
+    assert_eq!(parity.dequantized[0], 198);
+
+    let tcq = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
+    );
+    let tcq = capture_fixture_transform(tcq, PlaneId::Y, rect(0, 0, 32, 32))
+        .coefficients
+        .unwrap();
+    assert!(tcq.use_tcq);
+    assert!(!tcq.dc_parity_hidden);
+    assert_eq!(tcq.eob, 5);
+    assert_eq!(tcq.quantization.unwrap().denominator, 4);
+    assert_eq!(
+        nonzero_grid(&tcq.quantized),
+        [(0, -223), (1, 2), (32, 2), (33, 52)]
+    );
+    assert_eq!(
+        nonzero_grid(&tcq.dequantized),
+        [(0, -4906), (1, 44), (32, 44), (33, 1144)]
+    );
+}
+
+#[test]
+fn reports_effective_matrix_even_when_a_user_matrix_is_present() {
+    let built_in =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-qm-intra-64x64.ivf");
+    let user =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-output-user-qm-64x64.ivf");
+    for (input, coded, qindex, quantizer, level, quant, dequant) in [
+        (
+            built_in.as_slice(),
+            rect(0, 0, 64, 64),
+            200,
+            12544,
+            8,
+            -1,
+            -392,
+        ),
+        (user.as_slice(), rect(0, 0, 32, 64), 80, 392, 6, -59, -722),
+    ] {
+        let coefficients = capture_fixture_transform(input, PlaneId::Y, coded)
+            .coefficients
+            .unwrap();
+        assert_eq!(nonzero_grid(&coefficients.quantized), [(0, quant)]);
+        assert_eq!(nonzero_grid(&coefficients.dequantized), [(0, dequant)]);
+        let quantization = coefficients.quantization.unwrap();
+        assert_eq!(quantization.qindex, qindex);
+        assert_eq!(quantization.dc_quant, quantizer);
+        assert_eq!(quantization.ac_quant, quantizer);
+        assert_eq!(quantization.denominator, 4);
+        let matrix = quantization.matrix.unwrap();
+        assert_eq!(matrix.level, level);
+        assert!(!matrix.user_defined);
+    }
 }
