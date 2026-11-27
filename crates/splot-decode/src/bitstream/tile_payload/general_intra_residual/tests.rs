@@ -106,6 +106,8 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     let block = LumaCoeffBlock {
         eob: 1,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -150,6 +152,8 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
         let block = LumaCoeffBlock {
             eob: 1,
             scan_order: false,
+            #[cfg(feature = "block-evidence")]
+            coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,
@@ -193,6 +197,8 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     let block = LumaCoeffBlock {
         eob: 1,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -233,6 +239,8 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     let invalid_quant = LumaCoeffBlock {
         eob: 1,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1049,6 +1057,8 @@ fn invalid_ist_shape_is_reconstruction_state() {
     let block = LumaCoeffBlock {
         eob: 2,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1853,6 +1863,8 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     let block = LumaCoeffBlock {
         eob: 16,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1963,6 +1975,8 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let u_block = LumaCoeffBlock {
         eob: 7,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: quant.len() as u16,
         zero_tail: 0,
@@ -1975,6 +1989,8 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let v_block = LumaCoeffBlock {
         eob: 0,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,
@@ -2029,6 +2045,8 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         let block = LumaCoeffBlock {
             eob: 6,
             scan_order: false,
+            #[cfg(feature = "block-evidence")]
+            coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,
@@ -2063,6 +2081,8 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         let block = LumaCoeffBlock {
             eob: 10,
             scan_order: false,
+            #[cfg(feature = "block-evidence")]
+            coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
             quant_start: 0,
             quant_len: quant.len() as u16,
             zero_tail: 0,

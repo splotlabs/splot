@@ -10,8 +10,12 @@ mod prediction;
 pub use entropy::*;
 mod transform;
 pub use prediction::*;
-pub(crate) use transform::DecodedTransformUnit;
-pub use transform::{BlockTransformDetails, BlockTransformEvidence, BlockTransformId};
+pub use transform::{
+    BlockCoefficientDomain, BlockCoefficientMatrix, BlockCoefficientQuantization,
+    BlockSecondaryTransform, BlockTransformCoefficients, BlockTransformDetails,
+    BlockTransformEvidence, BlockTransformId,
+};
+pub(crate) use transform::{DecodedTransformUnit, TransformCoefficientContext};
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
@@ -69,14 +73,15 @@ pub struct BlockEvidenceRequest {
     frame_limit: NonZeroUsize,
     kind: BlockEvidenceKind,
     transform_details: Option<BlockTransformId>,
+    transform_coefficients: bool,
     entropy: Option<BlockEntropyScope>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl BlockEvidenceRequest {
     /// Selects the first matching coded OBU and a region in coded luma coordinates.
-    /// Each budget limits the same fixed-size records. The byte budget counts
-    /// record storage, including spare capacity. Zero stops before the first record.
+    /// The byte budget counts record storage and coefficient arrays, including
+    /// spare capacity. Zero stops before the first record.
     ///
     /// Return promptly from the predicate. Do not call this decoder or panic.
     #[must_use]
@@ -94,6 +99,7 @@ impl BlockEvidenceRequest {
             frame_limit: NonZeroUsize::MIN,
             kind: BlockEvidenceKind::PartitionsAndBlocks,
             transform_details: None,
+            transform_coefficients: false,
             entropy: None,
             cancelled: None,
         }
@@ -113,6 +119,7 @@ impl BlockEvidenceRequest {
     pub fn with_kind(mut self, kind: BlockEvidenceKind) -> Self {
         self.kind = kind;
         self.transform_details = None;
+        self.transform_coefficients = false;
         self.entropy = None;
         self
     }
@@ -121,9 +128,21 @@ impl BlockEvidenceRequest {
     #[must_use]
     pub fn with_transform_details(mut self, transform: BlockTransformId) -> Self {
         self.transform_details = Some(transform);
+        self.transform_coefficients = false;
         self.entropy = None;
         self.kind = BlockEvidenceKind::Transforms;
         self
+    }
+
+    /// Selects one transform and includes its exact coefficient grids.
+    ///
+    /// The byte budget includes both grids, at most 8192 bytes in total.
+    /// The scan borrows a static table. It consumes no allocation budget.
+    #[must_use]
+    pub fn with_transform_coefficients(self, transform: BlockTransformId) -> Self {
+        let mut request = self.with_transform_details(transform);
+        request.transform_coefficients = true;
+        request
     }
 
     /// Collects symbols from one exact block or transform within each selected frame.
@@ -134,6 +153,7 @@ impl BlockEvidenceRequest {
         self.entropy = Some(scope);
         self.region = None;
         self.transform_details = None;
+        self.transform_coefficients = false;
         self
     }
 
@@ -162,7 +182,7 @@ pub enum BlockEvidenceStatus {
     Cancelled,
     /// The decode session ended before it admitted a matching coded frame.
     FrameNotFound,
-    /// The matching frame does not use the coding block walk.
+    /// The matching frame has no block walk, or the selected capture is unavailable.
     Unavailable,
     /// Decode failed. Records, if present, may be incomplete.
     DecodeFailed,
@@ -280,6 +300,8 @@ pub struct BlockEvidenceReport {
     pub frame: Option<BlockEvidenceFrame>,
     /// Records that satisfied the selection before capture stopped.
     pub records: Vec<BlockEvidenceRecord>,
+    /// The requested coefficient payload, when capture produced it.
+    pub coefficients: Option<BlockTransformCoefficients>,
     /// Symbol observations when the decoder found the requested scope.
     pub entropy: Option<BlockEntropyEvidence>,
 }
@@ -317,6 +339,7 @@ struct CaptureState {
     stopped: Option<BlockEvidenceStatus>,
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
+    coefficients: Option<BlockTransformCoefficients>,
     reports: VecDeque<BlockEvidenceReport>,
     last_report: Option<BlockEvidenceReport>,
 }
@@ -436,10 +459,17 @@ impl BlockEvidenceState {
             state.remaining_events -= entropy.symbols.len();
             state.remaining_bytes -= entropy.symbols.capacity() * size_of::<EntropySymbol>();
         }
+        let coefficients = state.coefficients.take();
+        if let Some(coefficients) = &coefficients {
+            state.remaining_bytes -= (coefficients.quantized.capacity()
+                + coefficients.dequantized.capacity())
+                * size_of::<i32>();
+        }
         let mut report = BlockEvidenceReport {
             status,
             frame,
             records,
+            coefficients,
             entropy,
         };
         state.finished = session_ended
@@ -472,34 +502,60 @@ impl BlockEvidenceState {
         }
     }
 
-    fn push(&self, frame_number: usize, record: &BlockEvidenceRecord) {
+    fn push(
+        &self,
+        frame_number: usize,
+        record: &BlockEvidenceRecord,
+        coefficients: Option<(
+            BlockTransformId,
+            &DecodedTransformUnit<'_>,
+            &TransformCoefficientContext<'_>,
+        )>,
+    ) {
         let cancelled = self.cancelled();
         let state = &mut *self.state.lock();
         if state.finished || state.stopped.is_some() || state.frames_selected != frame_number {
             return;
         }
-        let limit = state
-            .remaining_events
-            .min(state.remaining_bytes / size_of::<BlockEvidenceRecord>());
+        let coefficient_bytes = coefficients.map_or(0, |(id, ..)| {
+            id.coded.width().min(32) * id.coded.height().min(32) * 2 * size_of::<i32>()
+        });
+        let limit = state.remaining_events.min(
+            state.remaining_bytes.saturating_sub(coefficient_bytes)
+                / size_of::<BlockEvidenceRecord>(),
+        );
         let stop = if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if state.records.len() == limit {
+        } else if coefficients.is_some() && state.coefficients.is_some() {
+            return;
+        } else if state.records.len() >= limit {
             BlockEvidenceStatus::Truncated
         } else {
             let current = state.records.capacity();
-            let first_capacity = if self.request.frame_limit == NonZeroUsize::MIN {
-                32
-            } else {
-                1
-            };
+            let first_capacity =
+                if coefficients.is_some() || self.request.frame_limit != NonZeroUsize::MIN {
+                    1
+                } else {
+                    32
+                };
             let capacity = current.saturating_mul(2).max(first_capacity).min(limit);
             if state.records.len() != current
                 || state.records.try_reserve_exact(capacity - current).is_ok()
             {
-                state.records.push(*record);
-                return;
+                let capture = coefficients
+                    .map(|(id, unit, context)| unit.capture_coefficients(id, context))
+                    .transpose();
+                match capture {
+                    Ok(coefficients) => {
+                        state.coefficients = coefficients;
+                        state.records.push(*record);
+                        return;
+                    }
+                    Err(status) => status,
+                }
+            } else {
+                BlockEvidenceStatus::AllocationFailed
             }
-            BlockEvidenceStatus::AllocationFailed
         };
         state.stopped = Some(stop);
         self.stopped.store(true, Ordering::Relaxed);
@@ -636,6 +692,7 @@ impl BlockEvidenceTile<'_> {
         self,
         frontier: &DecodeBlockFrontier,
         unit: &DecodedTransformUnit<'_>,
+        context: &TransformCoefficientContext<'_>,
     ) {
         if let Some(id) = self.block_id(frontier)
             && let Some(mut transform) = unit.to_evidence(id, self.recorder.subsampling)
@@ -646,12 +703,22 @@ impl BlockEvidenceTile<'_> {
                 }
                 transform.details = Some(unit.details());
             }
-            self.record(
+            if let Some(record) = self.make_record(
                 id,
                 None,
                 transform.luma_coded,
                 BlockEvidenceData::Transform(transform),
-            );
+            ) {
+                let capture = self
+                    .recorder
+                    .state
+                    .request
+                    .transform_coefficients
+                    .then_some((transform.id, unit, context));
+                self.recorder
+                    .state
+                    .push(self.recorder.frame_number, &record, capture);
+            }
         }
     }
 
@@ -674,6 +741,20 @@ impl BlockEvidenceTile<'_> {
         geometry: PlaneRect,
         data: BlockEvidenceData,
     ) {
+        if let Some(record) = self.make_record(id, parent, geometry, data) {
+            self.recorder
+                .state
+                .push(self.recorder.frame_number, &record, None);
+        }
+    }
+
+    fn make_record(
+        self,
+        id: BlockEvidenceId,
+        parent: Option<TilePartitionCall>,
+        geometry: PlaneRect,
+        data: BlockEvidenceData,
+    ) -> Option<BlockEvidenceRecord> {
         if self
             .recorder
             .state
@@ -681,17 +762,14 @@ impl BlockEvidenceTile<'_> {
             .region
             .is_some_and(|region| intersection(geometry, region).is_none())
         {
-            return;
+            return None;
         }
-        self.recorder.state.push(
-            self.recorder.frame_number,
-            &BlockEvidenceRecord {
-                id,
-                parent: parent.and_then(|parent| self.node_id(parent)),
-                visible: intersection(geometry, self.recorder.visible),
-                data,
-            },
-        );
+        Some(BlockEvidenceRecord {
+            id,
+            parent: parent.and_then(|parent| self.node_id(parent)),
+            visible: intersection(geometry, self.recorder.visible),
+            data,
+        })
     }
 }
 
@@ -753,11 +831,11 @@ mod tests {
             data: BlockEvidenceData::Partition(BlockPartition::None),
         };
         for _ in 0..limit {
-            state.push(recorder.frame_number, &record);
+            state.push(recorder.frame_number, &record, None);
             assert!(state.state.lock().records.capacity() <= limit);
         }
         assert!(recorder.tile(0).is_some());
-        state.push(recorder.frame_number, &record);
+        state.push(recorder.frame_number, &record, None);
         assert!(recorder.tile(0).is_none());
         state.finish(true);
         let report = BlockEvidenceCapture(state).take().unwrap();

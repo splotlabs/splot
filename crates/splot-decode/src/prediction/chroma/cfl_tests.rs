@@ -59,6 +59,8 @@ fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
         scan_order: false,
+        #[cfg(feature = "block-evidence")]
+        coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
         quant_start: 0,
         quant_len: 0,
         zero_tail: 0,
