@@ -628,7 +628,7 @@ fn open_loop_stream(
 }
 
 /// The OBU types of `packets` in stream order.
-fn obu_types(packets: &[Packet]) -> Vec<splot_core::types::ObuType> {
+pub(super) fn obu_types(packets: &[Packet]) -> Vec<splot_core::types::ObuType> {
     let units: Vec<u8> = packets
         .iter()
         .flat_map(|packet| packet.data.clone())

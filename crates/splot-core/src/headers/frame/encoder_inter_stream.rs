@@ -143,15 +143,35 @@ pub struct InterFrameParams {
     /// `obu_tlayer_id` of the frame's OBUs (§ 5.2.2): the § 7.7 reference map
     /// and the § 5.18.2 `OrderHint` read only the slots its layer may reference.
     pub tlayer: TemporalLayerId,
+    /// A `SWITCH_FRAME` (§ 5.18.2): `OBU_SWITCH`, or `OBU_RAS_FRAME`
+    /// (§ 7.4.5), with `PRIMARY_REF_NONE`, an explicit reference map and
+    /// `use_ref_frame_mvs = 0`.
+    pub switch: Option<SwitchFrameParams>,
+}
+
+/// The switch-frame fields of an [`InterFrameParams`] (§ 5.18.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SwitchFrameParams {
+    /// `restricted_prediction_switch`; the builder refuses `true`.
+    pub restricted_prediction_switch: bool,
+    /// `Some(id)` codes `OBU_RAS_FRAME` with the one `ref_long_term_id` `id`:
+    /// its map references the valid slots that hold `id`, and every other
+    /// slot is refreshed (§ 7.4.5). `None` codes `OBU_SWITCH` over the
+    /// default map (§ 7.7) with `refresh_frame_flags` coded in full.
+    pub ras_long_term_id: Option<u32>,
 }
 
 impl InterFrameParams {
     /// The tile-group OBU type of the frame (§ 5.2.1).
     const fn tile_group_type(&self) -> ObuType {
-        if self.leading {
-            ObuType::LeadingTileGroup
-        } else {
-            ObuType::RegularTileGroup
+        match self.switch {
+            Some(SwitchFrameParams {
+                ras_long_term_id: Some(_),
+                ..
+            }) => ObuType::RasFrame,
+            Some(_) => ObuType::Switch,
+            None if self.leading => ObuType::LeadingTileGroup,
+            None => ObuType::RegularTileGroup,
         }
     }
 }
@@ -193,12 +213,17 @@ pub struct EncodedFrameHeader {
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
 /// single-picture view, `filters` the sequence cannot carry, bits that do not
-/// parse to a complete inter header with `refs`, or `refs` without a valid slot.
+/// parse to a complete inter header with `refs`, `refs` without a valid slot,
+/// or a switch frame it cannot code (`restricted_prediction_switch = 1`, a leading
+/// frame, or a RAS frame without its long-term reference).
 pub fn build_inter_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    if let Some(switch) = params.switch {
+        return build_switch_frame_header(seq, refs, params, switch);
+    }
     let plain = InterFrameParams {
         use_ref_frame_mvs: false,
         global_motion: [None; REFS_PER_FRAME],
@@ -266,6 +291,78 @@ pub fn build_inter_frame_header(
     )
 }
 
+/// The switch frame `params` of `switch`: `PRIMARY_REF_NONE`, no
+/// `use_ref_frame_mvs`, no TIP, and the explicit map of § 5.18.2.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for `restricted_prediction_switch = 1`, a
+/// leading switch frame, a RAS frame in a sequence without long-term ids, an
+/// id that is not in a valid slot, or `refresh_frame_flags` other than the
+/// ones a RAS frame derives.
+#[cold]
+#[inline(never)]
+fn build_switch_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    switch: SwitchFrameParams,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    if switch.restricted_prediction_switch {
+        return Err(unsupported("restricted_prediction_switch = 1"));
+    }
+    if params.leading {
+        return Err(unsupported("a leading switch frame"));
+    }
+    let map: Vec<u32> = if let Some(id) = switch.ras_long_term_id {
+        let bits = seq.long_term_frame_id_bits;
+        if bits == 0 || id >= (1 << bits) - 1 {
+            return Err(unsupported("ref_long_term_id"));
+        }
+        let (valid, ids) = (refs.ref_valid.unwrap_or(&[]), refs.ref_long_term_id);
+        (0..seq.num_ref_frames)
+            .filter(|&slot| {
+                valid.get(slot as usize) == Some(&true)
+                    && ids.and_then(|ids| ids.get(slot as usize)) == Some(&Some(id))
+            })
+            .collect()
+    } else {
+        let default = build_inter_frame_header(
+            seq,
+            refs,
+            &InterFrameParams {
+                switch: None,
+                explicit_refs: None,
+                ..*params
+            },
+        )?;
+        let inter = default.core.inter.ok_or(EncoderHeaderError::Incomplete)?;
+        let count = inter.num_total_refs.unwrap_or(0) as usize;
+        inter
+            .ref_frame_idx
+            .into_iter()
+            .take(count)
+            .copied()
+            .collect()
+    };
+    if map.is_empty() || map.len() > REFS_PER_FRAME {
+        return Err(unsupported("a switch frame reference map"));
+    }
+    let params = InterFrameParams {
+        primary_slot: None,
+        use_ref_frame_mvs: false,
+        tip_weight: None,
+        explicit_refs: None,
+        skip_mode_present: false,
+        global_motion_predict: false,
+        ..*params
+    };
+    let header = parse_inter_frame_header(seq, refs, &params, (None, map.len() as u32), &map)?;
+    if header.core.refresh_frame_flags != Some(params.refresh_frame_flags) {
+        return Err(unsupported("refresh_frame_flags of a RAS frame"));
+    }
+    Ok(header)
+}
+
 /// Parses the bits of `params` with `primary_ref_frame` over a map of
 /// `num_total_refs` references.
 fn parse_inter_frame_header(
@@ -275,9 +372,10 @@ fn parse_inter_frame_header(
     map: (Option<u32>, u32),
     ref_frame_idx: &[u32],
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let (counts, entries) = lr_reference_filters(refs, ref_frame_idx, map.1);
+    let lr_count = if params.switch.is_some() { 0 } else { map.1 };
+    let (counts, entries) = lr_reference_filters(refs, ref_frame_idx, lr_count);
     let lr_refs = LrReferenceFilters {
-        num_ref_frames: map.1,
+        num_ref_frames: lr_count,
         counts,
         taps: [&entries[0], &entries[1], &entries[2]],
     };
@@ -290,7 +388,8 @@ fn parse_inter_frame_header(
     )
     .unwrap_or(true);
     let gm = cheapest_gm_base(seq, refs, params, map.1, ref_frame_idx)?;
-    let explicit = params.explicit_refs.map(|_| ref_frame_idx);
+    let explicit =
+        (params.explicit_refs.is_some() || params.switch.is_some()).then_some(ref_frame_idx);
     let (bytes, bit_len) =
         inter_frame_header_bits(seq, params, map, (lr_refs, &gm), (weight_coded, explicit))?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
@@ -338,29 +437,44 @@ fn inter_frame_header_bits(
     }
     let mut w = BitWriter::new();
     write_mfh_reference(&mut w, params.tx.multi_frame_header)?;
-    w.write_flag(true)?; // frame_is_inter
+    match params.switch {
+        Some(switch) => write_switch_head(&mut w, seq, switch)?,
+        None => w.write_flag(true)?, // frame_is_inter
+    }
     w.write_flag(params.show_frame)?; // immediate_output_frame
     write_implicit_output(&mut w, seq, params)?;
-    w.write_flag(false)?; // frame_size_override_flag
+    if params.switch.is_none() {
+        w.write_flag(false)?; // frame_size_override_flag
+    }
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     let choose = params.tx.choose_primary_ref_frame;
-    w.write_flag(!choose)?; // signal_primary_ref_frame
-    w.write_flag(primary_ref_frame.is_none() || params.tx.disable_cross_frame_cdf_init)?;
-    if !choose {
-        w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
+    if params.switch.is_none() {
+        w.write_flag(!choose)?; // signal_primary_ref_frame
+        w.write_flag(primary_ref_frame.is_none() || params.tx.disable_cross_frame_cdf_init)?;
+        if !choose {
+            w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
+        }
     }
     if seq.seq_force_screen_content_tools == 1 {
         return Err(unsupported("forced screen content tools"));
     }
-    write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
-    write_explicit_ref_map(&mut w, seq, explicit)?;
+    match params.switch {
+        Some(switch) if switch.ras_long_term_id.is_some() => {}
+        Some(_) => w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?,
+        None => write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?,
+    }
+    write_explicit_ref_map(&mut w, seq, explicit, params.switch.is_none())?;
+    if params.switch.is_some() {
+        w.write_bits(seq.max_frame_width - 1, seq.frame_width_bits)?; // frame_width_minus_1
+        w.write_bits(seq.max_frame_height - 1, seq.frame_height_bits)?; // frame_height_minus_1
+    }
     if params.use_ref_frame_mvs && !seq.inter.enable_ref_frame_mvs {
         return Err(unsupported(
             "use_ref_frame_mvs without enable_ref_frame_mvs",
         ));
     }
-    if seq.inter.enable_ref_frame_mvs {
+    if seq.inter.enable_ref_frame_mvs && params.switch.is_none() {
         w.write_flag(params.use_ref_frame_mvs)?;
     }
     if params.use_ref_frame_mvs
@@ -446,13 +560,20 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles, tx),
         &params.filters,
-        (false, lr_refs, primary_ref_frame.map(|_| false)),
+        (
+            false,
+            params.switch.is_some(),
+            lr_refs,
+            primary_ref_frame.map(|_| false),
+        ),
     )?;
     if params.base_q_idx > 0 {
         w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     }
     w.write_flag(params.reference_select)?;
-    w.write_flag(params.skip_mode_present)?;
+    if params.switch.is_none() {
+        w.write_flag(params.skip_mode_present)?;
+    }
     if seq.inter.enable_bawp {
         w.write_flag(true)?; // allow_bawp
     }
@@ -569,7 +690,9 @@ fn write_global_motion(
     if !used {
         return Ok(());
     }
-    w.write_ns(gm.our_ref, num_total_refs + 1)?; // our_ref
+    if params.switch.is_none() {
+        w.write_ns(gm.our_ref, num_total_refs + 1)?; // our_ref
+    }
     if let Some((their_ref, count)) = gm.their_ref {
         w.write_ns(their_ref, count)?;
     }
@@ -909,7 +1032,7 @@ pub fn build_tip_output_frame_header(
     w.write_flag(true)?; // signal_primary_ref_frame
     w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
     write_refresh_frame_flags(&mut w, seq, params.refresh_frame_flags)?;
-    write_explicit_ref_map(&mut w, seq, None)?;
+    write_explicit_ref_map(&mut w, seq, None, true)?;
     w.write_flag(true)?; // use_ref_frame_mvs
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
@@ -1337,15 +1460,16 @@ fn write_refresh_frame_flags(
     Ok(())
 }
 
-/// `frame_explicit_ref_frame_map` of a sequence with `explicit_ref_frame_map`,
-/// then for an `explicit` map its `num_total_refs` and `ref_frame_idx`
-/// (§ 5.18.2).
+/// `frame_explicit_ref_frame_map` of a sequence with `explicit_ref_frame_map`
+/// when `flag_coded`, then for an `explicit` map its `num_total_refs` and
+/// `ref_frame_idx` (§ 5.18.2).
 fn write_explicit_ref_map(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     explicit: Option<&[u32]>,
+    flag_coded: bool,
 ) -> Result<(), EncoderHeaderError> {
-    if seq.inter.explicit_ref_frame_map {
+    if seq.inter.explicit_ref_frame_map && flag_coded {
         w.write_flag(explicit.is_some())?; // frame_explicit_ref_frame_map
     }
     if let Some(map) = explicit {
@@ -1353,6 +1477,21 @@ fn write_explicit_ref_map(
         for &index in map {
             w.write_bits(index, ceil_log2(seq.num_ref_frames))?; // ref_frame_idx
         }
+    }
+    Ok(())
+}
+
+/// `restricted_prediction_switch` of a switch frame, then for a RAS frame
+/// its `num_key_ref_frames = 1` and `ref_long_term_id` (§ 5.18.2).
+fn write_switch_head(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    switch: SwitchFrameParams,
+) -> Result<(), EncoderHeaderError> {
+    w.write_flag(switch.restricted_prediction_switch)?;
+    if let Some(id) = switch.ras_long_term_id {
+        w.write_bits(1, 3)?; // num_key_ref_frames
+        w.write_bits(id, seq.long_term_frame_id_bits)?; // ref_long_term_id
     }
     Ok(())
 }

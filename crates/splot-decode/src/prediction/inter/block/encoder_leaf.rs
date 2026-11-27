@@ -240,7 +240,6 @@ impl EncoderInterTile {
                 }),
                 "a warp mode without DELTAWARP",
             ),
-            (core.frame_type == Some(FrameType::Switch), "a switch frame"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
             return Err(what);

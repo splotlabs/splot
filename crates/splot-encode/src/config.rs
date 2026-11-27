@@ -395,6 +395,16 @@ impl Config {
                 reason,
             });
         }
+        if self.keyint.get() > 256 && rows.iter().any(|row| row.switch_type > 0) {
+            return Err(crate::preset::PresetError::OutOfRange {
+                field: "switch_type",
+                value: 1,
+                allowed: "0 with a keyint above 256: a RAS frame codes an OrderHint under \
+                          256, 1 << OrderHintBits (§ 7.4.5)"
+                    .to_owned(),
+            }
+            .into());
+        }
         if self.cbr_padding && !matches!(self.rate_control, RateControlMode::Cbr { .. }) {
             return Err(Error::PaddingWithoutCbr);
         }

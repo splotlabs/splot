@@ -554,6 +554,79 @@ fn key_frames_without_leading_frames_stay_closed_loop() {
     assert_eq!(keys, [0, 5, 10, 15]);
 }
 
+/// The coded frames of `planner` over the first `frames` input frames.
+fn coded_frames(mut planner: GopPlanner, frames: u64) -> Vec<GopFrame> {
+    let mut coded = Vec::new();
+    while planner.next_display() < frames {
+        let len = planner.next_len(usize::MAX, true).unwrap();
+        coded.extend(
+            planner
+                .plan(len)
+                .unwrap()
+                .into_iter()
+                .filter_map(|step| match step {
+                    GopStep::Code(frame) => Some(frame),
+                    GopStep::ShowExisting { .. } => None,
+                }),
+        );
+    }
+    coded
+}
+
+/// With `switch_frames = 2` the layer-0 frame of every second mini-GOP is a
+/// switch frame with `PRIMARY_REF_NONE` that refreshes one slot, and the
+/// other mini-GOPs keep their intra-only frames.
+#[test]
+fn every_second_mini_gop_opens_with_a_switch_frame() {
+    let planner = GopPlanner::new(NonZeroU32::new(24).unwrap(), 4)
+        .with_intra_only(1)
+        .with_switch_frames(2, 0);
+    let frames = coded_frames(planner, 24);
+    let shown = |pick: fn(&GopFrame) -> bool| -> Vec<u64> {
+        frames
+            .iter()
+            .filter(|frame| pick(frame))
+            .map(|frame| frame.display_index)
+            .collect()
+    };
+    assert_eq!(shown(|frame| frame.switch.is_some()), [8, 16, 23]);
+    assert_eq!(shown(|frame| frame.intra_only), [4, 12, 20]);
+    for frame in frames.iter().filter(|frame| frame.switch.is_some()) {
+        assert_eq!(frame.switch, Some(SwitchKind::Switch));
+        assert_eq!((frame.layer, frame.primary_slot), (0, None));
+        assert_eq!(frame.refresh_frame_flags.count_ones(), 1);
+    }
+}
+
+/// A RAS frame references the key frame's slot alone and refreshes every
+/// other slot; the frames after it reference only the key frame and the
+/// RAS frame, and no frame of the key interval refreshes the key frame's
+/// slot.
+#[test]
+fn ras_frames_keep_only_the_key_frame() {
+    let planner = GopPlanner::new(NonZeroU32::new(24).unwrap(), 4).with_switch_frames(2, 1);
+    let frames = coded_frames(planner, 30);
+    let ras: Vec<usize> = (0..frames.len())
+        .filter(|&at| frames[at].switch == Some(SwitchKind::Ras))
+        .collect();
+    let displays: Vec<u64> = ras.iter().map(|&at| frames[at].display_index).collect();
+    assert_eq!(displays, [8, 16, 23, 32]);
+    for &at in &ras {
+        let frame = frames[at];
+        assert_eq!((frame.ref_slots, frame.refresh_frame_flags), (1, 0xfe));
+        assert!(!frame.show_frame && frame.primary_slot.is_none());
+        assert_eq!(frames[at + 1].ref_slots, 0b11, "{}", frame.display_index);
+    }
+    let non_key = frames
+        .iter()
+        .filter(|frame| frame.frame_type != FrameType::Key);
+    assert!(
+        non_key
+            .clone()
+            .all(|frame| frame.refresh_frame_flags & 1 == 0)
+    );
+    assert!(non_key.clone().all(|frame| frame.ref_slots & 1 == 1));
+}
 /// Rule R of [`GopPlanner::with_max_tlayer_id`]: for each operating point
 /// `n`, a decoder that drops the frames above temporal layer `n` sees, in
 /// every frame it keeps, the same slots of that frame's layer or below as the
