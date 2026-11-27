@@ -1780,19 +1780,11 @@ impl TemporalMvContext {
         if let Some(mv) = self.trajectory_cell(ref_index, y8, x8) {
             return Some(mv);
         }
-        let dst_hint = usize::try_from(ref_frame)
-            .ok()
-            .and_then(|idx| self.ref_order_hints.get(idx))
-            .copied()
-            .flatten()?;
+        let ref_to_dst = self.ref_relative_dist(ref_frame)?;
         let cell = self.projected_cell(y8, x8)?;
         if !cell.valid {
             return None;
         }
-        let ref_to_dst = super::super::get_relative_dist(
-            self.current_order_hint as i32,
-            i32::try_from(dst_hint).ok()?,
-        );
         Some(project_mv(cell.mv(), ref_to_dst, cell.ref_offset()))
     }
 
@@ -1844,16 +1836,29 @@ impl TemporalMvContext {
     }
 
     pub(super) fn single_ref_weight(&self, ref_frame: i8) -> Option<u32> {
-        let dst_hint = usize::try_from(ref_frame)
-            .ok()
-            .and_then(|idx| self.ref_order_hints.get(idx))
-            .copied()
-            .flatten()?;
-        let dist = super::super::get_relative_dist(
-            self.current_order_hint as i32,
-            i32::try_from(dst_hint).ok()?,
-        );
+        let dist = self.ref_relative_dist(ref_frame)?;
         Some(if dist.abs() <= 2 { 2 } else { 1 })
+    }
+
+    /// `get_relative_dist( OrderHint, OrderHints[ ref_frame ] )` of § 5.18.3.1,
+    /// which is -127 for a restricted reference (`RESTRICTED_OH`).
+    fn ref_relative_dist(&self, ref_frame: i8) -> Option<i32> {
+        let index = u32::try_from(ref_frame).ok()?;
+        let hint = if self
+            .restricted_refs
+            .checked_shr(index)
+            .is_some_and(|bits| bits & 1 != 0)
+        {
+            CompoundOrderHint::Restricted
+        } else {
+            let hint = self
+                .ref_order_hints
+                .get(index as usize)
+                .copied()
+                .flatten()?;
+            CompoundOrderHint::reference(hint)
+        };
+        Some(CompoundOrderHint::current(self.current_order_hint).relative_dist(hint))
     }
 }
 
