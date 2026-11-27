@@ -109,6 +109,14 @@ pub enum Error {
         what: String,
     },
 
+    /// A [`crate::Config::single_picture`] configuration asks for a form that
+    /// the single-picture header cannot code.
+    #[error("a single picture cannot use {what}")]
+    SinglePictureWith {
+        /// The refused preset field.
+        what: String,
+    },
+
     /// The rate factor is outside `1..=63`.
     #[error("crf {crf} is outside 1..={max}", max = crate::rate_control::Crf::MAX)]
     InvalidCrf {

@@ -322,6 +322,7 @@ impl Config {
     /// `field` names the failed record, `key_frame_metadata` first),
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
+    /// [`Error::SinglePictureWith`],
     /// [`Error::PaddingWithoutCbr`], [`Error::KeyintWithTemporalLayers`] or
     /// [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
@@ -348,6 +349,12 @@ impl Config {
             self.apply_preset(self.preset.params(), record)?,
             self.override_preset(self.preset.screen_params())?,
         ];
+        if self.single_picture && rows.iter().any(|row| row.cdef_on_skip_mode != 0) {
+            return Err(Error::SinglePictureWith {
+                what: "cdef_on_skip_mode (CdefOnSkipTxfm is inferred adaptive, § 5.4.10)"
+                    .to_owned(),
+            });
+        }
         if self.keyint.get() > MAX_TEMPORAL_LAYER_KEYINT
             && rows.iter().any(|row| row.max_tlayer_id > 0)
         {
@@ -474,10 +481,14 @@ impl Config {
     /// and [`Self::profile`].
     fn level_refusal(&self) -> Option<(LevelIdx, &'static str)> {
         let level = self.level?;
+        let high = self.tier == Some(Tier::High);
         let reason = match level.get() {
             22..=30 | 32.. => "the level is reserved (Annex A.4 Table A.7)",
+            _ if high && self.single_picture => {
+                "a single picture codes no seq_tier, so only the main tier (§ 5.4.1)"
+            }
             31 => return None,
-            _ if self.tier == Some(Tier::High) && !level.codes_tier(false) => {
+            _ if high && !level.codes_tier(false) => {
                 "the high tier needs level 4.0 or above (§ 5.4.1)"
             }
             _ if self.profile == Some(ProfileIdc::Configurable) => {

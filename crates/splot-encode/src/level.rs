@@ -45,7 +45,8 @@ pub(crate) fn choose_level(
         params.tools.level = Some(MAX_PARAMETERS);
         params.tools.tier = tiers[0];
     };
-    let codable = |level: LevelIdx, tier: Tier| tier == Tier::Main || level.codes_tier(false);
+    let codable =
+        |level: LevelIdx, tier: Tier| tier == Tier::Main || level.codes_tier(config.single_picture);
     match config.level {
         Some(level) if level == MAX_PARAMETERS => maximum(params),
         Some(level) => {

@@ -137,3 +137,49 @@ fn avm_decodes_still_pictures_like_splot() {
         }
     }
 }
+
+/// The stream of the still `source` of `config` through the [`Encoder`].
+fn encoded_still(config: &Config, source: SourceFrame) -> Vec<u8> {
+    let mut encoder = Encoder::new(config.clone()).unwrap();
+    encoder.send_frame(source).unwrap();
+    encoder.flush().unwrap();
+    let mut stream = Vec::new();
+    while let Some(packet) = encoder.receive_packet().unwrap() {
+        stream.extend(packet.data);
+    }
+    stream
+}
+
+/// A still takes a profile, a main-tier level, frame hashes and lossless
+/// coding; it refuses the high tier, which § 5.4.1 does not code under
+/// `single_picture_header_flag`, and a `cdef_on_skip_mode` other than 0.
+#[test]
+fn still_options_code_or_are_refused() {
+    use crate::{FrameHash, LevelIdx, ProfileIdc, Tier};
+    let base = still_config((64, 64), PixelFormat::Yuv420, BitDepth::Eight, 1);
+    let mut lossless = base.clone();
+    lossless.rate_control = RateControlMode::ConstantQp { qp: 0 };
+    let mut options = base.clone();
+    options.profile = Some(ProfileIdc::from_bits(0));
+    (options.level, options.tier) = (Some(LevelIdx::from_bits(8)), Some(Tier::Main));
+    options.frame_metadata.decoded_frame_hash = Some(FrameHash::PerPlane);
+    for config in [&options, &lossless] {
+        let source = panning_frame(config, 0);
+        let decoded = decode(&encoded_still(config, source.clone()));
+        if config.is_lossless() {
+            let expected: Vec<u8> = source.planes().iter().flatten().map(|&s| s as u8).collect();
+            assert_same_samples(&decoded, &expected, "lossless");
+        } else {
+            assert_eq!(decoded.len(), 64 * 64 * 3 / 2);
+        }
+    }
+    let mut high = options.clone();
+    high.tier = Some(Tier::High);
+    assert!(matches!(high.validate(), Err(Error::InvalidLevel { .. })));
+    let mut skip_mode = base;
+    skip_mode.preset_overrides = vec![("cdef_on_skip_mode".into(), "1".into())];
+    assert!(matches!(
+        skip_mode.validate(),
+        Err(Error::SinglePictureWith { .. })
+    ));
+}
