@@ -632,7 +632,8 @@ impl LrLayout {
 /// [`cdef_unit_grid`]), or is empty when no unit codes one; `ccso_blocks[p]`
 /// holds `ccso_blk` of plane `p` per [`CcsoGrid`] unit in raster order, or is
 /// empty when every unit is off; `gdf` holds the `use_gdf` flags of a frame
-/// that enables GDF; `lr_on` lists the restoring units and their type.
+/// that enables GDF (`None` or no flags: every unit is off); `lr_on` lists the
+/// restoring units and their type.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] when a filter stage rejects its inputs.
@@ -682,11 +683,9 @@ pub fn apply_loop_filters(
     sink.set_cdef_grid(Some(cdef_grid));
     sink.set_ccso_grid(ccso_unit_grid(seq, core, ccso_blocks)?.map(Arc::new));
     sink.set_cfl_ds_filter_index(seq.intra.as_ref().map_or(0, |i| i.cfl_ds_filter_index));
-    if let Some(gdf) = gdf {
-        let (grid, reference) = gdf.decoder_inputs(seq, core)?;
-        sink.set_gdf_grid(grid);
-        sink.set_gdf_reference_context(reference);
-    }
+    let (grid, reference) = GdfFlags::decoder_inputs(gdf, seq, core)?;
+    sink.set_gdf_grid(grid);
+    sink.set_gdf_reference_context(reference);
     {
         struct Scope {
             sink: crate::filters::wienerns_lr::recon::WienerNsLrReconSink<u16>,

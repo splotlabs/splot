@@ -13,12 +13,12 @@ use crate::headers::frame::IntrabcParams;
 use crate::headers::frame::restoration::default_restoration_size;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
-    FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, MfhDeblockingView, MfhFrameView,
-    QmSetLevels, QuantizationParams, SegmentationParams, SetupQmParams, TxMode,
-    WienerNsFrameFilterBank, encode_temporal_delimiter_obu, gdf_per_block_is_coded,
-    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    CcsoPlaneParams, CdefParams, CdefStrengthSet, CdefStrengthSets, CoreSeqView,
+    DeblockingFilterParams, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
+    FrameRestorationType, GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams,
+    MfhDeblockingView, MfhFrameView, QmSetLevels, QuantizationParams, SegmentationParams,
+    SetupQmParams, TxMode, WienerNsFrameFilterBank, encode_temporal_delimiter_obu,
+    gdf_per_block_is_coded, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, CdefOnSkipTxfm, ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc,
@@ -220,6 +220,10 @@ pub struct EncoderToolFlags {
     /// `seq_tier` (§ 5.4.1); a level up to 3 codes no `seq_tier` and takes
     /// only the main tier.
     pub tier: Tier,
+    /// `single_picture_header_flag` (§ 5.4.1): the reduced header of a stream
+    /// of one key frame, which omits the inter, temporal and decoder-model
+    /// elements; `max_tlayer_id` must be 0 and `implicit_output` off.
+    pub single_picture: bool,
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
@@ -595,7 +599,7 @@ pub enum EncoderHeaderError {
     /// `allow_tcq` is set, but the sequence does not code it per frame.
     #[error("allow_tcq needs choose_tcq_per_frame")]
     TcqNotChosen,
-    /// The sequence view is a single-picture view; the key-frame builder needs a stream view.
+    /// The sequence view is a single-picture view; an inter or `intra_only` builder needs a stream view.
     #[error("single-picture sequence views are not supported")]
     SinglePictureView,
     /// The canonical bits did not serialize.
@@ -650,7 +654,8 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
         });
     }
     let level = tools.level.unwrap_or(MAX_PARAMETERS_LEVEL);
-    let tier_codable = tools.tier == Tier::Main || level.codes_tier(false);
+    let single = tools.single_picture;
+    let tier_codable = tools.tier == Tier::Main || level.codes_tier(single);
     if matches!(level.get(), 22..=30 | 32..) || !tier_codable {
         return Err(EncoderHeaderError::InvalidLevel {
             level,
@@ -660,18 +665,27 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // seq_header_id
     w.write_bits(u32::from(profile.get()), 5)?;
-    w.write_flag(false)?; // single_picture_header_flag
+    w.write_flag(single)?; // single_picture_header_flag
     w.write_bits(u32::from(level.get()), 5)?;
-    if level.codes_tier(false) {
+    if level.codes_tier(single) {
         w.write_flag(tools.tier == Tier::High)?;
     }
     w.write_uvlc(u32::from(params.chroma.get()))?;
     w.write_uvlc(u32::from(params.bit_depth.get()))?;
-    w.write_bits(0, 3)?; // seq_lcr_id
-    w.write_flag(false)?; // still_picture
-    w.write_bits(u32::from(tools.max_tlayer_id.get()), 2)?;
-    w.write_bits(0, 3)?; // max_mlayer_id
-    w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
+    if single {
+        if tools.max_tlayer_id.get() > 0 || tools.implicit_output {
+            return Err(WriteError::NonCanonicalSequenceValue {
+                what: "single_picture_header_flag",
+            }
+            .into());
+        }
+    } else {
+        w.write_bits(0, 3)?; // seq_lcr_id
+        w.write_flag(false)?; // still_picture
+        w.write_bits(u32::from(tools.max_tlayer_id.get()), 2)?;
+        w.write_bits(0, 3)?; // max_mlayer_id
+        w.write_flag(!tools.implicit_output)?; // monotonic_output_order_flag
+    }
     w.write_bits(width_bits - 1, 4)?;
     w.write_bits(height_bits - 1, 4)?;
     w.write_bits(params.width - 1, width_bits)?;
@@ -689,8 +703,10 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
             w.write_uvlc(offset)?;
         }
     }
-    w.write_flag(false)?; // seq_initial_display_delay_present_flag
-    w.write_flag(false)?; // decoder_model_info_present_flag
+    if !single {
+        w.write_flag(false)?; // seq_initial_display_delay_present_flag
+        w.write_flag(false)?; // decoder_model_info_present_flag
+    }
     if tools.max_tlayer_id.get() > 0 {
         w.write_flag(false)?; // tlayer_dependency_present_flag
     }
@@ -702,8 +718,13 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     if !monochrome {
         w.write_flag(tools.sdp)?;
     }
-    if tools.sdp && !monochrome {
+    if tools.sdp && !monochrome && !single {
         w.write_flag(tools.extended_sdp)?;
+    } else if tools.extended_sdp {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "enable_extended_sdp",
+        }
+        .into());
     }
     w.write_flag(tools.ext_partitions)?;
     if tools.ext_partitions {
@@ -727,13 +748,16 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(tools.mhccp)?;
     w.write_flag(tools.ibp)?;
 
-    write_inter_config(&mut w, tools)?;
-
-    w.write_flag(tools.screen_content)?; // seq_choose_screen_content_tools
-    if tools.screen_content {
-        w.write_flag(true)?; // seq_choose_integer_mv
+    if single {
+        write_single_picture_inter_config(&mut w, tools)?;
     } else {
-        w.write_flag(false)?; // seq_force_screen_content_tools
+        write_inter_config(&mut w, tools)?;
+        w.write_flag(tools.screen_content)?; // seq_choose_screen_content_tools
+        if tools.screen_content {
+            w.write_flag(true)?; // seq_choose_integer_mv
+        } else {
+            w.write_flag(false)?; // seq_force_screen_content_tools
+        }
     }
 
     write_transform_quant_entropy_config(&mut w, tools, monochrome)?;
@@ -758,9 +782,16 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     if tools.ccso {
         w.write_flag(tools.ccso_unit_matches_sb_size)?;
     }
-    w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::AlwaysOn)?;
-    if tools.cdef_on_skip_txfm != CdefOnSkipTxfm::AlwaysOn {
-        w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::Disabled)?;
+    if !single {
+        w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::AlwaysOn)?;
+        if tools.cdef_on_skip_txfm != CdefOnSkipTxfm::AlwaysOn {
+            w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::Disabled)?;
+        }
+    } else if tools.cdef_on_skip_txfm != CdefOnSkipTxfm::Adaptive {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "cdef_on_skip_txfm",
+        }
+        .into());
     }
     w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
@@ -804,6 +835,22 @@ const NUM_SAME_REF_COMPOUND: u32 = 2;
 
 /// § 5.4.6 for a non-single-picture header with the motion vector prediction,
 /// difference and compound tools of `tools` and every other inter tool off.
+/// The § 5.4.6 elements that a `single_picture_header_flag = 1` header codes;
+/// every inter tool takes its inferred value, so its flag is not read.
+fn write_single_picture_inter_config(
+    w: &mut BitWriter,
+    tools: EncoderToolFlags,
+) -> Result<(), WriteError> {
+    w.write_flag(tools.refmvbank)?;
+    w.write_flag(tools.drl_reorder.is_none())?; // disable_drl_reorder
+    if let Some(constrain) = tools.drl_reorder {
+        w.write_flag(constrain)?; // constrain_drl_reorder
+    }
+    w.write_ns(tools.max_bvp_drl_bits_minus_1, 3)?; // ns(MAX_REF_BV_STACK_SIZE - 1)
+    w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
+    w.write_flag(tools.bawp) // enable_bawp
+}
+
 fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
     let modes = (u32::from(tools.interintra) << 3) | if tools.warp { 0b0111 } else { 0 };
     w.write_bits(modes, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
@@ -887,19 +934,25 @@ fn write_transform_quant_entropy_config(
     if !monochrome {
         w.write_flag(tools.chroma_dct_only)?;
     }
-    w.write_flag(tools.inter_ddt)?;
+    if !tools.single_picture {
+        w.write_flag(tools.inter_ddt)?;
+    }
     w.write_flag(tools.reduced_tx_part_set)?;
     if !monochrome {
         w.write_flag(tools.cctx)?;
     }
     w.write_flag(tools.tcq)?;
-    if tools.tcq {
+    if tools.tcq && !tools.single_picture {
         w.write_flag(true)?; // choose_tcq_per_frame
     }
-    w.write_flag(tools.parity_hiding)?;
-    w.write_flag(tools.avg_cdf.is_some())?; // enable_avg_cdf
-    if let Some(across_tiles) = tools.avg_cdf {
-        w.write_flag(across_tiles)?; // avg_cdf_type
+    if !tools.tcq || !tools.single_picture {
+        w.write_flag(tools.parity_hiding)?;
+    }
+    if !tools.single_picture {
+        w.write_flag(tools.avg_cdf.is_some())?; // enable_avg_cdf
+        if let Some(across_tiles) = tools.avg_cdf {
+            w.write_flag(across_tiles)?; // avg_cdf_type
+        }
     }
     let [y, u, v] = tools.plane_delta_q.map(|delta| delta != 0);
     let uv = !monochrome && (u || v);
@@ -927,11 +980,12 @@ fn write_transform_quant_entropy_config(
 /// The frame has the maximum frame size, `show_frame` semantics through
 /// `immediate_output_frame = 1`, the uniform `tiles`, no segmentation, the delta-q of `tx`,
 /// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
-/// `filters`, GDF off, the transform choices of `tx`, and no film grain.
+/// `filters`, GDF off, the transform choices of `tx`, and no film grain. A
+/// single-picture `seq` codes the § 5.18.2 header that infers the frame type.
 ///
 /// # Errors
-/// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
-/// single-picture view, `filters` that the sequence or the syntax cannot carry,
+/// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`,
+/// `filters` that the sequence or the syntax cannot carry,
 /// `tx` that is not codable, or canonical bits that do not parse completely.
 pub fn build_key_frame_header(
     seq: &CoreSeqView,
@@ -966,9 +1020,6 @@ fn key_frame_header_bits(
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
-    if seq.single_picture_header_flag {
-        return Err(EncoderHeaderError::SinglePictureView);
-    }
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     let mut w = BitWriter::new();
     write_mfh_reference(&mut w, tx.multi_frame_header)?;
@@ -978,9 +1029,11 @@ fn key_frame_header_bits(
         }
         .into());
     }
-    w.write_bits(tx.long_term_id_plus_1, seq.long_term_frame_id_bits)?;
-    w.write_flag(true)?; // immediate_output_frame
-    w.write_flag(false)?; // frame_size_override_flag
+    if !seq.single_picture_header_flag {
+        w.write_bits(tx.long_term_id_plus_1, seq.long_term_frame_id_bits)?;
+        w.write_flag(true)?; // immediate_output_frame
+        w.write_flag(false)?; // frame_size_override_flag
+    }
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
     write_intra_frame_tail(&mut w, seq, (base_q_idx, tiles, true), filters, tx)?;
     Ok(w.into_bytes())
@@ -1062,7 +1115,16 @@ pub(super) fn write_film_grain_config(
             None => Ok(()),
         };
     }
-    w.write_flag(seed.is_some())?; // apply_grain
+    if seq.single_picture_header_flag {
+        if seed.is_none() {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "apply_grain",
+            }
+            .into());
+        }
+    } else {
+        w.write_flag(seed.is_some())?; // apply_grain
+    }
     if let Some(seed) = seed {
         w.write_bits(0, 3)?; // fgm_id
         w.write_bits(u32::from(seed), 16)?;
@@ -1096,6 +1158,7 @@ pub(super) fn plane_quantization(
 /// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
 /// frame codes no CCSO reuse, and an intra or `switch_frame` no reuse flags (§ 5.18.7.12).
+/// A single picture infers `ccso_frame_flag = 1`, so off CCSO codes every `ccso_planes = 0`.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
@@ -1195,8 +1258,11 @@ pub(super) fn write_quant_and_filters(
     write_filter_params(w, seq, filters, (lr_refs, gdf), (frame_is_intra, lossless))?;
     if seq.ccso.enable_ccso && !lossless {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
-        let on = planes.iter().any(|plane| plane.ccso_planes);
-        w.write_flag(on)?; // ccso_frame_flag
+        let on =
+            seq.filter.single_picture_header_flag || planes.iter().any(|plane| plane.ccso_planes);
+        if !seq.filter.single_picture_header_flag {
+            w.write_flag(on)?; // ccso_frame_flag
+        }
         for plane in planes.iter().filter(|_| on) {
             w.write_flag(plane.ccso_planes)?;
             if plane.ccso_planes {
@@ -1255,7 +1321,10 @@ fn write_ccso_reuse(
 
 /// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()`,
 /// § 5.18.7.10 `cdef_params()`, and § 5.18.7.11 `lr_params()` of `filters`.
-/// The encoder codes every frame that is not intra as `INTER_FRAME`.
+/// The encoder codes every frame that is not intra as `INTER_FRAME`. A single
+/// picture infers `gdf_frame_enable` and `cdef_frame_enable`: off GDF codes
+/// `gdf_per_block = 1` with every `use_gdf = 0`, and off CDEF codes one zero
+/// strength set at damping 3.
 fn write_filter_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
@@ -1287,20 +1356,44 @@ fn write_filter_params(
         gdf_pic_qc_idx: None,
         gdf_pic_scale_idx: None,
     };
-    let gdf = filters.gdf.map_or(off, |gdf| GdfParams {
-        gdf_frame_enable: true,
-        gdf_per_block: Some(gdf_per_block_is_coded(seq.filter, gdf_geometry)),
-        gdf_pic_qc_idx: Some(gdf.qc_idx),
-        gdf_pic_scale_idx: Some(gdf.scale_idx),
-    });
+    let per_block = gdf_per_block_is_coded(seq.filter, gdf_geometry);
+    let single_off = seq.filter.single_picture_header_flag && seq.filter.enable_gdf && !lossless;
+    if single_off && filters.gdf.is_none() && !per_block {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "gdf_frame_enable",
+        });
+    }
+    let gdf = filters
+        .gdf
+        .or(single_off.then_some(FrameGdf::default()))
+        .map_or(off, |gdf| GdfParams {
+            gdf_frame_enable: true,
+            gdf_per_block: Some(per_block),
+            gdf_pic_qc_idx: Some(gdf.qc_idx),
+            gdf_pic_scale_idx: Some(gdf.scale_idx),
+        });
     write_gdf_params(w, &gdf, lossless, &seq.filter, gdf_geometry)?;
-    let cdef_on = !filters.cdef_strengths.is_empty();
+    let single_off = filters.cdef_strengths.is_empty()
+        && seq.filter.single_picture_header_flag
+        && seq.filter.enable_cdef
+        && !lossless;
+    let (strengths, damping) = if single_off {
+        let zero = CdefStrengthSets::from_slice(&[CdefStrengthSet::default()]).ok_or(
+            WriteError::NonCanonicalFrameHeader {
+                what: "cdef_strengths",
+            },
+        )?;
+        (zero, 3)
+    } else {
+        (filters.cdef_strengths, filters.cdef_damping)
+    };
+    let cdef_on = !strengths.is_empty();
     let cdef = CdefParams {
         cdef_frame_enable: cdef_on,
-        cdef_damping: cdef_on.then_some(filters.cdef_damping),
-        cdef_strengths: cdef_on.then_some(filters.cdef_strengths.len() as u8),
+        cdef_damping: cdef_on.then_some(damping),
+        cdef_strengths: cdef_on.then_some(strengths.len() as u8),
         cdef_on_skip_txfm_frame_enable: cdef_on.then_some(filters.cdef_on_skip),
-        strengths: filters.cdef_strengths,
+        strengths,
     };
     write_cdef_params(w, &cdef, lossless, num_planes, &seq.filter)?;
     let geometry = LrGeometry::new(gdf_geometry.sb_size, seq.chroma_format_idc);
@@ -1584,3 +1677,7 @@ pub(super) const fn obu_header(obu_type: ObuType, tlayer: TemporalLayerId) -> Ob
 #[cfg(test)]
 #[path = "encoder_stream_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "encoder_single_picture_tests.rs"]
+mod single_picture_tests;

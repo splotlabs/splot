@@ -5797,14 +5797,14 @@ id = "ENC-LOSSLESS"
 name = "Encoder frame-level lossless coding"
 category = "encoder"
 kind = "encoder-tool"
-spec_sections = ["5.4.8", "5.18.2", "5.18.6.1", "5.18.8.1", "5.20.5.5", "5.20.5.6", "5.20.6.1", "5.20.7.27", "5.20.7.29", "5.20.8.1", "5.20.8.2", "7.15.2.2", "7.15.4"]
+spec_sections = ["5.4.8", "5.18.2", "5.18.3.4", "5.18.6.1", "5.18.8.1", "5.20.5.3", "5.20.5.4", "5.20.5.5", "5.20.5.6", "5.20.6.1", "5.20.7.27", "5.20.7.29", "5.20.8.1", "5.20.8.2", "7.15.2.2", "7.15.4"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/kernels/forward_transform.rs"
 change_id = "enc-lossless"
 owner = "encoder"
 risk = "medium"
-notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Inter blocks code lossless_tx_size = 0 and lossless_inter_tx_type = 0 unless the off-by-default preset field lossless_inter_tx asks: 1 codes each inter 4x4 luma unit with the cheaper of DCT_DCT and IDTX (5.20.8.2), 2 also gives each inter leaf above 4x4 an RD trial with lossless_tx_size = 1, one IDTX per find_tx_size(Min(32, W), Min(32, H)) unit (5.20.6.1, 7.15.4), whose chroma 4x4 units take IDTX; chroma of 4x4 units takes the type of the collocated luma unit, or of the leaf's first unit when the chroma reference is another leaf (5.20.7.29). The off-by-default preset field lossless_dpcm gives each intra leaf RD trials with use_dpcm_y and use_dpcm_uv in V_PRED and H_PRED (5.20.5.5, 5.20.5.6): the residual differences along the direction go into the Walsh-Hadamard transform, which the 7.14.4 cumulative sum inverts. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, and for now IntraBC, palette unless the off-by-default preset field lossless_palette asks (it keeps palette and so allow_screen_content_tools: the luma palette trials of intra leaves over 4x4 Walsh-Hadamard residual units, 5.20.8.1, 5.20.6.1), and FSC/intra IDTX unless the off-by-default preset field lossless_fsc asks: 1 keeps enable_idtx_intra and gives the winning luma mode of each intra leaf RD trials with fsc_mode at lossless_tx_size 0 and 1 (5.20.6.1; IDTX luma and chroma, 5.20.7.29), 2 also codes enable_fsc, whose FSC coefficient path inter IDTX luma takes too (5.20.7.27); SDP is on, and SDP chroma-part leaves code Walsh-Hadamard units; segmentation, quant_matrices, film grain and resize are refused."
+notes = "ConstantQp qp 0 (CLI --lossless, 2026-11-22; qp 0 was an error before) codes every frame at base_q_idx 0 with zero deltas, so CodedLossless = 1: TX_MODE_ONLY_4X4, no TCQ, parity hiding or loop filter syntax, every block 4x4 Walsh-Hadamard units whose levels invert the 7.15.2.2 lifting exactly. Inter blocks code lossless_tx_size = 0 and lossless_inter_tx_type = 0 unless the off-by-default preset field lossless_inter_tx asks: 1 codes each inter 4x4 luma unit with the cheaper of DCT_DCT and IDTX (5.20.8.2), 2 also gives each inter leaf above 4x4 an RD trial with lossless_tx_size = 1, one IDTX per find_tx_size(Min(32, W), Min(32, H)) unit (5.20.6.1, 7.15.4), whose chroma 4x4 units take IDTX; chroma of 4x4 units takes the type of the collocated luma unit, or of the leaf's first unit when the chroma reference is another leaf (5.20.7.29). The off-by-default preset field lossless_dpcm gives each intra leaf RD trials with use_dpcm_y and use_dpcm_uv in V_PRED and H_PRED (5.20.5.5, 5.20.5.6): the residual differences along the direction go into the Walsh-Hadamard transform, which the 7.14.4 cumulative sum inverts. PresetParams::set_lossless switches off the searches that lossless forbids or that change samples, IntraBC unless the off-by-default preset field lossless_intrabc asks (it keeps intrabc: the BV search of key and intra-only frames; an IntraBC leaf is is_inter, so lossless_inter_tx gives it the 4x4 type choice and the lossless_tx_size = 1 trial, and its chroma 4x4 units take the type of the leaf's first luma unit because FrameIsIntra, 5.20.7.29), palette unless the off-by-default preset field lossless_palette asks (it keeps palette and so allow_screen_content_tools: the luma palette trials of intra leaves over 4x4 Walsh-Hadamard residual units, 5.20.8.1, 5.20.6.1), and FSC/intra IDTX unless the off-by-default preset field lossless_fsc asks: 1 keeps enable_idtx_intra and gives the winning luma mode of each intra leaf RD trials with fsc_mode at lossless_tx_size 0 and 1 (5.20.6.1; IDTX luma and chroma, 5.20.7.29), 2 also codes enable_fsc, whose FSC coefficient path inter IDTX luma takes too (5.20.7.27); SDP is on, and SDP chroma-part leaves code Walsh-Hadamard units; segmentation, quant_matrices, film grain and resize are refused."
 
 [feature.status]
 mapped = "done"
@@ -5819,7 +5819,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_dpcm_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_fsc_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_palette_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_inter_tx_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/kernels/forward_transform_tests.rs::lossless_walsh_hadamard_round_trips_exactly", "crates/splot-encode/src/kernels/forward_transform_tests.rs::lossless_dpcm_round_trips_exactly", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::lossless_key_frame_parses_as_coded_lossless", "crates/splot-cli/tests/encode_decode_roundtrip.rs::lossless_clips_decode_to_the_source_samples"]
+tests = ["crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_dpcm_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_fsc_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_palette_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_intrabc_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_intrabc_chroma_follows_the_leaf_start", "crates/splot-encode/src/intra_frame_lossless_tests.rs::lossless_inter_tx_streams_decode_to_the_source_on_any_thread_count", "crates/splot-encode/src/kernels/forward_transform_tests.rs::lossless_walsh_hadamard_round_trips_exactly", "crates/splot-encode/src/kernels/forward_transform_tests.rs::lossless_dpcm_round_trips_exactly", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::lossless_key_frame_parses_as_coded_lossless", "crates/splot-cli/tests/encode_decode_roundtrip.rs::lossless_clips_decode_to_the_source_samples"]
 commands = ["cargo test -p splot-encode lossless --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_lossless -- --ignored"]
 fixtures = []
 diagnostics = []
@@ -22614,6 +22614,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::requested_level_and_tier_reach_the_parsed_header_or_are_refused", "crates/splot-core/src/level.rs::tests::rate_limits_follow_tables_a8_and_a9", "crates/splot-encode/src/intra_frame_level_tests.rs::automatic_levels_are_the_lowest_that_hold", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_refuse_the_limits_the_stream_breaks", "crates/splot-encode/src/intra_frame_level_tests.rs::uncodable_levels_are_refused", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_decode_to_the_encoder_recon", "crates/splot-cli/tests/encode_decode_roundtrip.rs::requested_levels_validate_and_decode"]
 commands = ["cargo test -p splot-core level --locked", "cargo test -p splot-encode level --locked", "cargo test -p splot-cli --test encode_decode_roundtrip requested_levels --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SINGLE-PICTURE"
+name = "Encoder single-picture stream"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "5.4.6", "5.4.8", "5.4.10", "5.18.2", "5.18.7.9", "5.18.7.10", "5.18.7.12", "5.18.10.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-single-picture"
+owner = "encoder"
+risk = "medium"
+notes = "Config::single_picture and CLI --still (2026-11-27, off by default): the sequence header codes single_picture_header_flag = 1 with the reduced § 5.4.1 header (seq_tier only through LevelIdx::codes_tier(true)), the single-picture inter config and none of the elements that § 5.4.8 and § 5.4.10 infer; the key frame codes the § 5.18.2 header that infers KEY_FRAME. A second frame is Error::SecondSinglePicture, and the CLI reads one frame. § 5.18.7.9, .10 and .12 infer the GDF, CDEF and CCSO frame enables, so an off filter codes gdf_per_block = 1 with every use_gdf = 0, one zero CDEF strength set, or every ccso_planes = 0. A frame inside one GDF block (both sides at most 128) codes no gdf_per_block, so its sequence enables no GDF. A frame without noise takes a sequence without film grain, because apply_grain is inferred. allow_screen_content_tools is coded as 1 under the inferred SELECT."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::single_picture_header_parses_with_its_inferred_values", "crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::single_picture_refuses_forms_the_reduced_header_cannot_carry", "crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::truncated_single_picture_header_does_not_parse", "crates/splot-encode/src/intra_frame_still_tests.rs::still_pictures_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_still_tests.rs::single_picture_encoder_refuses_a_second_frame", "crates/splot-cli/tests/encode_decode_roundtrip.rs::still_pictures_validate_and_decode"]
+commands = ["cargo test -p splot-core single_picture --locked", "cargo test -p splot-encode --lib still --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_still_pictures -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip still_pictures --locked"]
 fixtures = []
 diagnostics = []
 

@@ -321,6 +321,10 @@ pub(super) fn lr_reference_filters<'a>(
             .ref_valid
             .and_then(|valid| valid.get(slot).copied())
             == Some(false)
+            || reference_state
+                .ref_order_hint
+                .and_then(|hints| hints.get(slot).copied())
+                == Some(RESTRICTED_ORDER_HINT)
         {
             continue;
         }
@@ -601,5 +605,25 @@ mod tests {
         assert_eq!(counts[0], 1);
         assert_eq!(entries[0].len(), 1);
         assert_eq!(entries[0][0], None);
+    }
+
+    #[test]
+    fn reference_filter_search_skips_restricted_references() {
+        let class_counts = [[1u8, 1, 0], [2, 0, 1]];
+        let taps: [SlotFrameFilterTaps; 2] = Default::default();
+        let state = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &[true; 2],
+            &[0, RESTRICTED_ORDER_HINT],
+            &[64; 2],
+            &[64; 2],
+            &[100; 2],
+        )
+        .with_lr_frame_filter_class_counts(&class_counts)
+        .with_lr_frame_filter_taps(&taps);
+
+        let (counts, entries) = lr_reference_filters(&state, &[1, 0], 2);
+
+        assert_eq!(counts, [1, 1, 1]);
+        assert_eq!(entries[0].len(), 1);
     }
 }

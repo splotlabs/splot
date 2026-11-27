@@ -944,13 +944,13 @@ const fn choice(rst_ref_pic_idx: Option<u8>, bank: &WienerNsFrameFilterBank) -> 
     }
 }
 
-/// A bank of one class with every coefficient `0`, coded with subset `0`.
 /// A zero luma Wiener-NS filter: with `RESTORE_PC_WIENER` disabled it gives
 /// the luma unit layout a codable frame type before any bank is fitted.
 pub(super) fn luma_probe() -> Result<FrameWienerNs> {
     Ok(choice(None, &one_class_bank(0, false, &[0; LUMA_COEFFS])?))
 }
 
+/// A bank without classes.
 fn empty_bank() -> WienerNsFrameFilterBank {
     WienerNsFrameFilterBank {
         classes: splot_core::tile::InlineVec::default(),

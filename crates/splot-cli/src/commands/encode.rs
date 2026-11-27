@@ -89,6 +89,10 @@ pub(crate) struct EncodeArgs {
     /// default.
     #[arg(long)]
     multi_frame_header: bool,
+    /// Single picture: codes the first input frame as a still picture
+    /// (`single_picture_header_flag = 1`) and reads no other frame.
+    #[arg(long)]
+    still: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -587,6 +591,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     };
     config.fast_decode = args.fast_decode;
     config.multi_frame_header = args.multi_frame_header;
+    config.single_picture = args.still;
     let ivf = args.output_format == OutputFormat::Ivf;
     if ivf && (u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err()) {
         bail!("IVF output supports at most 65535 samples per side");
@@ -633,7 +638,11 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         Ok(())
     };
 
-    let limit = args.limit.map_or(u64::MAX, NonZeroU64::get);
+    let limit = if args.still {
+        1
+    } else {
+        args.limit.map_or(u64::MAX, NonZeroU64::get)
+    };
     for pts in 0..limit {
         let Some(planes) = reader.read_frame().context("failed to read Y4M input")? else {
             break;

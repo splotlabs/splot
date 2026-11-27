@@ -2281,6 +2281,8 @@ mod repeat;
 mod restriction;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
+#[path = "intra_frame_still_tests.rs"]
+mod still;
 #[path = "intra_frame_switch_tests.rs"]
 mod switch;
 #[path = "intra_frame_tf_tests.rs"]

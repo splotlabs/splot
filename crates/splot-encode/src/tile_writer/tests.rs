@@ -100,6 +100,7 @@ impl Case {
                 profile: None,
                 level: None,
                 tier: splot_core::headers::sequence::Tier::Main,
+                single_picture: false,
                 seq_tiles: None,
                 disable_loopfilters_across_tiles: false,
                 plane_delta_q: [0; 3],
