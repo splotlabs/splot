@@ -401,7 +401,7 @@ impl BlockEvidenceState {
                 (visible.x() + visible.width()).div_ceil(sx) - x,
                 (visible.y() + visible.height()).div_ceil(sy) - y,
             ) {
-                state.stages = stages::intersect(bounds, region)
+                state.stages = intersection(bounds, region)
                     .map(|region| stages::StageSamples::new(plane, region, bounds));
             }
         }
@@ -575,7 +575,7 @@ impl BlockEvidenceState {
         if state.stages.is_none()
             && let Some((requested, region)) = self.request.stage_samples
             && requested == plane
-            && let Some(region) = stages::intersect(bounds, region)
+            && let Some(region) = intersection(bounds, region)
         {
             state.stages = Some(stages::StageSamples::new(plane, region, bounds));
         }

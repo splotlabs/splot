@@ -8,7 +8,7 @@ use splot_recon::{
     BitDepth, CurrentFrameSurface, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
 };
 
-use super::{BlockEvidenceState, BlockEvidenceStatus};
+use super::{BlockEvidenceState, BlockEvidenceStatus, intersection};
 
 /// Sample boundaries in the AV2 decoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,7 +126,7 @@ impl StageSamples {
         budget: usize,
         mut sample: impl FnMut(usize, usize) -> Option<i32>,
     ) -> Result<(), BlockEvidenceStatus> {
-        let Some(overlap) = intersect(self.region, source) else {
+        let Some(overlap) = intersection(self.region, source) else {
             return Ok(());
         };
         let budget = budget.saturating_sub(self.bytes());
@@ -200,24 +200,6 @@ impl StageSamples {
     }
 }
 
-pub(super) fn intersect(a: PlaneRect, b: PlaneRect) -> Option<PlaneRect> {
-    let x = a.x().max(b.x());
-    let y = a.y().max(b.y());
-    PlaneRect::new(
-        x,
-        y,
-        a.x()
-            .saturating_add(a.width())
-            .min(b.x().saturating_add(b.width()))
-            .checked_sub(x)?,
-        a.y()
-            .saturating_add(a.height())
-            .min(b.y().saturating_add(b.height()))
-            .checked_sub(y)?,
-    )
-    .ok()
-}
-
 pub(super) fn reference<T: ReconSample>(
     state: &super::BlockEvidenceState,
     frame: &splot_recon::DecodedFrame<T>,
@@ -266,7 +248,7 @@ pub(crate) fn captures_block(plane: PlaneId, rect: Option<PlaneRect>) -> bool {
             .as_ref()
             .and_then(|state| state.stage_region())
             .is_some_and(|(selected, region)| {
-                plane == selected && rect.and_then(|rect| intersect(rect, region)).is_some()
+                plane == selected && rect.and_then(|rect| intersection(rect, region)).is_some()
             })
     })
 }
@@ -321,7 +303,7 @@ pub(crate) fn surface_prediction<T: ReconSample>(
     if selected != plane {
         return;
     }
-    let Some(area) = intersect(rect, region) else {
+    let Some(area) = intersection(rect, region) else {
         return;
     };
     let Ok(mut rows) = sink.rect_rows(plane, area) else {
