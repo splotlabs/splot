@@ -618,3 +618,147 @@ fn tile_decode_failure_preserves_the_selected_identity() {
     let coded = report.frame.unwrap().provenance.coded;
     assert_eq!((coded.user_data, coded.offset.get()), (17, 16));
 }
+
+#[test]
+fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
+    use splot_decode::block_evidence::{
+        BlockEntropyScope, BlockEvidenceId, BlockTransformId, EntropyCoding,
+    };
+    use splot_recon::PlaneId;
+
+    // AVM a1ec4594, pre-update aom_read_symbol observations from av2_read_coeffs_txb.
+    // Each expected row omits the terminal zero and keeps AVM's descending ICDF.
+    const FILTERS: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    );
+    struct Case {
+        fixture: &'static [u8],
+        tile: usize,
+        coded: PlaneRect,
+        cdf: &'static [(usize, u32, &'static [u16])],
+        bypass: &'static [(usize, u32, u8)],
+    }
+    let cases = [
+        Case {
+            fixture: TILES,
+            tile: 0,
+            coded: rect(0, 0, 64, 64),
+            cdf: &[
+                (0, 0, &[85]),
+                (1, 0, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
+                (2, 4, &[4545, 1120, 457, 241]),
+                (3, 3, &[18803, 11789, 6250]),
+                (4, 0, &[12660]),
+            ],
+            bypass: &[],
+        },
+        Case {
+            fixture: TILES,
+            tile: 1,
+            coded: rect(64, 0, 64, 32),
+            cdf: &[
+                (0, 0, &[85]),
+                (1, 4, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
+                (2, 0, &[12404]),
+                (4, 0, &[584, 73, 24, 20]),
+            ],
+            bypass: &[(3, 1, 2)],
+        },
+        Case {
+            fixture: FILTERS,
+            tile: 0,
+            coded: rect(0, 0, 32, 32),
+            cdf: &[
+                (0, 0, &[32164]),
+                (1, 7, &[32134, 30991, 28895, 26475, 20115, 8943, 8056]),
+                (3, 1, &[14442]),
+                (5, 0, &[477, 20]),
+            ],
+            bypass: &[(2, 3, 2), (4, 255, 8)],
+        },
+    ];
+    for case in cases {
+        let block = BlockEvidenceId::new(case.tile, BlockEvidenceTree::Shared, case.coded);
+        let transform = BlockTransformId::new(block, PlaneId::Y, case.coded);
+        let scope = BlockEntropyScope::Transform(transform);
+        let (report, pictures) = capture(
+            case.fixture,
+            4,
+            BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX).with_entropy(scope),
+        );
+        let mut ordinary = Decoder::new(settings(1)).unwrap();
+        assert_eq!(
+            picture_hashes(&pictures),
+            picture_hashes(&decode(&mut ordinary, case.fixture).unwrap())
+        );
+        assert_eq!(report.status, BlockEvidenceStatus::Complete, "{scope:?}");
+        assert!(report.records.is_empty());
+        let evidence = report.entropy.unwrap();
+        assert_eq!(evidence.scope, scope);
+        assert!(evidence.tile_payload_bytes > 0);
+        let mut ordinal = 0;
+        for symbol in &evidence.symbols {
+            assert_eq!(symbol.ordinal, ordinal);
+            assert!(symbol.estimated_bits().unwrap().is_finite());
+            ordinal += u64::from(symbol.bypass_bits.max(1));
+        }
+        assert_eq!(ordinal, evidence.end_ordinal);
+        assert_eq!(evidence.symbols[0].syntax.unwrap().key, "all_zero");
+        assert_eq!(evidence.symbols[1].syntax.unwrap().key, "eob_pt");
+        for &(index, value, cutoffs) in case.cdf {
+            let symbol = evidence.symbols[index];
+            assert_eq!(symbol.coding, EntropyCoding::Cdf);
+            assert_eq!(symbol.value, value);
+            let cdf = symbol.cdf.unwrap();
+            assert_eq!(usize::from(cdf.arity), cutoffs.len() + 1);
+            assert_eq!(cdf.adaptation_count, 0);
+            for (&actual, &expected) in cdf.cutoffs.iter().zip(cutoffs) {
+                assert_eq!(actual, 32768 - expected);
+            }
+        }
+        for &(index, value, bits) in case.bypass {
+            let symbol = evidence.symbols[index];
+            assert_eq!(symbol.coding, EntropyCoding::Bypass);
+            assert_eq!(symbol.value, value);
+            assert_eq!(symbol.bypass_bits, bits);
+            assert_eq!(symbol.estimated_bits(), Some(f64::from(bits)));
+        }
+    }
+}
+
+#[test]
+fn entropy_capture_respects_record_byte_and_cancellation_limits() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId, EntropySymbol};
+
+    let block = BlockEvidenceId::new(0, BlockEvidenceTree::Shared, rect(0, 0, 64, 64));
+    let scope = BlockEntropyScope::Block(block);
+    let mut ordinary = Decoder::new(settings(1)).unwrap();
+    let expected = picture_hashes(&decode(&mut ordinary, TILES).unwrap());
+
+    for (max_events, max_bytes) in [
+        (2, usize::MAX),
+        (usize::MAX, 3 * size_of::<EntropySymbol>() - 1),
+    ] {
+        let (report, pictures) = capture(
+            TILES,
+            1,
+            BlockEvidenceRequest::new(|_| true, None, max_events, max_bytes).with_entropy(scope),
+        );
+        assert_eq!(report.status, BlockEvidenceStatus::Truncated);
+        let evidence = report.entropy.unwrap();
+        assert_eq!(evidence.symbols.len(), 2);
+        assert!(evidence.symbols.capacity() <= 2);
+        assert!(evidence.end_ordinal > evidence.symbols[1].ordinal);
+        assert_eq!(picture_hashes(&pictures), expected);
+    }
+
+    let (report, pictures) = capture(
+        TILES,
+        1,
+        BlockEvidenceRequest::new(|_| true, None, 100, usize::MAX)
+            .with_entropy(scope)
+            .with_cancellation(|| true),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Cancelled);
+    assert_eq!(picture_hashes(&pictures), expected);
+}

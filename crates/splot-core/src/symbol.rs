@@ -11,6 +11,10 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx2;
+
+#[cfg(feature = "entropy-observation")]
+#[path = "symbol_observation.rs"]
+mod observation;
 #[cfg(target_arch = "aarch64")]
 use fearless_simd::Neon;
 #[cfg(target_arch = "x86_64")]
@@ -19,6 +23,8 @@ use fearless_simd::SimdMask;
 use fearless_simd::{
     Bytes, Level, Select, Simd, SimdBase, SimdInt, SimdInto, i16x8, mask16x8, u16x8, u64x2,
 };
+#[cfg(feature = "entropy-observation")]
+pub use observation::*;
 
 /// The token of the lane reads: AVX2 on x86-64, NEON on AArch64.
 #[cfg(target_arch = "x86_64")]
@@ -744,6 +750,10 @@ pub struct SymbolDecoder<'a> {
     payload_bits: i64,
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
+    #[cfg(feature = "entropy-observation")]
+    observer: Option<EntropyObserver>,
+    #[cfg(feature = "entropy-observation")]
+    observe_entropy: bool,
 }
 
 impl<'a> SymbolDecoder<'a> {
@@ -793,7 +803,84 @@ impl<'a> SymbolDecoder<'a> {
             payload_bits,
             frame_symbol_count: 0,
             config,
+            #[cfg(feature = "entropy-observation")]
+            observer: None,
+            #[cfg(feature = "entropy-observation")]
+            observe_entropy: false,
         })
+    }
+
+    /// Replaces the observer for subsequent arithmetic reads.
+    #[cfg(feature = "entropy-observation")]
+    pub fn set_entropy_observer(&mut self, observer: Option<EntropyObserver>) {
+        self.observe_entropy = observer.is_some();
+        self.observer = observer;
+    }
+
+    /// Enables or pauses recording to the attached observer.
+    #[cfg(feature = "entropy-observation")]
+    pub fn set_entropy_observation_active(&mut self, active: bool) {
+        self.observe_entropy = active && self.observer.is_some();
+    }
+
+    /// Whether a subsequent arithmetic read records evidence.
+    #[cfg(feature = "entropy-observation")]
+    #[must_use]
+    pub const fn observes_entropy(&self) -> bool {
+        self.observe_entropy
+    }
+
+    /// Adds syntax context to the next arithmetic read.
+    #[cfg(feature = "entropy-observation")]
+    pub fn annotate_entropy(&self, syntax: EntropySyntax) {
+        if self.observe_entropy
+            && let Some(observer) = &self.observer
+        {
+            observer.annotate(syntax);
+        }
+    }
+
+    #[cfg(feature = "entropy-observation")]
+    #[cold]
+    fn observe_cdf<T: CdfStorage, const N: usize>(
+        &self,
+        cdf: &[T],
+        value: u32,
+        cur: u32,
+        prev: u32,
+        updates: bool,
+    ) {
+        if let Some(observer) = &self.observer {
+            observer.push(EntropySymbol {
+                ordinal: 0,
+                syntax: None,
+                value,
+                coding: EntropyCoding::Cdf,
+                bypass_bits: 0,
+                cdf: Some(EntropyCdf::new(cdf, N, updates)),
+                range: self.range() as u16,
+                interval: (prev.saturating_sub(cur) >> 16) as u16,
+            });
+        }
+    }
+
+    #[cfg(feature = "entropy-observation")]
+    #[cold]
+    fn observe_bypass(&self, value: u32, bits: u32, coding: EntropyCoding) {
+        if bits != 0
+            && let Some(observer) = &self.observer
+        {
+            observer.push(EntropySymbol {
+                ordinal: 0,
+                syntax: None,
+                value,
+                coding,
+                bypass_bits: bits as u8,
+                cdf: None,
+                range: 0,
+                interval: 0,
+            });
+        }
     }
 
     /// Tops the buffered window back up to [`DIF_BUFFER_BITS`] future bits,
@@ -953,6 +1040,10 @@ impl<'a> SymbolDecoder<'a> {
             .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
         self.advance_bypass(consumed, symbol_value);
         self.count_symbols(u64::from(consumed));
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_bypass(value, consumed, EntropyCoding::Unary);
+        }
 
         Ok(value)
     }
@@ -1017,6 +1108,16 @@ impl<'a> SymbolDecoder<'a> {
 
         if prev.saturating_sub(cur) == 0 {
             return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+        }
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_cdf::<T, N>(
+                cdf,
+                symbol as u32,
+                cur,
+                prev,
+                self.config.cdf_update == CdfUpdateMode::Enabled,
+            );
         }
         self.consume(cur, prev);
 
@@ -1117,6 +1218,10 @@ impl<'a> SymbolDecoder<'a> {
         let rest = if one { scaled } else { scaled - split };
         self.advance_bypass(1, rest as u32);
         self.count_symbols(1);
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_bypass(u32::from(one), 1, EntropyCoding::Bypass);
+        }
         one
     }
 
@@ -1158,7 +1263,12 @@ impl<'a> SymbolDecoder<'a> {
             *run = self.refill_run(*run);
         }
         run.left -= 1;
-        (run.quotient >> run.left) & 1 == 0
+        let one = (run.quotient >> run.left) & 1 == 0;
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_bypass(u32::from(one), 1, EntropyCoding::Bypass);
+        }
+        one
     }
 
     #[expect(
@@ -1199,6 +1309,10 @@ impl<'a> SymbolDecoder<'a> {
             return self.read_trusted_lanes::<N>(token, cdf, symbol_value, update);
         }
         let (symbol, cur, prev) = early_exit_search::<u16, N>(cdf, self.dif, self.range_hi);
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_cdf::<u16, N>(cdf, symbol as u32, cur, prev, update);
+        }
         self.consume(cur, prev);
         if update {
             let state = cdf[N - 1];
@@ -1248,6 +1362,10 @@ impl<'a> SymbolDecoder<'a> {
             cur = if above { boundaries[i + 1] } else { cur };
             prev = if above { boundaries[i] } else { prev };
             symbol += u32::from(above);
+        }
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_cdf::<u16, N>(cdf, symbol as u32, cur, prev, update);
         }
         self.consume(cur, prev);
         if update {
@@ -1303,6 +1421,10 @@ impl<'a> SymbolDecoder<'a> {
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
             row_search_lanes::<N>(token, cdf, symbol_value, self.range());
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_cdf::<u16, N>(cdf, symbol, cur << 16, prev << 16, update);
+        }
         self.consume(cur << 16, prev << 16);
         if update {
             let state = cdf[N - 1];
@@ -1422,7 +1544,12 @@ impl<'a> SymbolDecoder<'a> {
         let range = u64::from(self.range().max(1));
         let quotient = dividend / range;
         self.advance_bypass(bits, (dividend - quotient * range) as u32);
-        (!quotient & ((1 << bits) - 1)) as u32
+        let value = (!quotient & ((1 << bits) - 1)) as u32;
+        #[cfg(feature = "entropy-observation")]
+        if self.observe_entropy {
+            self.observe_bypass(value, bits, EntropyCoding::Bypass);
+        }
+        value
     }
 
     #[inline]

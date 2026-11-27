@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [features]
+entropy-observation = []
 # Counts decoded symbols in builds without debug assertions too, for tests
 # that check `SymbolDecoder::symbol_count` in release builds.
 symbol-count = []

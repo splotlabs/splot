@@ -448,6 +448,8 @@ pub(crate) struct DecodeTileWorkUnit {
     /// § 5.19 `BruTileActives[ tileRow ][ tileCol ]` of a `use_bru == 1` frame; `None`
     /// when `use_bru == 0`.
     bru_tile_active: Option<bool>,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) entropy_transform: Option<crate::block_evidence::BlockTransformId>,
 }
 
 impl DecodeTileWorkUnit {
@@ -783,6 +785,8 @@ pub(crate) fn plan_tile_payload_boundary_with_storage<'a>(
             coeff_frame_facts: input.frame.coeff_frame_facts,
             cdf,
             bru_tile_active: None,
+            #[cfg(feature = "block-evidence")]
+            entropy_transform: None,
         });
     }
     Ok(DecodeTilePayloadPlan {

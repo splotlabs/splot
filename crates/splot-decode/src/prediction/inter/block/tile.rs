@@ -254,11 +254,32 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             self.sink.core.frame_is_intra == Some(true),
         );
         debug_assert_eq!(frontier.bru_active(), ACTIVE);
+        #[cfg(feature = "block-evidence")]
+        let entropy = self
+            .evidence(work_unit.tile_num() as usize)
+            .and_then(|evidence| evidence.start_entropy(frontier));
+        #[cfg(feature = "block-evidence")]
+        if let Some((scope, observer)) = &entropy {
+            symbols.set_entropy_observer(Some(observer.clone()));
+            if let crate::block_evidence::BlockEntropyScope::Transform(transform) = scope {
+                work_unit.entropy_transform = Some(*transform);
+                symbols.set_entropy_observation_active(false);
+            }
+        }
         let leaf = if ACTIVE {
             decode_block(work_unit, symbols, frontier, self, neighbours)
         } else {
             super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
-        }?;
+        };
+        #[cfg(feature = "block-evidence")]
+        if let Some((scope, observer)) = entropy {
+            symbols.set_entropy_observer(None);
+            work_unit.entropy_transform = None;
+            if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
+                evidence.finish_entropy(scope, work_unit.tile_size(), &observer);
+            }
+        }
+        let leaf = leaf?;
         #[cfg(feature = "block-evidence")]
         if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {
             evidence::observe_leaf(evidence, self, frontier);

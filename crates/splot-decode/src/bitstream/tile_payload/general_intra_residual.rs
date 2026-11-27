@@ -985,6 +985,45 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let Some(tx) = TX_GEOMETRY.get(tx_size) else {
         return Err(invalid_reconstruction_state_error("transform size"));
     };
+    #[cfg(feature = "block-evidence")]
+    let scoped = work_unit.entropy_transform.is_some_and(|transform| {
+        transform.plane.index() == block.plane
+            && transform.coded.x() == block.x
+            && transform.coded.y() == block.y
+            && Some(transform.coded.width()) == TX_WIDTH.get(tx_size).map(|width| *width as usize)
+            && Some(transform.coded.height())
+                == TX_HEIGHT.get(tx_size).map(|height| *height as usize)
+    });
+    #[cfg(feature = "block-evidence")]
+    if scoped {
+        symbols.set_entropy_observation_active(true);
+    }
+    let result = read_plane_coeffs(
+        work_unit, symbols, context, arena, block, tx, tx_size, lossless,
+    );
+    #[cfg(feature = "block-evidence")]
+    if scoped {
+        symbols.set_entropy_observation_active(false);
+    }
+    result
+}
+
+#[expect(
+    clippy::inline_always,
+    clippy::too_many_arguments,
+    reason = "keep transform input in the caller's frame"
+)]
+#[inline(always)]
+fn read_plane_coeffs(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
+    block: &PlaneCoeffBlock,
+    tx: &'static TxGeometry,
+    tx_size: usize,
+    lossless: bool,
+) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let lines = context
         .block_lines(
             block.plane,
@@ -1002,10 +1041,25 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     );
     let cdfs = work_unit.cdf.tile_cdfs_mut();
     let rows = cdfs.block_rows_mut();
+    let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        use splot_core::symbol::EntropySyntax;
+
+        let syntax = if block.plane == 2 {
+            EntropySyntax::new("all_zero", "v_txb_skip_ctx", [ctx as u16, 0, 0])
+        } else {
+            EntropySyntax::new(
+                "all_zero",
+                "plane_type,tx_size_ctx,txb_skip_ctx",
+                [plane_type as u16, u16::from(tx.size_ctx), ctx as u16],
+            )
+        };
+        symbols.annotate_entropy(syntax);
+    }
     let row = if block.plane == 2 {
         row_at(rows.v_txb_skip(), ctx)
     } else {
-        let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
         row_at(
             row_at(row_at(rows.txb_skip(), plane_type), tx.size_ctx.into()),
             ctx,

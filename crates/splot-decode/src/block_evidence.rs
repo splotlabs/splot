@@ -5,7 +5,9 @@
 //!
 //! Feature tracking: `DECODE-STREAMING-API`.
 
+mod entropy;
 mod prediction;
+pub use entropy::*;
 mod transform;
 pub use prediction::*;
 pub(crate) use transform::DecodedTransformUnit;
@@ -67,6 +69,7 @@ pub struct BlockEvidenceRequest {
     frame_limit: NonZeroUsize,
     kind: BlockEvidenceKind,
     transform_details: Option<BlockTransformId>,
+    entropy: Option<BlockEntropyScope>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
@@ -91,6 +94,7 @@ impl BlockEvidenceRequest {
             frame_limit: NonZeroUsize::MIN,
             kind: BlockEvidenceKind::PartitionsAndBlocks,
             transform_details: None,
+            entropy: None,
             cancelled: None,
         }
     }
@@ -109,6 +113,7 @@ impl BlockEvidenceRequest {
     pub fn with_kind(mut self, kind: BlockEvidenceKind) -> Self {
         self.kind = kind;
         self.transform_details = None;
+        self.entropy = None;
         self
     }
 
@@ -116,7 +121,17 @@ impl BlockEvidenceRequest {
     #[must_use]
     pub fn with_transform_details(mut self, transform: BlockTransformId) -> Self {
         self.transform_details = Some(transform);
+        self.entropy = None;
         self.kind = BlockEvidenceKind::Transforms;
+        self
+    }
+
+    /// Collects symbols from one exact block or transform within each selected frame.
+    /// The event and byte budgets apply to the symbol records.
+    #[must_use]
+    pub fn with_entropy(mut self, scope: BlockEntropyScope) -> Self {
+        self.entropy = Some(scope);
+        self.transform_details = None;
         self
     }
 
@@ -263,6 +278,8 @@ pub struct BlockEvidenceReport {
     pub frame: Option<BlockEvidenceFrame>,
     /// Records that satisfied the selection before capture stopped.
     pub records: Vec<BlockEvidenceRecord>,
+    /// Symbol observations when the decoder found the requested scope.
+    pub entropy: Option<BlockEntropyEvidence>,
 }
 
 /// The receive end of an evidence capture.
@@ -294,6 +311,7 @@ struct CaptureState {
     remaining_events: usize,
     remaining_bytes: usize,
     walking: bool,
+    entropy: Option<BlockEntropyEvidence>,
     stopped: Option<BlockEvidenceStatus>,
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
@@ -394,13 +412,15 @@ impl BlockEvidenceState {
         }
         let stopped = state.stopped.take();
         let walking = core::mem::take(&mut state.walking);
+        let entropy = state.entropy.take();
+        let entropy_stop = entropy.as_ref().and_then(BlockEntropyEvidence::status);
         let status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
-        } else if let Some(stopped) = stopped {
+        } else if let Some(stopped) = stopped.or(entropy_stop) {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if walking {
+        } else if walking && (self.request.entropy.is_none() || entropy.is_some()) {
             BlockEvidenceStatus::Complete
         } else if frame.is_some() {
             BlockEvidenceStatus::Unavailable
@@ -410,10 +430,15 @@ impl BlockEvidenceState {
         let records = core::mem::take(&mut state.records);
         state.remaining_events -= records.len();
         state.remaining_bytes -= records.capacity() * size_of::<BlockEvidenceRecord>();
+        if let Some(entropy) = &entropy {
+            state.remaining_events -= entropy.symbols.len();
+            state.remaining_bytes -= entropy.symbols.capacity() * size_of::<EntropySymbol>();
+        }
         let mut report = BlockEvidenceReport {
             status,
             frame,
             records,
+            entropy,
         };
         state.finished = session_ended
             || state.frames_selected == self.request.frame_limit.get()
@@ -520,7 +545,8 @@ impl BlockEvidenceTile<'_> {
         parent: Option<TilePartitionCall>,
         partition: BlockPartition,
     ) {
-        if self.recorder.state.request.kind.partitions()
+        if self.recorder.state.request.entropy.is_none()
+            && self.recorder.state.request.kind.partitions()
             && let Some(id) = self.node_id(call)
         {
             self.record(
@@ -568,11 +594,12 @@ impl BlockEvidenceTile<'_> {
     }
 
     pub(crate) fn wants_blocks(self) -> bool {
-        self.recorder.state.request.kind.blocks()
+        self.recorder.state.request.entropy.is_none() && self.recorder.state.request.kind.blocks()
     }
 
     pub(crate) fn wants_transforms(self) -> bool {
-        self.recorder.state.request.kind.transforms()
+        self.recorder.state.request.entropy.is_none()
+            && self.recorder.state.request.kind.transforms()
     }
 
     fn block_id(self, frontier: &DecodeBlockFrontier) -> Option<BlockEvidenceId> {

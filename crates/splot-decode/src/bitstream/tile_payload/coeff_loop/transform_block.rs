@@ -463,6 +463,14 @@ fn read_eob_base<const LUMA: bool>(
     ctx: usize,
     lf: bool,
 ) -> u32 {
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+            "coeff_base_eob",
+            "ctx,luma,low_frequency",
+            [ctx as u16, u16::from(LUMA), u16::from(lf)],
+        ));
+    }
     match (LUMA, lf) {
         (true, true) => symbols.read_trusted(row_at(rows.base_lf_eob(), ctx)),
         (true, false) => symbols.read_trusted(row_at(rows.base_eob(), ctx)),
@@ -899,6 +907,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         let sign = if LUMA {
             let dc = &block.dc;
             let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "dc_sign",
+                    "ctx",
+                    [ctx as u16, 0, 0],
+                ));
+            }
             read_row(
                 symbols,
                 row_at(&mut cdfs.block_rows_mut().dc_sign()[0][0], ctx),
