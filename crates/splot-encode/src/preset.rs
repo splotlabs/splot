@@ -1184,8 +1184,6 @@ impl PresetParams {
                 0 => 8,
                 slots => slots,
             };
-            // Temporal layers narrow the slots a frame may take, so their slot
-            // use settles later than the first mini-GOPs.
             let fits = |max_tlayer_id, plans| {
                 let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
                     .with_ref_slots(slots)

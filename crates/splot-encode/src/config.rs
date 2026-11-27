@@ -23,8 +23,9 @@ pub use resolution::{PresetOrigin, ResolvedConfig, ResolvedPreset};
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
 pub const MAX_FRAME_DIMENSION: u32 = 1 << 16;
 
-/// The longest key frame interval with temporal layers: the 8-bit `OrderHint`
-/// of a frame stays below `1 << 8` (§ 5.18.2).
+/// The longest key frame interval with temporal layers: below the top layer
+/// the key frame is the only shown reference of § 5.18.2
+/// `get_disp_order_hint`, which then resolves only 8-bit `OrderHint`s.
 const MAX_TEMPORAL_LAYER_KEYINT: u32 = 255;
 
 /// The quality metric the encoder tunes its choices for; each takes
@@ -310,9 +311,6 @@ impl Config {
             self.apply_preset(self.preset.params(), record)?,
             self.override_preset(self.preset.screen_params())?,
         ];
-        // Below the top temporal layer the only shown reference is the key
-        // frame, so § 5.18.2 `get_disp_order_hint` resolves only the 8-bit
-        // `OrderHint`s that follow it.
         if self.keyint.get() > MAX_TEMPORAL_LAYER_KEYINT
             && rows.iter().any(|row| row.max_tlayer_id > 0)
         {

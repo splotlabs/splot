@@ -597,7 +597,6 @@ fn temporal_layers_keep_the_slots_of_each_operating_point() {
                         queued -= len;
                     }
                 }
-                // Slot contents `(display, tlayer)` of the decoders of operating points 0..=3.
                 let mut decoders = [[None::<(u64, u8)>; 16]; 4];
                 let mut coded_layers = [0usize; 4];
                 for step in &steps {
