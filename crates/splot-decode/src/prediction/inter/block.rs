@@ -590,7 +590,7 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
     let _capture_scope = products
         .block_evidence
         .as_ref()
-        .and_then(|evidence| evidence.stage_capture())
+        .and_then(crate::block_evidence::BlockEvidenceState::stage_capture)
         .map(crate::block_evidence::stages::ReconStageScope::install);
     let segment_ids = if previous.is_some() {
         None
@@ -629,7 +629,7 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
         stage_capture: products
             .block_evidence
             .as_ref()
-            .and_then(|evidence| evidence.stage_capture()),
+            .and_then(crate::block_evidence::BlockEvidenceState::stage_capture),
         records,
         cdef_grid: walked.cdef_state.into_grid()?,
         ccso_grid,

@@ -974,7 +974,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
-    #[expect(clippy::too_many_arguments)]
     #[cfg(feature = "block-evidence")]
     fn capture_filter(
         &self,
@@ -1033,6 +1032,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         );
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn cdef_ccso_range<'d, B: splot_core::simd::SimdBackend>(
         &self,
         backend: B,
@@ -1212,7 +1212,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             let direct = target
                 .get(plane)
                 .filter(|dest| dest.holds_deblocked())
-                .and_then(|dest| dest.rows());
+                .and_then(crate::pipeline::frame_progress::DirectPlaneTarget::rows);
             let view = direct.or(views[plane.index()]);
             let deb = self.core.deblocking_filter_params.is_some_and(|params| {
                 let switches = params.apply_deblocking_filter;

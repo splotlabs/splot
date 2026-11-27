@@ -153,6 +153,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
             luma_context,
             dpcm,
             bit_depth,
+            #[cfg(feature = "block-evidence")]
+            None,
         )
     })
 }

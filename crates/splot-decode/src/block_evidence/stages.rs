@@ -320,3 +320,42 @@ pub(crate) fn surface_prediction<T: ReconSample>(
         value
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn residual_requires_full_region_coverage() {
+        let area = PlaneRect::new(0, 0, 2, 1).unwrap();
+        let left = PlaneRect::new(0, 0, 1, 1).unwrap();
+        let right = PlaneRect::new(1, 0, 1, 1).unwrap();
+        for complete in [false, true] {
+            let mut stages = StageSamples::new(PlaneId::Y, area, area);
+            for _ in 0..2 {
+                stages
+                    .record(DecodeStage::Residual, left, false, 8, |_, _| Some(0))
+                    .unwrap();
+            }
+            if complete {
+                stages
+                    .record(DecodeStage::Residual, right, true, 8, |_, _| Some(-8))
+                    .unwrap();
+            }
+            let reports = stages.finish(BitDepth::Ten, true, false).unwrap();
+            let residual = reports
+                .iter()
+                .find(|record| record.stage == DecodeStage::Residual)
+                .unwrap();
+            if complete {
+                assert_eq!(residual.status, StageEvidenceStatus::Applied);
+                assert_eq!(residual.samples, [0, -8]);
+                assert_eq!(residual.region, Some(area));
+            } else {
+                assert_eq!(residual.status, StageEvidenceStatus::Uncaptured);
+                assert!(residual.samples.is_empty());
+                assert!(residual.region.is_none());
+            }
+        }
+    }
+}
