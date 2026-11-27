@@ -69,12 +69,22 @@ impl LevelIdx {
     pub const fn get(self) -> u8 {
         self.0
     }
+
+    /// Returns `true` when a sequence header with this level and
+    /// `single_picture_header_flag` codes `seq_tier` (§ 5.4.1); otherwise
+    /// `seq_tier` is 0.
+    #[must_use]
+    pub const fn codes_tier(self, single_picture_header_flag: bool) -> bool {
+        self.0 > 3 && !single_picture_header_flag
+    }
 }
 
-/// `seq_tier` (AV2 v1.0.0 § 5.4.1 / § 6.4.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `seq_tier` (AV2 v1.0.0 § 5.4.1 / § 6.4.1). `Default` is the main tier,
+/// the value of an absent `seq_tier`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Tier {
     /// Main tier (`seq_tier == 0`).
+    #[default]
     Main,
     /// High tier (`seq_tier == 1`).
     High,
@@ -464,7 +474,7 @@ pub(crate) fn parse_sequence_header_general_with_reader<O: SyntaxObserver>(
     let seq_profile_idc = ProfileIdc::from_bits(sr.read_bits_u8("seq_profile_idc", 5)?);
     let single_picture_header_flag = sr.read_flag("single_picture_header_flag")?;
     let seq_level_idx = LevelIdx::from_bits(sr.read_bits_u8("seq_level_idx", 5)?);
-    let seq_tier = if seq_level_idx.get() > 3 && !single_picture_header_flag {
+    let seq_tier = if seq_level_idx.codes_tier(single_picture_header_flag) {
         Tier::from_bit(sr.read_bit("seq_tier")?)
     } else {
         sr.inferred_u64(

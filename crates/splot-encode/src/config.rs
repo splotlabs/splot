@@ -7,7 +7,7 @@ pub mod options;
 
 use core::num::NonZeroU32;
 
-use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow, ProfileIdc};
+use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc, Tier};
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
@@ -202,6 +202,22 @@ pub struct Config {
     /// default, codes the lowest profile that allows [`Self::chroma`]: 0 for
     /// 4:0:0 and 4:2:0, 3 for 4:2:2, 4 for 4:4:4.
     pub profile: Option<ProfileIdc>,
+    /// The `seq_level_idx` of the stream (Annex A.4 Table A.7). The default
+    /// is 31, the maximum parameters level, which has no level constraints.
+    /// `None` codes the lowest level whose limits the encoder can check hold,
+    /// and 31 when none holds. See [`Self::tier`] for the checked limits.
+    pub level: Option<LevelIdx>,
+    /// The `seq_tier` of the stream (§ 5.4.1). The default is the main tier.
+    /// `None` tries the main tier before the high tier at each level.
+    ///
+    /// A level other than 31 refuses a stream that breaks one of these
+    /// Annex A.4 limits: picture size, width, height and the 16-sample
+    /// minimum; tile count and tile columns; display rate and frame-header
+    /// rate at the frame rate; reference frames; and the CBR, VBR or capped
+    /// CRF bitrate. The caller is responsible for the other limits:
+    /// `CompressedSize`, `FrameSymbolCount`, the decode rate, the Annex E
+    /// buffer model, and the bitrate of CRF and constant-QP streams.
+    pub tier: Option<Tier>,
     /// Film grain: every key frame codes a grain model fitted to the noise of
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
@@ -280,6 +296,8 @@ impl Config {
             resize_denominator: None,
             crop: None,
             profile: None,
+            level: Some(LevelIdx::from_bits(31)),
+            tier: Some(Tier::Main),
             film_grain: false,
             cbr_padding: false,
             tune: Tune::Psnr,
@@ -293,7 +311,7 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
-    /// [`Error::InvalidCrop`], [`Error::InvalidProfile`],
+    /// [`Error::InvalidCrop`], [`Error::InvalidProfile`], [`Error::InvalidLevel`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
     /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`] (its
     /// `field` names the failed record, `key_frame_metadata` first),
@@ -362,6 +380,13 @@ impl Config {
             return Err(Error::InvalidProfile {
                 profile,
                 chroma: self.chroma,
+            });
+        }
+        if let Some((level, reason)) = self.level_refusal() {
+            return Err(Error::InvalidLevel {
+                level,
+                tier: self.tier.unwrap_or_default(),
+                reason,
             });
         }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
@@ -438,6 +463,24 @@ impl Config {
             _ => Ok(()),
         }?;
         Ok(rows)
+    }
+
+    /// Why a requested [`Self::level`] is not codable with [`Self::tier`]
+    /// and [`Self::profile`].
+    fn level_refusal(&self) -> Option<(LevelIdx, &'static str)> {
+        let level = self.level?;
+        let reason = match level.get() {
+            22..=30 | 32.. => "the level is reserved (Annex A.4 Table A.7)",
+            31 => return None,
+            _ if self.tier == Some(Tier::High) && !level.codes_tier(false) => {
+                "the high tier needs level 4.0 or above (§ 5.4.1)"
+            }
+            _ if self.profile == Some(ProfileIdc::Configurable) => {
+                "profile 31 defines no Annex A.2 Table A.2 factors for a level"
+            }
+            _ => return None,
+        };
+        Some((level, reason))
     }
 
     /// The configuration of the coded frames: the frame size after

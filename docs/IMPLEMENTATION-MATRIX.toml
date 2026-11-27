@@ -22585,6 +22585,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-LEVEL-TIER"
+name = "Encoder level and tier"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "5.18.7.3", "Annex A.2", "Annex A.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/level.rs"
+change_id = "enc-level-tier"
+owner = "encoder"
+risk = "medium"
+notes = "Config::level and Config::tier (2026-11-27; CLI --level max|2.0..8.3|auto, --tier main|high|auto): the defaults code seq_level_idx 31 and the main tier, the bytes of before. seq_tier is coded only when seq_level_idx > 3 and single_picture_header_flag is 0 (LevelIdx::codes_tier, shared with the parser). Auto codes the lowest level, main tier first, whose checked limits hold, and 31 when none holds. Checked before the first frame, with Error::LevelExceeded: FrameWidth, FrameHeight, MaxPicSize, TileCols, NumTiles (from the key-frame tile_info at that level), display rate and frame-header rate at the frame rate, NumRefFrames against MaxLevelRefFrames, and the CBR, VBR or capped-CRF bitrate against MaxMbps * BitrateProfileFactor. Error::InvalidLevel refuses reserved levels, the high tier below 4.0, a level other than 31 with profile 31 and frames under 16x16. Not checked (the caller's responsibility until the decoder model): CompressedSize, FrameSymbolCount, the per-frame decode rate, the Annex E buffer and the bitrate of CRF and constant-QP streams. splot decode and AVM decode level 2.0, 4.0 high and 8.3 high streams to the encoder recon."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::requested_level_and_tier_reach_the_parsed_header_or_are_refused", "crates/splot-core/src/level.rs::tests::rate_limits_follow_tables_a8_and_a9", "crates/splot-encode/src/intra_frame_level_tests.rs::automatic_levels_are_the_lowest_that_hold", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_refuse_the_limits_the_stream_breaks", "crates/splot-encode/src/intra_frame_level_tests.rs::uncodable_levels_are_refused", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_decode_to_the_encoder_recon", "crates/splot-cli/tests/encode_decode_roundtrip.rs::requested_levels_validate_and_decode"]
+commands = ["cargo test -p splot-core level --locked", "cargo test -p splot-encode level --locked", "cargo test -p splot-cli --test encode_decode_roundtrip requested_levels --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CROP-WINDOW"
 name = "Encoder sequence cropping window"
 category = "encoder"

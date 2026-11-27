@@ -206,6 +206,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
         explicit_ref_frame_map: true,
         implicit_output: true,
         profile: Some(ProfileIdc::Configurable),
+        level: None,
+        tier: Tier::Main,
         seq_tiles: None,
         disable_loopfilters_across_tiles: false,
         plane_delta_q: [0; 3],
@@ -1380,4 +1382,48 @@ fn requested_profile_reaches_the_parsed_header_or_is_refused() {
     p.tools.profile = Some(ProfileIdc::Configurable);
     let bytes = sequence_header_bits(&p).unwrap();
     assert!(parse_sequence_header(&mut BitReader::new(&bytes[..1], ByteOffset::new(0))).is_err());
+}
+
+#[test]
+fn requested_level_and_tier_reach_the_parsed_header_or_are_refused() {
+    let mut p = params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let default_bytes = sequence_header_bits(&p).unwrap();
+    p.tools.level = Some(LevelIdx::from_bits(31));
+    assert_eq!(sequence_header_bits(&p).unwrap(), default_bytes);
+    let mut header_bits = Vec::new();
+    for (level, tier) in [
+        (0, Tier::Main),
+        (3, Tier::Main),
+        (4, Tier::Main),
+        (4, Tier::High),
+        (21, Tier::High),
+        (31, Tier::High),
+    ] {
+        p.tools.level = Some(LevelIdx::from_bits(level));
+        p.tools.tier = tier;
+        let seq = build_encoder_sequence_header(&p).unwrap();
+        assert_eq!(seq.general.seq_level_idx.get(), level);
+        assert_eq!(seq.general.seq_tier, tier);
+        assert_eq!(reparse_sequence(&seq), seq);
+        let bytes = sequence_header_bits(&p).unwrap();
+        assert!(
+            parse_sequence_header(&mut BitReader::new(&bytes[..1], ByteOffset::new(0))).is_err()
+        );
+        header_bits.push(bytes);
+    }
+    assert_ne!(header_bits[2], header_bits[3]);
+    for (level, tier) in [
+        (22, Tier::Main),
+        (30, Tier::Main),
+        (32, Tier::Main),
+        (3, Tier::High),
+        (0, Tier::High),
+    ] {
+        p.tools.level = Some(LevelIdx::from_bits(level));
+        p.tools.tier = tier;
+        assert!(
+            matches!(build_encoder_sequence_header(&p), Err(EncoderHeaderError::InvalidLevel { level: l, .. }) if l.get() == level),
+            "{level} {tier:?}"
+        );
+    }
 }
