@@ -358,9 +358,10 @@ fn arithmetic_state(decoder: &SymbolDecoder<'_>) -> (u64, i32, u64, u32, u64) {
 
 /// Reads the symbols and literal bits that move a fresh decoder to an
 /// arbitrary range, value and buffer fill.
-fn prime_unary_decoder(decoder: &mut SymbolDecoder<'_>, lead: &[(u8, u32)], row: &mut [u16; 5]) {
+fn prime_unary_decoder(decoder: &mut SymbolDecoder<'_>, lead: &[(u8, u32)]) {
+    let mut row = [8192u16, 16_384, 24_576, 0, 0];
     for &(_, bits) in lead {
-        decoder.read_symbol_u16(row).unwrap();
+        decoder.read_symbol_u16(&mut row).unwrap();
         decoder.read_literal(bits).unwrap();
     }
 }
@@ -388,8 +389,8 @@ proptest! {
 
                 let mut fast = SymbolDecoder::new(output.bytes()).unwrap();
                 let mut oracle = SymbolDecoder::new(output.bytes()).unwrap();
-                prime_unary_decoder(&mut fast, &lead, &mut [8192, 16_384, 24_576, 0, 0]);
-                prime_unary_decoder(&mut oracle, &lead, &mut [8192, 16_384, 24_576, 0, 0]);
+                prime_unary_decoder(&mut fast, &lead);
+                prime_unary_decoder(&mut oracle, &lead);
 
                 let (oracle_value, consumed) = read_unary_bit_loop(&mut oracle, max_bits);
                 prop_assert_eq!(oracle_value, value);
@@ -411,8 +412,8 @@ proptest! {
     ) {
         let mut fast = SymbolDecoder::new(&data).unwrap();
         let mut oracle = SymbolDecoder::new(&data).unwrap();
-        prime_unary_decoder(&mut fast, &lead, &mut [8192, 16_384, 24_576, 0, 0]);
-        prime_unary_decoder(&mut oracle, &lead, &mut [8192, 16_384, 24_576, 0, 0]);
+        prime_unary_decoder(&mut fast, &lead);
+        prime_unary_decoder(&mut oracle, &lead);
         for max_bits in widths {
             let (value, _) = read_unary_bit_loop(&mut oracle, max_bits);
             prop_assert_eq!(fast.read_unary(max_bits).unwrap(), value);
