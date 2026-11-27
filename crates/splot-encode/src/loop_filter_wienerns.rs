@@ -94,6 +94,20 @@ struct Units {
 /// The luma sample columns and rows of a tile.
 type TileSpan = (Range<usize>, Range<usize>);
 
+/// The [`TileSpan`] of each tile of `info`, in tile order.
+#[cold]
+#[inline(never)]
+fn tile_spans(info: &splot_core::headers::frame::TileInfo) -> Vec<TileSpan> {
+    let mut spans = Vec::new();
+    for rows in info.mi_row_starts.windows(2) {
+        for cols in info.mi_col_starts.windows(2) {
+            let span = |pair: &[u32]| pair[0] as usize * 4..pair[1] as usize * 4;
+            spans.push((span(cols), span(rows)));
+        }
+    }
+    spans
+}
+
 impl Units {
     /// The units every plane of the frame `core` codes.
     fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
@@ -108,19 +122,7 @@ impl Units {
             .filter
             .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
         let tiles = match core.tile_info.as_ref().filter(|_| across) {
-            Some(info) => {
-                let spans = |starts: &[u32]| -> Vec<Range<usize>> {
-                    starts
-                        .windows(2)
-                        .map(|pair| pair[0] as usize * 4..pair[1] as usize * 4)
-                        .collect()
-                };
-                let cols = spans(&info.mi_col_starts);
-                spans(&info.mi_row_starts)
-                    .into_iter()
-                    .flat_map(|rows| cols.iter().map(move |cols| (cols.clone(), rows.clone())))
-                    .collect()
-            }
+            Some(info) => tile_spans(info),
             None => Vec::new(),
         };
         Ok(Self {
