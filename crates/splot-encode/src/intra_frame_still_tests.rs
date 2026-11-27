@@ -76,7 +76,9 @@ fn still_pictures_decode_to_the_encoder_recon() {
                 let cdef = core.cdef_params.unwrap();
                 assert!(cdef.cdef_frame_enable, "{case}");
                 assert!(
-                    cdef.strengths.iter().all(|set| *set == Default::default()),
+                    cdef.strengths
+                        .iter()
+                        .all(|set| *set == splot_core::headers::frame::CdefStrengthSet::default()),
                     "{case}"
                 );
                 let ccso = core.ccso_params.unwrap();
