@@ -97,6 +97,75 @@ fn avm_decodes_cdef_on_skip_frames_like_splot() {
     assert!(avm == recon, "AVM output differs");
 }
 
+/// Whether `core` codes CDEF with `cdef_on_skip_txfm_frame_enable = 0`.
+fn off_skip(core: &FrameHeaderCore) -> bool {
+    core.cdef_params
+        .as_ref()
+        .is_some_and(|cdef| cdef.cdef_on_skip_txfm_frame_enable == Some(false))
+}
+
+/// `cdef_on_skip_mode` 1 and 2 reach the parsed sequence header; every CDEF
+/// frame parses the value its mode infers (§ 5.18.7.10); the streams decode
+/// to the encoder recon, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn cdef_on_skip_modes_decode_to_the_encoder_recon() {
+    use splot_core::headers::sequence::CdefOnSkipTxfm;
+    let base = Preset::new(9).unwrap().params();
+    for (mode, expected) in [(1, CdefOnSkipTxfm::AlwaysOn), (2, CdefOnSkipTxfm::Disabled)] {
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            cdef_on_skip_mode: mode,
+            cdef_on_skip: mode == 1,
+            ..*base
+        }));
+        let coder =
+            IntraFrameCoder::with_preset(&config(200, 136, BitDepth::Eight, 9, 200), preset);
+        let filter = coder.unwrap().sequence.filter.unwrap();
+        assert_eq!(filter.cdef_on_skip_txfm, expected);
+        let (one, recon, on) = filter_stream(1, preset, on_skip);
+        let (_, _, off) = filter_stream(1, preset, off_skip);
+        let (coded, inferred_off) = if mode == 1 { (&on, &off) } else { (&off, &on) };
+        assert!(
+            coded.contains(&true) && !inferred_off.contains(&true),
+            "mode {mode}"
+        );
+        assert_same_samples(&decode(&one.concat()), &recon, &format!("mode {mode}"));
+        for threads in [2, 8] {
+            assert!(
+                filter_stream(threads, preset, on_skip).0 == one,
+                "mode {mode}: {threads} threads"
+            );
+        }
+    }
+    let mut refused = *base;
+    refused.cdef_on_skip = true;
+    refused.cdef_on_skip_mode = 2;
+    let error = refused.validate().unwrap_err().to_string();
+    assert!(
+        error.contains("cdef_on_skip_mode") && error.contains("§ 5.4.10"),
+        "{error}"
+    );
+}
+
+/// AVM decodes the streams of both restricted `cdef_on_skip_mode` values.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_cdef_on_skip_modes_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for mode in [1, 2] {
+        let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            cdef_on_skip_mode: mode,
+            cdef_on_skip: mode == 1,
+            ..*Preset::new(9).unwrap().params()
+        }));
+        let (units, recon, _) = filter_stream(2, preset, on_skip);
+        let name = format!("cdef-skip-mode{mode}");
+        let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Eight, &name);
+        assert!(avm == recon, "{name}: AVM output differs");
+    }
+}
+
 /// Preset 6 with `df_sub_pu`.
 fn with_df_sub_pu() -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {

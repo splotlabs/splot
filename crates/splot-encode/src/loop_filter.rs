@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 use splot_core::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, FrameFilterParams, FrameHeaderCore, MAX_CDEF_STRENGTH_SETS,
 };
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::{CdefOnSkipTxfm, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
     EncoderReferences, FilterRecorder, FrameStart, GdfFlags, IntraTileSyntax, LeafBlock, LrLayout,
     LrUnit, LrUnitType, Palette, TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid,
@@ -544,13 +544,15 @@ impl Search<'_> {
         if filter.enable_cdef {
             let derived = cdef_damping(self.qindex, self.recon.bit_depth());
             let dampings = (3..=6).filter(|&d| preset.cdef_damping_search && d != derived);
-            let mut best = self.cdef(preset, deblocked, false, derived)?;
+            let skip_trials: &[bool] = match filter.cdef_on_skip_txfm {
+                CdefOnSkipTxfm::Adaptive if preset.cdef_on_skip => &[false, true],
+                CdefOnSkipTxfm::Adaptive | CdefOnSkipTxfm::Disabled => &[false],
+                CdefOnSkipTxfm::AlwaysOn => &[true],
+            };
+            let mut best = self.cdef(preset, deblocked, skip_trials[0], derived)?;
             for damping in core::iter::once(derived).chain(dampings) {
-                for on_skip in [false, true]
-                    .into_iter()
-                    .filter(|&on| !on || preset.cdef_on_skip)
-                {
-                    if (damping, on_skip) != (derived, false) {
+                for &on_skip in skip_trials {
+                    if (damping, on_skip) != (derived, skip_trials[0]) {
                         let trial = self.cdef(preset, deblocked, on_skip, damping)?;
                         if trial.0 < best.0 {
                             best = trial;
@@ -574,8 +576,16 @@ impl Search<'_> {
                 (Some(SuperblockSize::Block64x64) | None, _) => 64,
                 _ => 128,
             };
+            let luma_probe = match (
+                filter.lr_pc_wiener_disabled,
+                filter.lr_wiener_nonsep_disabled,
+            ) {
+                (true, false) => Some(wienerns::luma_probe()?),
+                _ => None,
+            };
             let candidate = |size| FrameFilterParams {
                 lr_luma_unit_size: Some(size),
+                lr_luma_wiener_ns: luma_probe.or(params.lr_luma_wiener_ns),
                 ..params
             };
             let (chosen, lr_on) = if preset.wiener_ns > 0 {
@@ -595,6 +605,8 @@ impl Search<'_> {
                     }
                 }
                 (best.0, best.1)
+            } else if filter.lr_pc_wiener_disabled {
+                (candidate(unit), BTreeMap::new())
             } else {
                 (
                     candidate(unit),
