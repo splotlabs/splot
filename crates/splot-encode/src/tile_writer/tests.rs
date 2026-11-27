@@ -102,6 +102,7 @@ impl Case {
                 interintra: false,
                 bawp: false,
                 crop: None,
+                max_tlayer_id: splot_core::types::TemporalLayerId::BASE,
             },
             max_level: 12,
             chroma: ChromaFormatIdc::Yuv420,

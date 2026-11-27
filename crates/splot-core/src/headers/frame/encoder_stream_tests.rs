@@ -217,6 +217,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         interintra: true,
         bawp: true,
         crop: None,
+        max_tlayer_id: TemporalLayerId::BASE,
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -1299,4 +1300,39 @@ fn cropping_window_reaches_the_parsed_header() {
     p.tools.crop = None;
     let plain = build_encoder_sequence_header(&p).unwrap();
     assert!(!plain.general.seq_cropping_window_present_flag);
+}
+
+/// `max_tlayer_id` reaches the parsed sequence with
+/// `tlayer_dependency_present_flag = 0` and the default `TLayerDependencyMap`
+/// (§ 5.4.1); 4 does not fit `f(2)`; a cut sequence header does not parse.
+#[test]
+fn max_tlayer_id_reaches_the_parsed_sequence() {
+    use crate::headers::sequence::TLayerDependencyMap;
+    use crate::types::EmbeddedLayerId;
+    let stream = |max_tlayer_id| EncoderStreamParams {
+        tools: EncoderToolFlags {
+            max_tlayer_id: TemporalLayerId::from_bits(max_tlayer_id),
+            ..EncoderToolFlags::default()
+        },
+        ..params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64)
+    };
+    for max in 0..=3 {
+        let seq = build_encoder_sequence_header(&stream(max)).unwrap();
+        let max_id = TemporalLayerId::from_bits(max);
+        assert_eq!(seq.general.max_tlayer_id, max_id);
+        assert!(!seq.general.tlayer_dependency_present_flag);
+        let default = TLayerDependencyMap::default_for(max_id, EmbeddedLayerId::BASE);
+        assert_eq!(seq.general.tlayer_dependency_map, default);
+        assert_eq!(
+            CoreSeqView::from_sequence(&seq)
+                .unwrap()
+                .tlayer_dependency_map,
+            default
+        );
+        let bytes = sequence_header_bits(&stream(max)).unwrap();
+        let cut = &bytes[..bytes.len() - 1];
+        let parsed = parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0)));
+        assert!(parsed.map_or(true, |header| !header.is_fully_parsed()));
+    }
+    assert!(build_encoder_sequence_header(&stream(4)).is_err());
 }

@@ -6719,6 +6719,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TEMPORAL-LAYERS"
+name = "Encoder temporal layers from the mini-GOP depth"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.2.2", "5.4.1", "6.4.1", "7.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-temporal-layers"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::max_tlayer_id (2026-11-27, 0 = off in every row, not measured): the sequence codes max_tlayer_id with the default TLayerDependencyMap; a frame at mini-GOP depth d codes obu_tlayer_id = min(d, max_tlayer_id), a show-existing frame the layer of the frame it shows, and other OBUs layer 0. A frame refreshes only an empty slot or one of its own or a higher layer, so each operating point sees the same order hints and reference maps (06:584-589). Needs implicit_output: a temporal unit with a hidden frame and a higher-layer output would lose its output at the lower operating points (7.3.6). Needs keyint <= 255: below the top layer the key frame is the only shown reference of the 8-bit OrderHint derivation. AVM decodes the stream and each lower sub-bitstream."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::max_tlayer_id_reaches_the_parsed_sequence", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::temporal_layer_headers_read_only_the_slots_of_their_layer", "crates/splot-encode/src/gop_tests.rs::temporal_layers_keep_the_slots_of_each_operating_point", "crates/splot-encode/src/intra_frame_tlayer_tests.rs::temporal_layer_streams_decode_at_each_operating_point"]
+commands = ["cargo test -p splot-core tlayer --locked", "cargo test -p splot-encode temporal_layer --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SEF-REPEAT"
 name = "Encoder repeats of an input frame as show-existing frames with an explicit order hint"
 category = "encoder"

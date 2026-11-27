@@ -485,7 +485,7 @@ fn implicit_output_stream(frames: u32, threads: usize) -> (Config, Vec<Packet>, 
 
 /// The packets of `frames` source frames `frame(config, index)` coded through
 /// the [`Encoder`] with `config`, and the encoder recon in display order.
-fn encoder_packets(
+pub(super) fn encoder_packets(
     config: &Config,
     frames: u32,
     frame: fn(&Config, u32) -> SourceFrame,

@@ -804,6 +804,26 @@ pub(crate) fn parse_core_body(
     mfh: Option<&MfhFrameView>,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
+    parse_core_body_in_tlayer(
+        reader,
+        core,
+        seq,
+        mfh,
+        reference_state,
+        TemporalLayerId::BASE,
+    )
+}
+
+/// [`parse_core_body`] of a frame whose OBU codes `obu_tlayer_id = tlayer` and
+/// `obu_mlayer_id = 0` (§ 5.2.2).
+pub(crate) fn parse_core_body_in_tlayer(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    mfh: Option<&MfhFrameView>,
+    reference_state: &FrameReferenceStateView<'_>,
+    tlayer: TemporalLayerId,
+) -> Result<()> {
     let mut noop = NoopObserver;
     let mut sr = SyntaxReader::new(reader, &mut noop);
     parse_core_body_with_reader(
@@ -812,7 +832,10 @@ pub(crate) fn parse_core_body(
         seq,
         mfh,
         reference_state,
-        FrameLayerIds::BASE,
+        FrameLayerIds {
+            tlayer,
+            ..FrameLayerIds::BASE
+        },
     )
 }
 

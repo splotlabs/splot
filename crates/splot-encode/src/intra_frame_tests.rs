@@ -2283,6 +2283,8 @@ mod tile_group;
 mod tile_layout;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
+#[path = "intra_frame_tlayer_tests.rs"]
+mod tlayer;
 #[path = "intra_frame_warp_tests.rs"]
 mod warp;
 #[path = "intra_frame_wavefront_tests.rs"]

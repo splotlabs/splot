@@ -23,6 +23,11 @@ pub use resolution::{PresetOrigin, ResolvedConfig, ResolvedPreset};
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
 pub const MAX_FRAME_DIMENSION: u32 = 1 << 16;
 
+/// The longest key frame interval with temporal layers: below the top layer
+/// the key frame is the only shown reference of § 5.18.2
+/// `get_disp_order_hint`, which then resolves only 8-bit `OrderHint`s.
+const MAX_TEMPORAL_LAYER_KEYINT: u32 = 255;
+
 /// The quality metric the encoder tunes its choices for; each takes
 /// [`Tune::overrides`] before [`Config::preset_overrides`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -288,7 +293,8 @@ impl Config {
     /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`],
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
-    /// [`Error::PaddingWithoutCbr`] or [`Error::Preset`].
+    /// [`Error::PaddingWithoutCbr`], [`Error::KeyintWithTemporalLayers`] or
+    /// [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         self.validated_presets(|_, _| {}).map(|_| ())
     }
@@ -313,6 +319,14 @@ impl Config {
             self.apply_preset(self.preset.params(), record)?,
             self.override_preset(self.preset.screen_params())?,
         ];
+        if self.keyint.get() > MAX_TEMPORAL_LAYER_KEYINT
+            && rows.iter().any(|row| row.max_tlayer_id > 0)
+        {
+            return Err(Error::KeyintWithTemporalLayers {
+                keyint: self.keyint.get(),
+                max: MAX_TEMPORAL_LAYER_KEYINT,
+            });
+        }
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
             return Err(Error::InvalidDimensions {
