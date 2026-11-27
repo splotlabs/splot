@@ -578,10 +578,11 @@ pub struct PresetParams {
     pub gdf_candidates: u8,
     /// The CDEF search also tries the frame with CDEF on skipped transform
     /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. On at
-    /// p0 (p0 batch 2, 2026-11-22; 6:1:1 BD-rate, CRF 20..44, keyint 30, main
-    /// f8ddc33f4): paris f30 +0.03%, rush_hour_444 f60 +0.04%, niklas f10
-    /// -0.05%, park_joy f10 -0.01%, paris flat qp 85..190 +0.29%. Off in the
-    /// other rows: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
+    /// p0 (p0 batch 2; 6:1:1 BD-rate, CRF 20..44, keyint 30, main 0616c379f,
+    /// 2026-11-27): paris f30 -0.14%, rush_hour_444 f60 -0.11%, niklas f10
+    /// -0.16%, park_joy f10 -0.08%, flat qp 85..190 paris -0.00% and
+    /// rush_hour -0.11%. Off in the other rows: p6 paris Y -0.04%, park_joy
+    /// Y +0.42%.
     pub cdef_on_skip: bool,
     /// With `loop_filter_search`, deblocking also moves the vertical and then
     /// the horizontal luma `DfDeltaQ` alone, or turns one direction off,
