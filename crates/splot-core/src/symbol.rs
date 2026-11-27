@@ -1035,37 +1035,35 @@ impl<'a> SymbolDecoder<'a> {
     /// bits are consumed and no terminator is read. The bypass run is normalized
     /// once, matching AVM's `avm_read_unary`.
     ///
+    /// A zero bit is a division step that subtracts (see [`BypassRun`]), so
+    /// with `top` the range aligned to `dif`, the prefix has at least `k` zero
+    /// bits exactly when `dif` lies less than `top >> k` below `top`. The
+    /// range keeps its top bit set, so the largest such `k` is the
+    /// leading-zero count of that gap, or one less: one compare decides. A
+    /// zero gap counts 64, where the wrapped shift compares it with `top`.
+    /// Subtracting the steps of the zero bits and shifting the consumed bits
+    /// out leaves the state of the per-bit division.
+    ///
     /// # Errors
-    /// Returns [`Error::InvalidSymbolDecoderState`] if `max_bits > 32`, or
-    /// propagates [`Error::UnexpectedEof`] from the bounded bit reader.
+    /// Returns [`Error::InvalidSymbolDecoderState`] if `max_bits > 32` or if
+    /// `SymbolValue` is not below `SymbolRange`.
     pub fn read_unary(&mut self, max_bits: u32) -> Result<u32> {
         if max_bits > MAX_LITERAL_BITS {
             return Err(self.literal_width_error(max_bits));
         }
-        if max_bits == 0 {
-            return Ok(0);
+        self.ensure_buffered(max_bits);
+        let top = u64::from(self.range_hi) << 32;
+        if self.dif >= top {
+            return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
         }
 
-        let mut split = u64::from(self.range()) << max_bits;
-        let mut value = 0u32;
-        let mut consumed = 0u32;
-        let mut scaled_value = self.scaled_bypass_value(max_bits);
-
-        for _ in 0..max_bits {
-            split >>= 1;
-            consumed += 1;
-            if scaled_value >= split {
-                scaled_value -= split;
-                value += 1;
-            } else {
-                break;
-            }
-        }
-
-        let normalized = scaled_value >> (max_bits - consumed);
-        let symbol_value = u32::try_from(normalized)
-            .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
-        self.advance_bypass(consumed, symbol_value);
+        let gap = top - 1 - self.dif;
+        let length = gap.leading_zeros();
+        let zeros = length - u32::from(gap >= top.wrapping_shr(length));
+        let value = zeros.min(max_bits);
+        let consumed = (value + 1).min(max_bits);
+        self.dif = ((top >> value) - 1 - gap) << consumed;
+        self.buffered -= consumed as i32;
         self.count_symbols(u64::from(consumed));
         #[cfg(feature = "entropy-observation")]
         if self.observe_entropy {
