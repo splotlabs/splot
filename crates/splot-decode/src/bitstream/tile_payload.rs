@@ -83,7 +83,7 @@ pub(crate) use general_intra_residual::{
     reconstruct_inter_coeff_block_residual_rect_into_with, with_residual_scratch,
 };
 #[cfg(feature = "block-evidence")]
-pub(crate) use general_intra_residual::{CoefficientCoding, reconstruct::dequant_block_params};
+pub(crate) use general_intra_residual::{CoefficientCoding, evidence_dequant_params};
 #[cfg(test)]
 pub(crate) use general_intra_residual::{
     reconstruct_general_intra_coeff_block_rect_with_prediction_into, tx_size_from_dimensions,

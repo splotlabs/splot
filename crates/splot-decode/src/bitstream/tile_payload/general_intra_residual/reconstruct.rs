@@ -863,22 +863,38 @@ pub(super) fn reconstruct_block_setup(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<ReconstructBlockSetup, GeneralIntraResidualError> {
-    let samples = 1usize << (log2_width + log2_height);
+    let orig_w = 1usize << log2_width;
+    let orig_h = 1usize << log2_height;
+
+    let adj_w = 1usize << log2_width.min(5);
+    let adj_h = 1usize << log2_height.min(5);
+    let adjusted = adj_w * adj_h;
+    let samples = orig_w * orig_h;
     if prediction_len != samples {
         return Err(GeneralIntraResidualError::PredictionLength {
             expected: samples,
             actual: prediction_len,
         });
     }
-    let params = dequant_block_params(
-        qindex,
+    let dq_denom = dq_denom(samples, use_tcq, plane_tx_type);
+    let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
+    let qm = resolve_block_qm(
         plane_id,
-        (log2_width, log2_height),
         plane_tx_type,
-        use_tcq,
-        bit_depth,
+        adj_w,
+        adj_h,
+        log2_width,
+        log2_height,
     );
-    let adjusted = params.tx_width * params.tx_height;
+    let params = DequantBlockParams {
+        dc_quant,
+        ac_quant,
+        tx_width: adj_w,
+        tx_height: adj_h,
+        dq_denom,
+        bit_depth,
+        qm,
+    };
     Ok(ReconstructBlockSetup {
         adjusted,
         samples,
@@ -892,39 +908,6 @@ pub(super) fn reconstruct_block_setup(
             dpcm,
         ),
     })
-}
-
-#[inline]
-pub(crate) fn dequant_block_params(
-    qindex: u32,
-    plane_id: PlaneId,
-    (log2_width, log2_height): (u32, u32),
-    plane_tx_type: usize,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> DequantBlockParams {
-    let tx_width = 1usize << log2_width.min(5);
-    let tx_height = 1usize << log2_height.min(5);
-    let samples = 1usize << (log2_width + log2_height);
-    let dq_denom = dq_denom(samples, use_tcq, plane_tx_type);
-    let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
-    let qm = resolve_block_qm(
-        plane_id,
-        plane_tx_type,
-        tx_width,
-        tx_height,
-        log2_width,
-        log2_height,
-    );
-    DequantBlockParams {
-        dc_quant,
-        ac_quant,
-        tx_width,
-        tx_height,
-        dq_denom,
-        bit_depth,
-        qm,
-    }
 }
 
 /// Dequantizes the whole-row prefix of `block`, returning the number of

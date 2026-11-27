@@ -310,6 +310,32 @@ fn resolve_block_qm(
         user,
     })
 }
+
+#[cfg(feature = "block-evidence")]
+pub(crate) fn evidence_dequant_params(
+    qindex: u32,
+    plane: PlaneId,
+    (width, height): (usize, usize),
+    plane_tx_type: usize,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> Result<DequantBlockParams, GeneralIntraResidualError> {
+    reconstruct_block_setup(
+        width * height,
+        qindex,
+        plane,
+        width.ilog2(),
+        height.ilog2(),
+        plane_tx_type,
+        use_tcq,
+        false,
+        false,
+        None,
+        bit_depth,
+    )
+    .map(|setup| setup.params)
+}
+
 const H_PRED: usize = 2;
 const D45_PRED: usize = 3;
 const D157_PRED: usize = 6;
@@ -1191,7 +1217,7 @@ fn decode_nonzero_plane_coeffs(
             scan_extent(tx_class, tx, eob)
         };
         arena.resize(start_idx + extent, 0);
-        let ordinary = decode_ordinary_transform_block(
+        let quant_end = decode_ordinary_transform_block(
             context,
             cdfs,
             symbols,
@@ -1207,18 +1233,21 @@ fn decode_nonzero_plane_coeffs(
             },
             &mut arena[start_idx..],
         );
-        arena.truncate(start_idx + ordinary.as_ref().map_or(0, |block| block.quant_end));
-        let ordinary =
-            ordinary.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
-        #[cfg(not(feature = "block-evidence"))]
-        let _ = ordinary;
         #[cfg(feature = "block-evidence")]
         {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |block| block.quant_end));
+            let ordinary = quant_end
+                .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
             coding = if ordinary.dc_parity_hidden {
                 CoefficientCoding::HiddenDcParity
             } else {
                 CoefficientCoding::Ordinary
             };
+        }
+        #[cfg(not(feature = "block-evidence"))]
+        {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
+            quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
         }
     }
     LumaCoeffBlock {

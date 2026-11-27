@@ -273,11 +273,14 @@ pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) lossless: bool,
 }
 
+#[cfg(feature = "block-evidence")]
 pub(crate) struct OrdinaryTransformCoefficients {
     pub(crate) quant_end: usize,
-    #[cfg(feature = "block-evidence")]
     pub(crate) dc_parity_hidden: bool,
 }
+
+#[cfg(not(feature = "block-evidence"))]
+pub(crate) type OrdinaryTransformCoefficients = usize;
 
 /// Writes decoded coefficients into the zeroed output slice in raster or
 /// scan order and returns one past its last written nonzero coefficient.
@@ -457,11 +460,14 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
         summary.state.cul_level(),
         summary.state.dc_category(),
     );
-    Ok(OrdinaryTransformCoefficients {
+    #[cfg(feature = "block-evidence")]
+    let quant_end = OrdinaryTransformCoefficients {
         quant_end: summary.quant_end,
-        #[cfg(feature = "block-evidence")]
         dc_parity_hidden: facts.is_hidden,
-    })
+    };
+    #[cfg(not(feature = "block-evidence"))]
+    let quant_end = summary.quant_end;
+    Ok(quant_end)
 }
 
 /// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).

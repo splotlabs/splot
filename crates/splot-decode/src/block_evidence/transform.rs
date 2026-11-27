@@ -7,7 +7,7 @@ use splot_recon::{
 
 use super::{BlockEvidenceId, BlockEvidenceStatus};
 use crate::bitstream::tile_payload::{
-    CoeffBlock, CoefficientCoding, FrameQmSegmentScope, LumaCoeffBlock, dequant_block_params,
+    CoeffBlock, CoefficientCoding, FrameQmSegmentScope, LumaCoeffBlock, evidence_dequant_params,
 };
 use crate::encoder_syntax::TxType;
 use crate::tile::block_context::TxShape;
@@ -237,14 +237,15 @@ impl DecodedTransformUnit<'_> {
             }
             scan = Some(scan_map);
             let _segment_scope = FrameQmSegmentScope::install(usize::from(context.segment_id));
-            let params = dequant_block_params(
+            let params = evidence_dequant_params(
                 context.qindex,
                 id.plane,
-                (id.coded.width().ilog2(), id.coded.height().ilog2()),
+                (id.coded.width(), id.coded.height()),
                 cctx.map_or_else(|| block.plane_tx_type(), |(u, _)| u.plane_tx_type()),
                 block.use_tcq,
                 context.bit_depth,
-            );
+            )
+            .map_err(|_| BlockEvidenceStatus::Unavailable)?;
             dequantize_block(&params, &quantized, &mut dequantized)
                 .map_err(|_| BlockEvidenceStatus::Unavailable)?;
             quantization = Some(BlockCoefficientQuantization {
