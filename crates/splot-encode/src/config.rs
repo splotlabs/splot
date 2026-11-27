@@ -478,15 +478,20 @@ impl Config {
     }
 
     /// Why a requested [`Self::level`] is not codable with [`Self::tier`]
-    /// and [`Self::profile`].
+    /// and [`Self::profile`]; a single picture refuses the high tier at
+    /// every level, the automatic one (reported as 31) included.
     fn level_refusal(&self) -> Option<(LevelIdx, &'static str)> {
-        let level = self.level?;
         let high = self.tier == Some(Tier::High);
+        if high && self.single_picture {
+            let level = self.level.unwrap_or(LevelIdx::from_bits(31));
+            return Some((
+                level,
+                "a single picture codes no seq_tier, so only the main tier (§ 5.4.1)",
+            ));
+        }
+        let level = self.level?;
         let reason = match level.get() {
             22..=30 | 32.. => "the level is reserved (Annex A.4 Table A.7)",
-            _ if high && self.single_picture => {
-                "a single picture codes no seq_tier, so only the main tier (§ 5.4.1)"
-            }
             31 => return None,
             _ if high && !level.codes_tier(false) => {
                 "the high tier needs level 4.0 or above (§ 5.4.1)"

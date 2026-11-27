@@ -140,6 +140,28 @@ fn avm_decodes_still_pictures_like_splot() {
     }
 }
 
+/// A key frame codes 128x128 superblocks under a 256x256 sequence (§ 5.18.2),
+/// so a 200x200 still there spans more than one GDF block (`GDF_MIN_SIZE`
+/// 128) and codes GDF off through `gdf_per_block = 1`.
+#[test]
+fn still_with_256_superblocks_codes_gdf_off_per_block() {
+    let mut config = still_config((200, 200), PixelFormat::Yuv420, BitDepth::Eight, 1);
+    config.preset_overrides = vec![
+        ("max_block_log2".into(), "8".into()),
+        ("sb256_min_height".into(), "64".into()),
+    ];
+    let (unit, recon, core) = still_unit(&config, true);
+    let coder = IntraFrameCoder::new(&config).unwrap();
+    let partition = coder.sequence.partition.unwrap();
+    assert_eq!(
+        partition.seq_sb_size(),
+        splot_core::headers::sequence::SuperblockSize::Block256x256
+    );
+    let gdf = core.gdf_params.unwrap();
+    assert!(gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true));
+    assert_same_samples(&decode(&unit), &recon, "256x256 superblocks");
+}
+
 /// The stream of the still `source` of `config` through the [`Encoder`].
 fn encoded_still(config: &Config, source: SourceFrame) -> Vec<u8> {
     let mut encoder = Encoder::new(config.clone()).unwrap();
@@ -175,9 +197,14 @@ fn still_options_code_or_are_refused() {
             assert_eq!(decoded.len(), 64 * 64 * 3 / 2);
         }
     }
-    let mut high = options.clone();
-    high.tier = Some(Tier::High);
-    assert!(matches!(high.validate(), Err(Error::InvalidLevel { .. })));
+    for level in [Some(LevelIdx::from_bits(8)), None] {
+        let mut high = options.clone();
+        (high.level, high.tier) = (level, Some(Tier::High));
+        assert!(
+            matches!(high.validate(), Err(Error::InvalidLevel { .. })),
+            "{level:?}"
+        );
+    }
     let mut skip_mode = base;
     skip_mode.preset_overrides = vec![("cdef_on_skip_mode".into(), "1".into())];
     assert!(matches!(
