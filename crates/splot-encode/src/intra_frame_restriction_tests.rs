@@ -195,7 +195,7 @@ fn chroma_dct_only_codes_dct_chroma_transforms() {
 #[test]
 fn reduced_tx_part_set_codes_no_four_way_one_axis_split() {
     let off = one_axis_luma_splits(&stream(YUV420, 0, &[], 1).0);
-    assert!(off.iter().any(|&count| count == 4), "{off:?}");
+    assert!(off.contains(&4), "{off:?}");
     let units = checked_stream(YUV420, 0, &[("reduced_tx_part_set", "1")]);
     assert!(
         sequence(&units)
