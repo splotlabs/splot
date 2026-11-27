@@ -6,10 +6,10 @@
 use splot_core::headers::frame::{
     CoreSeqView, EncodedFrameHeader, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
     FrameTiles, InterFrameParams, InterpolationFilter, KeyFrameTxParams, REFS_PER_FRAME,
-    TipGlobalMv, build_inter_frame_header, build_intra_only_frame_header, build_key_frame_header,
-    build_open_loop_key_frame_header, build_tip_output_frame_header, encode_inter_frame_obu,
-    encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
-    encode_tip_output_frame_obu,
+    SwitchFrameParams, TipGlobalMv, build_inter_frame_header, build_intra_only_frame_header,
+    build_key_frame_header, build_open_loop_key_frame_header, build_tip_output_frame_header,
+    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
+    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 use crate::preset::{PresetContext, PresetParams};
 use crate::rate_control::FrameType;
 
-use super::GopFrame;
+use super::{GopFrame, SwitchKind};
 
 /// The frame-level tool choices of `preset` in `context` for a frame at `qindex`: the
 /// transform parameters, whether inter frames code compound and skip-mode
@@ -147,7 +147,7 @@ impl GopFrame {
             FrameType::Key if self.open_loop => {
                 let params = InterFrameParams {
                     tx,
-                    ..self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles))
+                    ..self.inter_params(refs, qindex, filters, (tx, compound, mv_tools, tiles))?
                 };
                 build_open_loop_key_frame_header(view, &refs.header_view(), &params)
                     .map_err(header_error)?
@@ -158,7 +158,8 @@ impl GopFrame {
                     .map_err(header_error)?
             }
             FrameType::Inter => {
-                let params = self.inter_params(qindex, filters, (tx, compound, mv_tools, tiles));
+                let params =
+                    self.inter_params(refs, qindex, filters, (tx, compound, mv_tools, tiles))?;
                 inter_header(view, refs, &params, self.intra_only)?.core
             }
         };
@@ -221,7 +222,7 @@ impl GopFrame {
         let header = inter_header(
             view,
             refs,
-            &self.inter_params(qindex, filters, (tx, compound, mv_tools, layout)),
+            &self.inter_params(refs, qindex, filters, (tx, compound, mv_tools, layout))?,
             self.intra_only,
         )?;
         if header.core != expected {
@@ -294,9 +295,11 @@ impl GopFrame {
     /// The inter frame parameters; `tip_hole_fill` is always set here and
     /// in [`Self::tip_output_unit`], because the sequence flag
     /// `enable_tip_hole_fill` (`PresetParams::tip_hole_fill`) gates whether
-    /// `allow_tip_hole_fill` is coded.
+    /// `allow_tip_hole_fill` is coded. A RAS frame lists the long-term id
+    /// that `refs` holds in its key frame's slot.
     fn inter_params(
         &self,
+        refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
         (
@@ -316,8 +319,26 @@ impl GopFrame {
             ),
             tiles,
         ): FrameTools,
-    ) -> InterFrameParams {
-        InterFrameParams {
+    ) -> Result<InterFrameParams> {
+        let switch = match self.switch {
+            None => None,
+            Some(SwitchKind::Switch) => Some(SwitchFrameParams::default()),
+            Some(SwitchKind::Ras) => {
+                let slot = self.ref_slots.trailing_zeros() as usize;
+                let id = refs
+                    .header_view()
+                    .ref_long_term_id
+                    .and_then(|ids| ids.get(slot).copied().flatten())
+                    .ok_or(Error::Unsupported {
+                        what: "a RAS frame whose key frame has no long-term id",
+                    })?;
+                Some(SwitchFrameParams {
+                    restricted_prediction_switch: false,
+                    ras_long_term_id: Some(id),
+                })
+            }
+        };
+        Ok(InterFrameParams {
             base_q_idx: qindex,
             order_hint: self.order_hint,
             refresh_frame_flags: self.refresh_frame_flags,
@@ -347,7 +368,8 @@ impl GopFrame {
             explicit_refs,
             implicit_output: self.implicit_output,
             leading: self.leading,
-        }
+            switch,
+        })
     }
 }
 

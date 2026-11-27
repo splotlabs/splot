@@ -332,6 +332,17 @@ pub struct PresetParams {
     /// long-term slots stay valid after it in sequential decoding but not at
     /// random access. `0` in every row (not measured).
     pub open_loop_key: u8,
+    /// `n > 0` codes the layer-0 frame of every `n`th mini-GOP, other than
+    /// one of an open-loop key frame, as a `SWITCH_FRAME` (§ 5.18.2) of
+    /// `switch_type`, in place of an intra-only frame. `0` in every row (not
+    /// measured).
+    pub switch_frames: u8,
+    /// `0` codes `OBU_SWITCH` over the default references; `1` codes
+    /// `OBU_RAS_FRAME` (§ 7.4.5) that references only the last closed-loop
+    /// key frame by its long-term id, which no frame evicts. `1` needs
+    /// `long_term_id_bits > 0` and a keyint of at most 256. Needs
+    /// `switch_frames > 0`. `0` in every row.
+    pub switch_type: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -1144,6 +1155,7 @@ impl PresetParams {
         check!(cdf_update_tile)?;
         check!(long_term_id_bits)?;
         check!(num_ref_frames)?;
+        check!(switch_frames)?;
         check(
             "open_loop_key",
             self.open_loop_key,
@@ -1158,9 +1170,20 @@ impl PresetParams {
             " (above 0 needs long_term_id_bits = 0: closed-loop long-term slots stay \
              valid after an open-loop key frame in sequential decoding only)",
         )?;
+        check(
+            "switch_type",
+            self.switch_type,
+            PresetIntegerRange::new(
+                0,
+                i32::from(self.switch_frames > 0 && self.long_term_id_bits > 0),
+            ),
+            " (above 0 needs switch_frames > 0; 1, a RAS frame, needs long_term_id_bits > 0 \
+             for the key frame's id, so open_loop_key > 0 refuses it)",
+        )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
             let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
-                .with_ref_slots(self.num_ref_frames);
+                .with_ref_slots(self.num_ref_frames)
+                .with_switch_frames(self.switch_frames, self.switch_type);
             let fits = self.num_ref_frames == 0
                 || (0..3).all(|_| {
                     let len = probe.next_len(usize::MAX, true).unwrap_or(1);
@@ -1633,6 +1656,10 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Code every nth periodic key frame as open-loop. Zero disables open-loop key frames. Requires long_term_id_bits to be zero."
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Code the layer-0 frame of every nth mini-GOP as a switch frame. Zero disables switch frames." [0, 255]
+        switch_frames:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Select the switch frame type: 0 codes OBU_SWITCH, 1 codes OBU_RAS_FRAME. Requires switch_frames above zero; 1 requires long_term_id_bits above zero." [0, 1]
+        switch_type:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select which tile information the sequence header signals." [0, 3]

@@ -935,7 +935,7 @@ pub(super) fn write_intra_frame_tail(
         seq,
         (base_q_idx, tiles, tx),
         filters,
-        (true, LrReferenceFilters::default(), None),
+        (true, false, LrReferenceFilters::default(), None),
     )?;
     if base_q_idx > 0 {
         w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
@@ -1013,13 +1013,18 @@ pub(super) fn plane_quantization(
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
 /// segmentation, the quantizer-matrix level and the delta-q and `allow_tcq` of `tx`, parity hiding when
 /// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
-/// frame codes no CCSO reuse.
+/// frame codes no CCSO reuse, and an intra or `switch_frame` no reuse flags (§ 5.18.7.12).
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     (base_q_idx, tiles, tx): (u32, FrameTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
-    (frame_is_intra, lr_refs, coded_map): (bool, LrReferenceFilters<'_>, Option<bool>),
+    (frame_is_intra, switch_frame, lr_refs, coded_map): (
+        bool,
+        bool,
+        LrReferenceFilters<'_>,
+        Option<bool>,
+    ),
 ) -> Result<(), EncoderHeaderError> {
     let allow_tcq = tx.allow_tcq;
     if tx.delta_q_res.is_some() && base_q_idx == 0 {
@@ -1113,7 +1118,7 @@ pub(super) fn write_quant_and_filters(
         for plane in planes.iter().filter(|_| on) {
             w.write_flag(plane.ccso_planes)?;
             if plane.ccso_planes {
-                write_ccso_reuse(w, plane, frame_is_intra, num_refs)?;
+                write_ccso_reuse(w, plane, frame_is_intra || switch_frame, num_refs)?;
                 if !plane.reuse_ccso {
                     let coded = CcsoPlaneParams {
                         reuse_ccso: false,

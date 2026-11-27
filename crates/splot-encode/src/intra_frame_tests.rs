@@ -2267,6 +2267,8 @@ mod refine;
 mod repeat;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
+#[path = "intra_frame_switch_tests.rs"]
+mod switch;
 #[path = "intra_frame_tf_tests.rs"]
 mod tf;
 #[path = "intra_frame_tile_group_tests.rs"]
