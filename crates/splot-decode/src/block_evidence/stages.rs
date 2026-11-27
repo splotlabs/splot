@@ -83,6 +83,8 @@ pub struct StageEvidence {
     pub samples: Vec<i32>,
 }
 
+const UNCOVERED_SAMPLE: i32 = i32::MIN;
+
 #[derive(Default)]
 struct StageBuffer {
     samples: Vec<i32>,
@@ -143,14 +145,13 @@ impl StageSamples {
             buf.samples
                 .try_reserve_exact(count)
                 .map_err(|_| BlockEvidenceStatus::AllocationFailed)?;
-            // AV2 residual bounds and unsigned sample depths exclude i32::MIN.
-            buf.samples.resize(count, i32::MIN);
+            buf.samples.resize(count, UNCOVERED_SAMPLE);
         }
         for y in overlap.y()..(overlap.y() + overlap.height()) {
             for x in overlap.x()..(overlap.x() + overlap.width()) {
                 let dst = (y - self.region.y()) * self.region.width() + x - self.region.x();
                 if let Some(value) = sample(x, y) {
-                    buf.covered += usize::from(buf.samples[dst] == i32::MIN);
+                    buf.covered += usize::from(buf.samples[dst] == UNCOVERED_SAMPLE);
                     buf.samples[dst] = value;
                 }
             }
@@ -288,6 +289,22 @@ pub(crate) fn transform_samples(
             sample(x - rect.x(), y - rect.y())
         });
     }
+}
+
+pub(crate) fn skip_inter_residual(
+    block: &crate::prediction::inter::InterResidualBlock,
+    (log2_width, log2_height): (u32, u32),
+) {
+    if let Ok(size) = IntraRectBlockSize::new(log2_width as u8, log2_height as u8) {
+        skip_residual(
+            block.plane,
+            block_rect(usize::from(block.x), usize::from(block.y), size),
+        );
+    }
+}
+
+pub(crate) fn skip_residual(plane: PlaneId, rect: Option<PlaneRect>) {
+    transform_samples(DecodeStage::Residual, plane, rect, false, |_, _| Some(0));
 }
 
 pub(crate) fn surface_prediction<T: ReconSample>(

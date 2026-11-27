@@ -107,13 +107,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<B: SimdBackend, T: Recon
                 rect,
             );
             if block.eob == 0 {
-                stages::transform_samples(
-                    DecodeStage::Residual,
-                    plane_id,
-                    Some(rect),
-                    false,
-                    |_, _| Some(0),
-                );
+                stages::skip_residual(plane_id, Some(rect));
             }
         }
         if block.eob != 0 {
@@ -407,13 +401,7 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
                 },
             );
             if block.eob == 0 {
-                stages::transform_samples(
-                    DecodeStage::Residual,
-                    plane_id,
-                    Some(rect),
-                    false,
-                    |_, _| Some(0),
-                );
+                stages::skip_residual(plane_id, Some(rect));
             }
         }
         Ok::<(), GeneralIntraResidualError>(())
@@ -534,13 +522,7 @@ pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
             },
         );
         if block.eob == 0 {
-            stages::transform_samples(
-                DecodeStage::Residual,
-                plane_id,
-                Some(rect),
-                false,
-                |_, _| Some(0),
-            );
+            stages::skip_residual(plane_id, Some(rect));
         }
     }
     if block.eob == 0 {

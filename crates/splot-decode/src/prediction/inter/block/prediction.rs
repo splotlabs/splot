@@ -260,7 +260,7 @@ pub(super) fn capture_inter_prediction<T: ReconSample>(
     sink: &CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
 ) {
-    use crate::block_evidence::{DecodeStage, stages};
+    use crate::block_evidence::stages;
     let Some(plane) = stages::selected_plane() else {
         return;
     };
@@ -277,9 +277,7 @@ pub(super) fn capture_inter_prediction<T: ReconSample>(
     if let Ok(rect) = splot_recon::PlaneRect::new(x, y, width, height) {
         stages::surface_prediction(sink, plane, rect);
         if placed.block.residual.is_none() {
-            stages::transform_samples(DecodeStage::Residual, plane, Some(rect), false, |_, _| {
-                Some(0)
-            });
+            stages::skip_residual(plane, Some(rect));
         }
     }
 }

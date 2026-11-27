@@ -1034,17 +1034,10 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
             if block.coeffs.eob == 0 {
                 #[cfg(feature = "block-evidence")]
-                {
-                    use crate::block_evidence::{DecodeStage, stages};
-                    let size = IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
-                    stages::transform_samples(
-                        DecodeStage::Residual,
-                        block.plane,
-                        stages::block_rect(usize::from(block.x), usize::from(block.y), size),
-                        false,
-                        |_, _| Some(0),
-                    );
-                }
+                crate::block_evidence::stages::skip_inter_residual(
+                    block,
+                    (log2_width, log2_height),
+                );
                 continue;
             }
             let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)
