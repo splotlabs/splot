@@ -15,8 +15,8 @@ use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
     BitDepth, ChromaSamplePosition, Config, ContentLightLevel, CroppingWindow, Encoder, FirstPass,
-    FrameHash, MasteringDisplay, Preset, ProfileIdc, RateControlMode, SourceFrame, ThreadCount,
-    TileLayout, Tune,
+    FrameHash, LevelIdx, MasteringDisplay, Preset, ProfileIdc, RateControlMode, SourceFrame,
+    ThreadCount, Tier, TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -131,6 +131,18 @@ pub(crate) struct EncodeArgs {
     /// lowest profile that allows the input chroma format.
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=31))]
     profile: Option<u8>,
+    /// Level: `max` (default, `seq_level_idx` 31, no level limits), a level
+    /// from 2.0 to 8.3, or `auto` (the lowest level that holds). The encoder
+    /// refuses a stream over the picture size, tile, display-rate,
+    /// header-rate, reference-frame or target-bitrate limit of the level;
+    /// the other Annex A.4 limits (compressed frame size, symbol count,
+    /// decode rate, buffer model, CRF bitrate) are not checked.
+    #[arg(long, value_parser = parse_level, default_value = "max")]
+    level: LevelArg,
+    /// Tier: `main` (default), `high` (level 4.0 and above) or `auto` (main
+    /// first).
+    #[arg(long, value_enum, default_value_t = TierArg::Main)]
+    tier: TierArg,
     /// Film grain: each key frame codes a grain model fitted to the noise of
     /// its source, and every output frame applies it at decode; off by
     /// default. The encoder does not denoise, so the stats PSNR does not
@@ -371,6 +383,38 @@ enum Output {
     AnnexB(BufWriter<File>),
 }
 
+/// `splot encode --level`: `None` is `auto`.
+#[derive(Clone, Copy, Debug)]
+struct LevelArg(Option<LevelIdx>);
+
+/// The level names of Annex A.4 Table A.7, by `seq_level_idx`.
+const LEVEL_NAMES: [&str; 22] = [
+    "2.0", "2.1", "3.0", "3.1", "4.0", "4.1", "5.0", "5.1", "5.2", "5.3", "6.0", "6.1", "6.2",
+    "6.3", "7.0", "7.1", "7.2", "7.3", "8.0", "8.1", "8.2", "8.3",
+];
+
+/// Parses `--level auto|max|2.0..8.3`.
+fn parse_level(value: &str) -> Result<LevelArg, String> {
+    let index = match value {
+        "auto" => return Ok(LevelArg(None)),
+        "max" => 31,
+        _ => LEVEL_NAMES
+            .iter()
+            .position(|&name| name == value)
+            .ok_or_else(|| format!("`{value}` is not auto, max or a level from 2.0 to 8.3"))?
+            as u8,
+    };
+    Ok(LevelArg(Some(LevelIdx::from_bits(index))))
+}
+
+/// `splot encode --tier`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum TierArg {
+    Auto,
+    Main,
+    High,
+}
+
 /// Metrics of `splot encode --tune`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum TuneArg {
@@ -528,6 +572,12 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.resize_denominator = args.resize_denominator;
     config.crop = args.crop;
     config.profile = args.profile.map(ProfileIdc::from_bits);
+    config.level = args.level.0;
+    config.tier = match args.tier {
+        TierArg::Auto => None,
+        TierArg::Main => Some(Tier::Main),
+        TierArg::High => Some(Tier::High),
+    };
     config.film_grain = args.film_grain;
     config.cbr_padding = args.cbr_padding;
     config.tune = match args.tune {

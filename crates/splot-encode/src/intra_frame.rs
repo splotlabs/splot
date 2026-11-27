@@ -220,7 +220,7 @@ fn intra_leaves(
 /// sequence of `params` and `view`:
 /// an explicit layout gets the start of each listed size, and one more
 /// column or row when the sizes end inside the frame.
-fn frame_tiles(
+pub(crate) fn frame_tiles(
     config: &Config,
     preset: &PresetParams,
     (params, view): (&EncoderStreamParams, &CoreSeqView),
@@ -292,7 +292,7 @@ impl IntraFrameCoder {
     }
 
     fn stream_params(config: &Config, preset: &PresetParams) -> Result<EncoderStreamParams> {
-        Ok(EncoderStreamParams {
+        let mut params = EncoderStreamParams {
             width: config.width,
             height: config.height,
             bit_depth: match config.bit_depth {
@@ -387,7 +387,9 @@ impl IntraFrameCoder {
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
-        })
+        };
+        crate::level::choose_level(config, preset, &mut params)?;
+        Ok(params)
     }
 
     /// A coder of `config` with the search limits of `preset`; only the
@@ -579,7 +581,7 @@ pub(crate) fn check_frame_setup(config: &Config, preset: &PresetParams) -> Resul
     Ok(())
 }
 
-fn sequence_view(params: &EncoderStreamParams) -> Result<(SequenceHeader, CoreSeqView)> {
+pub(crate) fn sequence_view(params: &EncoderStreamParams) -> Result<(SequenceHeader, CoreSeqView)> {
     let sequence = build_encoder_sequence_header(params).map_err(coding("sequence header"))?;
     let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
         what: "an incomplete sequence header",

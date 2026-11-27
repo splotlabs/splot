@@ -2259,6 +2259,8 @@ mod intra_tools;
 mod intrabc_inter;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
+#[path = "intra_frame_level_tests.rs"]
+mod level;
 #[path = "intra_frame_lossless_tests.rs"]
 mod lossless;
 #[path = "intra_frame_mds_tests.rs"]

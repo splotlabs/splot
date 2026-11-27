@@ -318,6 +318,10 @@ const PROFILES: &[VariantDescription] = &[
     variant("4", &[], "Main_444_10_IP1."),
     variant("31", &[], "Configurable."),
 ];
+const TIERS: &[VariantDescription] = &[
+    variant("main", &[], "Main tier."),
+    variant("high", &[], "High tier."),
+];
 const THREADS: ValueShape = ValueShape::Choice(&[
     variant("auto", &[], "Use the host worker count."),
     variant(
@@ -353,6 +357,10 @@ config_options! {
         "The window must fit the coded frame. Its origin must align with the chroma grid.";
     profile, Setting, ValueShape::Optional(&ValueShape::Choice(PROFILES)), "Request a seq_profile_idc.",
         "The profile must allow the chroma format. Absent selects the lowest profile that allows it.";
+    level, Setting, ValueShape::Optional(&integer(0, 31, "seq_level_idx")), "Request a seq_level_idx.",
+        "The default is 31, without level limits. Absent selects the lowest level that holds. 22 to 30 are reserved. The encoder checks the picture size, tiles, display rate, header rate, reference frames and target bitrate; the caller is responsible for the other Annex A.4 limits.";
+    tier, Setting, ValueShape::Optional(&ValueShape::Choice(TIERS)), "Request a seq_tier.",
+        "The default is the main tier. The high tier needs level 4.0 or above. Absent tries the main tier first.";
     film_grain, Setting, ValueShape::Boolean, "Estimate a grain model from the source.",
         "Lossless coding does not support film grain.";
     cbr_padding, Setting, ValueShape::Boolean, "Add padding to maintain the target bitrate.", "Requires CBR.";

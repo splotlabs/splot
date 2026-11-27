@@ -186,6 +186,37 @@ fn requested_profiles_validate_and_decode() {
     }
 }
 
+/// `--level auto` and `--level 4.0 --tier high` give streams that validate
+/// with `--strict` and decode to the encoder stats; an unknown level, a
+/// reserved one, the high tier below 4.0 and a level that the clip breaks
+/// are refused.
+#[test]
+fn requested_levels_validate_and_decode() {
+    round_trip(8, YUV420, &["--qp", "90", "--level", "auto"]);
+    round_trip(
+        10,
+        YUV444,
+        &["--qp", "90", "--level", "4.0", "--tier", "high"],
+    );
+    let (y4m, _) = synthetic_y4m(8, YUV420, 1);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    for bad in [
+        &["--level", "9.0"][..],
+        &["--level", "3.1", "--tier", "high"],
+        &["--level", "2.0", "--rc", "cbr", "--bitrate", "2000"],
+    ] {
+        let mut args = vec!["encode", input_s, "-o", ivf_s];
+        args.extend(bad);
+        let bad = splot(&args);
+        assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    }
+    for path in [input, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// `--low-delay` is the `mini_gop_size=1`, `bitrate_mini_gop_size=1` and
 /// `lookahead_frames=1` overrides: every frame is coded and shown in input order.
 /// With `implicit_output` the IVF holds one frame per input frame, in coding
