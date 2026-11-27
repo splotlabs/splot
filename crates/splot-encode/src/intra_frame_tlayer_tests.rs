@@ -41,6 +41,7 @@ fn tlayer_stream(
     .map(|(field, value)| (field.to_owned(), value.to_owned()))
     .collect();
     config.threads = splot_parallel::ThreadCount::from(threads);
+    config.frame_metadata.timecode = true;
     let (packets, expected) = carry::encoder_packets(&config, FRAMES, panning_frame);
     (config, packets, expected)
 }
@@ -118,7 +119,8 @@ fn frames_up_to(expected: &[u8], tlayers: &[u8], n: u8) -> Vec<u8> {
 
 /// With `max_tlayer_id` the frames code `obu_tlayer_id = min(depth,
 /// max_tlayer_id)` (§ 5.2.2), and the sequence header, temporal delimiters
-/// and key frames stay on layer 0 (§ 6.2.2). The stream decodes to the
+/// and key frames stay on layer 0 (§ 6.2.2); the timecode metadata of a
+/// frame codes the frame's layer (§ 7.3.3). The stream decodes to the
 /// encoder recon; for each lower operating point `n`, `--temporal-layer n`
 /// and the sub-bitstream without the OBUs above `n` both output exactly the
 /// frames of layers `0..=n`, equal to the full decode. The bytes are the
@@ -133,6 +135,22 @@ fn temporal_layer_streams_decode_at_each_operating_point() {
             .collect();
         let parsed = parse_annex_b_obus_partial(&units);
         assert!(parsed.error.is_none(), "{case:?}");
+        for packet in &packets {
+            let parsed = parse_annex_b_obus_partial(&packet.data);
+            for (index, obu) in parsed.obus.iter().enumerate() {
+                if obu.header.obu_type != ObuType::MetadataShort {
+                    continue;
+                }
+                let frame = parsed.obus[index..]
+                    .iter()
+                    .find(|obu| codes_frame(obu.header.obu_type))
+                    .unwrap();
+                assert_eq!(
+                    obu.header.temporal_layer_id, frame.header.temporal_layer_id,
+                    "{case:?}: frame metadata joins the unit of its frame (§ 7.3.3)"
+                );
+            }
+        }
         let mut layers = [0usize; 4];
         for obu in &parsed.obus {
             let tlayer = obu.header.temporal_layer_id.get();
@@ -141,7 +159,10 @@ fn temporal_layer_streams_decode_at_each_operating_point() {
                 obu.header.obu_type,
                 ObuType::ClosedLoopKey | ObuType::OpenLoopKey
             );
-            if key || !codes_frame(obu.header.obu_type) {
+            if key
+                || !(codes_frame(obu.header.obu_type)
+                    || obu.header.obu_type == ObuType::MetadataShort)
+            {
                 assert_eq!(tlayer, 0, "{case:?}: {:?}", obu.header.obu_type);
             }
         }

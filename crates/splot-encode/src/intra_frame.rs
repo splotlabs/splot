@@ -497,7 +497,6 @@ impl FrameCoder for IntraFrameCoder {
         leading: bool,
         display_index: u64,
     ) -> Result<Vec<u8>> {
-        let metadata = self.output_frame_obus(display_index)?;
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
@@ -508,6 +507,7 @@ impl FrameCoder for IntraFrameCoder {
             .ok_or(Error::Unsupported {
                 what: "a show-existing frame of a slot outside the sequence",
             })?;
+        let metadata = self.output_frame_obus(display_index, tlayer)?;
         let unit = gop::show_existing_unit(
             &self.view,
             slot,
@@ -748,13 +748,18 @@ impl IntraFrameCoder {
         if !(plan.show_frame || plan.implicit_output) {
             return Ok(Vec::new());
         }
-        self.output_frame_obus(plan.display_index)
+        self.output_frame_obus(plan.display_index, plan.tlayer)
     }
 
-    /// The per-frame metadata OBUs of the output frame `display_index`.
-    fn output_frame_obus(&self, display_index: u64) -> Result<Vec<u8>> {
+    /// The per-frame metadata OBUs of the output frame `display_index` in
+    /// temporal layer `tlayer`.
+    fn output_frame_obus(
+        &self,
+        display_index: u64,
+        tlayer: splot_core::types::TemporalLayerId,
+    ) -> Result<Vec<u8>> {
         let (metadata, frame_rate) = &self.frame_metadata;
-        metadata.obus(display_index, self.presentation, *frame_rate)
+        metadata.obus(display_index, self.presentation, (*frame_rate, tlayer))
     }
 
     /// The `grain_seed` of `plan` and, for a key frame whose `source` has

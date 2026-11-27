@@ -690,14 +690,20 @@ fn metadata_obus_parse_back() {
         ),
     ] {
         let persistence = u8::from(passthrough.is_empty()) * 2;
-        let obu =
-            encode_metadata_obu(metadata_type, payload.clone(), passthrough, persistence).unwrap();
+        let obu = encode_metadata_obu(
+            metadata_type,
+            payload.clone(),
+            passthrough,
+            (persistence, TemporalLayerId::from_bits(persistence)),
+        )
+        .unwrap();
         let parsed = parse_annex_b_obus_partial(&obu);
         assert!(parsed.error.is_none());
         let [envelope] = &parsed.obus[..] else {
             unreachable!("one OBU");
         };
         assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
+        assert_eq!(envelope.header.temporal_layer_id.get(), persistence);
         let short = parse(envelope.payload).unwrap();
         assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
         assert_eq!(
@@ -729,7 +735,13 @@ fn metadata_obus_parse_back() {
             8,
         ),
     ] {
-        let obu = encode_metadata_obu(metadata_type, payload, passthrough, 0).unwrap();
+        let obu = encode_metadata_obu(
+            metadata_type,
+            payload,
+            passthrough,
+            (0, TemporalLayerId::BASE),
+        )
+        .unwrap();
         let envelope = &parse_annex_b_obus_partial(&obu).obus[0];
         let cut = [&envelope.payload[..2 + kept], &[0x80]].concat();
         assert!(parse(&cut).is_err(), "{metadata_type:?}");
@@ -739,7 +751,7 @@ fn metadata_obus_parse_back() {
             MetadataType::HdrCll,
             MetadataPayload::HdrMdcv(display),
             &[],
-            0
+            (0, TemporalLayerId::BASE)
         )
         .is_err()
     );
@@ -748,7 +760,7 @@ fn metadata_obus_parse_back() {
             MetadataType::IccProfile,
             MetadataPayload::IccProfile(icc),
             &[1],
-            0
+            (0, TemporalLayerId::BASE)
         )
         .is_err()
     );

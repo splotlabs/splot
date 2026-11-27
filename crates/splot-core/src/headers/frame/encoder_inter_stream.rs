@@ -1216,7 +1216,7 @@ pub fn encode_film_grain_obu(
         }],
     };
     annexb_obu(
-        ObuType::FilmGrain,
+        (ObuType::FilmGrain, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
         &[],
     )
@@ -1230,7 +1230,7 @@ pub fn encode_content_interpretation_obu(
     content: &ContentInterpretation,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     annexb_obu(
-        ObuType::ContentInterpretation,
+        (ObuType::ContentInterpretation, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::ContentInterpretation(*content),
         &[],
     )
@@ -1245,7 +1245,7 @@ pub fn encode_content_interpretation_obu(
 /// Returns [`EncoderHeaderError`] if the OBU does not serialize.
 pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
     annexb_obu(
-        ObuType::MultiFrameHeader,
+        (ObuType::MultiFrameHeader, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::MultiFrameHeader(Box::new(MultiFrameHeader {
             mfh_seq_header_id: 0,
             mfh_id_minus_1: 0,
@@ -1264,7 +1264,8 @@ pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
 /// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) of `metadata_type`
 /// for every layer of its extended layer (`LAYER_GLOBAL`), with the
 /// `muh_persistence_idc` of § 6.16.3 (0 `GLOBAL_PERSISTENCE` for the whole
-/// sequence, 2 `NO_PERSISTENCE` for the current frame). `passthrough` holds the bytes
+/// sequence, 2 `NO_PERSISTENCE` for the current frame), in the temporal layer
+/// `tlayer` of the frame unit it joins (§ 7.3.3). `passthrough` holds the bytes
 /// of a T.35, ICC profile or user data payload (§ 5.17.4, § 5.17.9,
 /// § 5.17.13); the unit is the payload rounded up to whole bytes.
 ///
@@ -1275,7 +1276,7 @@ pub fn encode_metadata_obu(
     metadata_type: MetadataType,
     payload: MetadataPayload,
     passthrough: &[u8],
-    muh_persistence_idc: u8,
+    (muh_persistence_idc, tlayer): (u8, TemporalLayerId),
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut sized = BitWriter::new();
     crate::write::write_metadata_payload(&mut sized, &payload, passthrough)?;
@@ -1293,27 +1294,23 @@ pub fn encode_metadata_obu(
         }),
     };
     annexb_obu(
-        ObuType::MetadataShort,
+        (ObuType::MetadataShort, tlayer),
         &crate::obu::ParsedObu::MetadataShort(Box::new(obu)),
         passthrough,
     )
 }
 
 /// `obu` with the payload bytes `passthrough` as an Annex B OBU of
-/// `obu_type` on layer 0.
+/// `obu_type` in temporal layer `tlayer`.
 fn annexb_obu(
-    obu_type: ObuType,
+    (obu_type, tlayer): (ObuType, TemporalLayerId),
     obu: &crate::obu::ParsedObu,
     passthrough: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut payload = BitWriter::new();
     crate::write::write_obu_payload(&mut payload, obu, obu_type.is_extensible_obu(), passthrough)?;
     let mut w = BitWriter::new();
-    write_annexb_obu(
-        &mut w,
-        &obu_header(obu_type, TemporalLayerId::BASE),
-        &payload.into_bytes(),
-    )?;
+    write_annexb_obu(&mut w, &obu_header(obu_type, tlayer), &payload.into_bytes())?;
     Ok(w.into_bytes())
 }
 
