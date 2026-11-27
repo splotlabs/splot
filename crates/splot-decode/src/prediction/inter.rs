@@ -1033,6 +1033,11 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<
             let (log2_width, log2_height) = inter_residual_log2(block)
                 .map_err(|_| DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
             if block.coeffs.eob == 0 {
+                #[cfg(feature = "block-evidence")]
+                crate::block_evidence::stages::skip_inter_residual(
+                    block,
+                    (log2_width, log2_height),
+                );
                 continue;
             }
             let coeffs = CoeffBlock::new(&block.coeffs, residual_coeffs)

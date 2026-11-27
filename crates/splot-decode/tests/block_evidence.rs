@@ -9,6 +9,10 @@
 //! In `av2/decoder/inspection.c`, read the block modes, `current_qindex`,
 //! `segment_id`, `mrl_index`, `pb_mv_precision` and `mv` from `MB_MODE_INFO`.
 //! Use `get_ref_frame_map_idx` for the reference slots.
+//! Read stage planes in `av2_decode_tg_tiles_and_wrapup` before deblock and
+//! after each filter. Read `predicted_pixels` with inspection enabled.
+//! For clipped residuals, record the signed input to `highbd_clip_pixel_add`
+//! in the C inverse transform. Compare the resulting output with ordinary AVM.
 //!
 //! [AVM]: https://github.com/AOMediaCodec/avm/tree/a1ec4594d97028ebc34083ec8346616d697c2fc9
 
@@ -617,4 +621,169 @@ fn tile_decode_failure_preserves_the_selected_identity() {
     assert_eq!(report.status, BlockEvidenceStatus::DecodeFailed);
     let coded = report.frame.unwrap().provenance.coded;
     assert_eq!((coded.user_data, coded.offset.get()), (17, 16));
+}
+
+#[test]
+fn stage_samples_match_avm_and_preserve_output() {
+    use splot_decode::block_evidence::{DecodeStage, StageEvidenceStatus};
+    use splot_recon::PlaneId;
+
+    const EIGHT: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
+    );
+    const TEN: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    );
+    const GDF: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"
+    );
+    use DecodeStage::{
+        Ccso, Cdef, Deblock, Gdf, Prediction, Reconstruction, Reference, Residual, Restoration,
+    };
+    let eight: &[(DecodeStage, i32)] = &[
+        (Prediction, 128),
+        (Residual, -54),
+        (Reconstruction, 74),
+        (Deblock, 73),
+        (Reference, 73),
+    ];
+    let ten: &[(DecodeStage, i32)] = &[
+        (Prediction, 375),
+        (Residual, 622),
+        (Reconstruction, 997),
+        (Deblock, 935),
+        (Cdef, 916),
+        (Ccso, 895),
+        (Restoration, 901),
+        (Reference, 901),
+    ];
+
+    let eight_clip: &[(DecodeStage, i32)] =
+        &[(Prediction, 225), (Residual, 33), (Reconstruction, 255)];
+    let ten_clip: &[(DecodeStage, i32)] =
+        &[(Prediction, 882), (Residual, 156), (Reconstruction, 1023)];
+    let gdf: &[(DecodeStage, i32)] = &[
+        (Deblock, 248),
+        (Cdef, 248),
+        (Ccso, 248),
+        (Restoration, 248),
+        (Gdf, 249),
+        (Reference, 249),
+    ];
+
+    let gdf_skipped: &[DecodeStage] = &[Ccso, Restoration];
+    for (fixture, index, region, golden, skipped) in [
+        (EIGHT, 0, rect(4, 31, 1, 1), eight, &[][..]),
+        (TEN, 1, rect(127, 50, 1, 1), ten, &[][..]),
+        (GDF, 0, rect(145, 42, 1, 1), eight_clip, &[][..]),
+        (GDF, 0, rect(503, 42, 1, 1), gdf, gdf_skipped),
+        (TEN, 1, rect(31, 20, 1, 1), ten_clip, &[][..]),
+    ] {
+        for threads in [1, 4] {
+            let mut normal = Decoder::new(settings(threads)).unwrap();
+            let original = decode(&mut normal, fixture).unwrap();
+            let coded = original[index].provenance().coded;
+            let (report, inspected) = capture(
+                fixture,
+                threads,
+                BlockEvidenceRequest::new(move |location| location == coded, None, 0, 4096)
+                    .with_stage_samples(PlaneId::Y, region),
+            );
+            assert_eq!(picture_hashes(&original), picture_hashes(&inspected));
+            assert_eq!(report.status, BlockEvidenceStatus::Complete);
+            for &(stage, sample) in golden {
+                let actual = report
+                    .stages
+                    .iter()
+                    .find(|record| record.stage == stage)
+                    .unwrap();
+                let expected = if skipped.contains(&stage) {
+                    StageEvidenceStatus::Skipped
+                } else {
+                    StageEvidenceStatus::Applied
+                };
+                assert_eq!(actual.status, expected, "{stage:?} at {region:?}");
+                assert_eq!(actual.region, Some(region), "{stage:?}");
+                assert_eq!(actual.samples, [sample], "{stage:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn stage_budget_and_cancellation_preserve_normal_output() {
+    use splot_decode::block_evidence::StageEvidenceStatus;
+    use splot_recon::PlaneId;
+
+    let mut normal = Decoder::new(settings(4)).unwrap();
+    let base = picture_hashes(&decode(&mut normal, TILES).unwrap());
+    for status in [
+        BlockEvidenceStatus::Truncated,
+        BlockEvidenceStatus::Cancelled,
+    ] {
+        let request = BlockEvidenceRequest::new(|_| true, None, 0, 0)
+            .with_stage_samples(PlaneId::Y, rect(0, 0, 12, 12))
+            .with_cancellation(move || status == BlockEvidenceStatus::Cancelled);
+        let (report, pictures) = capture(TILES, 4, request);
+        assert_eq!(report.status, status);
+        assert_eq!(base, picture_hashes(&pictures));
+        assert!(report.stages.iter().all(|stage| {
+            stage.status == StageEvidenceStatus::Uncaptured
+                && stage.samples.is_empty()
+                && stage.region.is_none()
+        }));
+    }
+}
+
+#[test]
+fn film_grain_presentation_keeps_the_reference_values() {
+    use splot_decode::PictureSamples;
+    use splot_decode::block_evidence::DecodeStage;
+    use splot_recon::PlaneId;
+
+    const GRAIN: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
+    );
+    let request = BlockEvidenceRequest::new(|_| true, None, 0, 4096)
+        .with_stage_samples(PlaneId::U, rect(17, 0, 1, 1));
+    let (mut decoder, capture) =
+        Decoder::new_with_block_evidence(settings(4).with_skip_film_grain(true), request).unwrap();
+    let decoded = decode(&mut decoder, GRAIN).unwrap();
+    let reference = &decoded[0];
+    assert!(reference.has_film_grain());
+    let report = capture.take().unwrap();
+    assert_eq!(report.frame.unwrap().provenance, reference.provenance());
+    let actual = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == DecodeStage::Reference)
+        .unwrap();
+    assert_eq!(actual.samples, [961]);
+
+    let sample = |picture: &Picture| match picture.plane(PlaneId::U).unwrap() {
+        PictureSamples::Ten(plane) => plane.visible_rows().next().unwrap()[17],
+        PictureSamples::Eight(_) => panic!("expected 10-bit film-grain fixture"),
+    };
+    let presentation = reference.apply_film_grain().unwrap();
+    assert_eq!(reference.provenance(), presentation.provenance());
+    assert_eq!(sample(&presentation), 940);
+    assert_eq!(sample(reference), 961);
+}
+
+#[test]
+fn monochrome_frame_cannot_supply_chroma_stages() {
+    use splot_recon::PlaneId;
+
+    const MONO: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-4frame-mono-inter-256x128.ivf"
+    );
+    let (report, _) = capture(
+        MONO,
+        1,
+        BlockEvidenceRequest::new(|_| true, None, 0, 4096)
+            .with_stage_samples(PlaneId::V, rect(0, 0, 1, 1)),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Unavailable);
+    assert!(report.frame.is_some());
+    assert!(report.stages.is_empty());
 }
