@@ -386,9 +386,11 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
     let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         let (samples, stride) = rows.prediction_target();
-        predict(samples, stride)?;
+        let predicted = predict(samples, stride);
         #[cfg(feature = "block-evidence")]
-        if let Some(rect) = stages::block_rect(x, y, block_size) {
+        if predicted.is_ok()
+            && let Some(rect) = stages::block_rect(x, y, block_size)
+        {
             stages::transform_samples(
                 DecodeStage::Prediction,
                 plane_id,
@@ -404,7 +406,7 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
                 stages::skip_residual(plane_id, Some(rect));
             }
         }
-        Ok::<(), GeneralIntraResidualError>(())
+        predicted
     })?;
     if predicted.is_none() {
         return Ok(false);

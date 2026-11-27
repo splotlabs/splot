@@ -256,7 +256,10 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
             actual: block.dense_len(),
         });
     }
+    #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
+    #[cfg(not(feature = "block-evidence"))]
+    let capture = false;
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -495,7 +498,10 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
     let backend = backend.narrow();
+    #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
+    #[cfg(not(feature = "block-evidence"))]
+    let capture = false;
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -721,7 +727,10 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
     let backend = backend.narrow();
+    #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
+    #[cfg(not(feature = "block-evidence"))]
+    let capture = false;
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let use_block_tcq = use_tcq && block.use_tcq;
@@ -838,6 +847,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     Ok(())
 }
 
+#[cfg(feature = "block-evidence")]
 #[inline]
 pub(super) fn capture_residual(
     plane: PlaneId,
@@ -845,15 +855,7 @@ pub(super) fn capture_residual(
     y: usize,
     size: IntraRectBlockSize,
 ) -> bool {
-    #[cfg(feature = "block-evidence")]
-    {
-        stages::captures_block(plane, stages::block_rect(x, y, size))
-    }
-    #[cfg(not(feature = "block-evidence"))]
-    {
-        let _ = (plane, x, y, size);
-        false
-    }
+    stages::captures_block(plane, stages::block_rect(x, y, size))
 }
 
 #[cfg(feature = "block-evidence")]

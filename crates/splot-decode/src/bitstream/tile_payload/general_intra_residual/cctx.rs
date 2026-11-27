@@ -207,7 +207,10 @@ pub(crate) fn add_cctx_pair_residual_in_place_with<B: SimdBackend, T: ReconSampl
         (PlaneId::V, &v_setup, v_dequant),
     ];
     for (plane, setup, dequant) in pairs {
+        #[cfg(feature = "block-evidence")]
         let capture = super::reconstruct::capture_residual(plane, x, y, size);
+        #[cfg(not(feature = "block-evidence"))]
+        let capture = false;
         if !capture
             && let Some(fused) = setup.fused()
             && let Some((dst, stride)) = surface.residual_rect_mut(plane, x, y, size)?
