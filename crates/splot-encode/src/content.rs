@@ -20,7 +20,7 @@ use splot_core::headers::metadata::{
 };
 use splot_core::headers::sequence::TimingInfo;
 use splot_core::span::ByteOffset;
-use splot_recon::{BitDepth, PixelFormat};
+use splot_recon::{BitDepth, PixelFormat, for_each_sample_byte_chunk};
 
 use crate::error::{Error, Result};
 
@@ -474,16 +474,14 @@ impl FrameHash {
         let mut frame = Md5::new();
         let mut plane_hashes = Vec::new();
         for plane in planes {
-            let bytes: Vec<u8> = match bit_depth {
-                BitDepth::Eight => plane.iter().map(|&sample| sample as u8).collect(),
-                BitDepth::Ten => plane
-                    .iter()
-                    .flat_map(|sample| sample.to_le_bytes())
-                    .collect(),
+            let mut hasher = Md5::new();
+            let target = match self {
+                Self::Frame => &mut frame,
+                Self::PerPlane => &mut hasher,
             };
-            match self {
-                Self::Frame => frame.update(&bytes),
-                Self::PerPlane => plane_hashes.push(Md5::digest(&bytes).into()),
+            for_each_sample_byte_chunk(bit_depth, plane, |bytes| target.update(bytes));
+            if self == Self::PerPlane {
+                plane_hashes.push(hasher.finalize().into());
             }
         }
         let payload = MetadataPayload::DecodedFrameHash(MetadataDecodedFrameHash {
