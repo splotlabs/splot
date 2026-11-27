@@ -1221,8 +1221,9 @@ pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
 }
 
 /// Serializes a prefix `OBU_METADATA_SHORT` (§ 5.17.2) of `metadata_type`
-/// for every layer of its extended layer (`LAYER_GLOBAL`) and the whole
-/// sequence (`GLOBAL_PERSISTENCE`, § 6.16.3). `passthrough` holds the bytes
+/// for every layer of its extended layer (`LAYER_GLOBAL`), with the
+/// `muh_persistence_idc` of § 6.16.3 (0 `GLOBAL_PERSISTENCE` for the whole
+/// sequence, 2 `NO_PERSISTENCE` for the current frame). `passthrough` holds the bytes
 /// of a T.35, ICC profile or user data payload (§ 5.17.4, § 5.17.9,
 /// § 5.17.13); the unit is the payload rounded up to whole bytes.
 ///
@@ -1233,6 +1234,7 @@ pub fn encode_metadata_obu(
     metadata_type: MetadataType,
     payload: MetadataPayload,
     passthrough: &[u8],
+    muh_persistence_idc: u8,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut sized = BitWriter::new();
     crate::write::write_metadata_payload(&mut sized, &payload, passthrough)?;
@@ -1240,7 +1242,7 @@ pub fn encode_metadata_obu(
         metadata_is_suffix: false,
         muh_layer_idc: 1,
         muh_cancel_flag: false,
-        muh_persistence_idc: 0,
+        muh_persistence_idc,
         metadata_type,
         metadata_type_leb128_bytes: 1,
         unit: Some(MetadataUnit {

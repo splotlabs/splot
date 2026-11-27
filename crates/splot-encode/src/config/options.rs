@@ -292,6 +292,12 @@ const KEY_FRAME_METADATA: ValueShape = ValueShape::Record(options! {
     itut_t35, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy T.35 data before each key frame.", "Supply the country code and terminal provider code.";
     user_data_unregistered, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy unregistered user data before each key frame.", "Start the payload with a 16-byte UUID.";
 });
+const FRAME_METADATA: ValueShape = ValueShape::Record(options! {
+    timecode, Setting, ValueShape::Boolean, "Write a timecode before each output frame.", "The frame rate is at most 512 frames per second.";
+    temporal_point_info, Setting, ValueShape::Boolean, "Write the presentation time before each output frame.", "Requires timing info.";
+    scan_type, Setting, ValueShape::Boolean, "Mark each output frame as progressive.";
+    banding_hints, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy banding hints before each output frame.", "Supply one metadata_banding_hints() padded to a byte.";
+});
 const CROP_OFFSET: ValueShape = integer(0, U32_MAX, "coded luma samples");
 const CROP: ValueShape = ValueShape::Record(options! {
     left, Setting, CROP_OFFSET, "Set the offset from the left edge.";
@@ -325,6 +331,7 @@ config_options! {
     frame_rate, Source, ValueShape::Ratio, "Frame rate in frames per second.";
     content, Mixed, CONTENT, "Describe the input samples and control timing metadata.";
     key_frame_metadata, Setting, KEY_FRAME_METADATA, "Set prefix metadata for each key frame.";
+    frame_metadata, Setting, FRAME_METADATA, "Set prefix metadata for each output frame.";
     rate_control, Setting, ValueShape::Choice(RATE_CONTROL_MODES), "Select how the encoder controls quality and bitrate.";
     preset, Setting, integer(0, Preset::MAX as u64, ""), "Select a speed preset.";
     preset_overrides, PresetOverrides, ValueShape::Overrides, "Apply overrides in order after tune and fast decode.";

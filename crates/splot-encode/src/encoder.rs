@@ -63,6 +63,8 @@ pub(crate) struct CodedFrame {
     pub(crate) recon: [Vec<u16>; 3],
     /// The frame type the coder used, which can differ from the planned one.
     pub(crate) frame_type: FrameType,
+    /// The display index of the frame's plan.
+    pub(crate) display_index: u64,
     /// What [`FrameCoder::commit`] stores.
     pub(crate) reference: Option<CodedReference>,
     /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
@@ -89,14 +91,16 @@ pub(crate) trait FrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>>;
     /// Stores a frame of [`Self::encode_wave`] in the references, in coding order.
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()>;
-    /// A temporal delimiter and the show-existing frame that outputs the
-    /// frame in `slot`, with the explicit `order_hint` when given, as an
+    /// A temporal delimiter, the metadata OBUs of the output frame
+    /// `display_index` and the show-existing frame that outputs the frame in
+    /// `slot`, with the explicit `order_hint` when given, as an
     /// `OBU_LEADING_SEF` when `leading`.
     fn show_existing_frame(
         &mut self,
         slot: u32,
         order_hint: Option<u32>,
         leading: bool,
+        display_index: u64,
     ) -> Result<Vec<u8>>;
     /// Ends the leading frames of an open-loop key frame before the first
     /// regular frame after them codes (§ 5.18.1); nothing without them.
@@ -622,7 +626,9 @@ impl Encoder {
                     order_hint,
                     leading,
                 } => {
-                    let unit = self.coder.show_existing_frame(slot, order_hint, leading)?;
+                    let unit =
+                        self.coder
+                            .show_existing_frame(slot, order_hint, leading, display_index)?;
                     let bits = unit.len() as u64 * 8;
                     if let Some(buffer) = &mut self.buffer {
                         buffer.add(bits);

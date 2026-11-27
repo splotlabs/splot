@@ -77,6 +77,10 @@ pub(crate) struct IntraFrameCoder {
     /// The content interpretation and metadata OBUs of every key frame;
     /// empty for none.
     content_obus: Vec<u8>,
+    /// [`crate::Config::frame_metadata`] and the frame rate it counts in.
+    frame_metadata: (crate::content::FrameMetadata, (u32, u32)),
+    /// The random access points that [`Self::frame_metadata`] counts from.
+    presentation: crate::content::PresentationClock,
     /// [`crate::Config::multi_frame_header`].
     multi_frame_header: bool,
     tiles: FrameTiles,
@@ -391,6 +395,8 @@ impl IntraFrameCoder {
             params,
             references,
             content_obus: content_obus(config)?,
+            frame_metadata: (config.frame_metadata.clone(), config.frame_rate),
+            presentation: crate::content::PresentationClock::default(),
             multi_frame_header: config.multi_frame_header,
             sequence,
             view,
@@ -470,6 +476,7 @@ impl FrameCoder for IntraFrameCoder {
         }
         if frame.frame_type == FrameType::Key {
             self.key_frames = self.key_frames.wrapping_add(1);
+            self.presentation.key(frame.display_index);
             self.grain_active = frame.film_grain_model;
         }
         self.references
@@ -488,7 +495,9 @@ impl FrameCoder for IntraFrameCoder {
         slot: u32,
         order_hint: Option<u32>,
         leading: bool,
+        display_index: u64,
     ) -> Result<Vec<u8>> {
+        let metadata = self.output_frame_obus(display_index)?;
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
@@ -497,7 +506,7 @@ impl FrameCoder for IntraFrameCoder {
             &self.view,
             slot,
             order_hint,
-            (seed, self.multi_frame_header, leading),
+            (seed, self.multi_frame_header, leading, &metadata),
         )?;
         let obu_type = if leading {
             splot_core::types::ObuType::LeadingSef
@@ -530,7 +539,10 @@ fn content_obus(config: &Config) -> Result<Vec<u8>> {
     } else {
         Vec::new()
     };
-    let mut obus = config.content.obus(config.frame_rate, &mfh_obu)?;
+    let mut obus =
+        config
+            .content
+            .obus(config.frame_rate, &mfh_obu, config.frame_metadata.scan_type)?;
     obus.extend(config.key_frame_metadata.obus()?);
     Ok(obus)
 }
@@ -723,6 +735,21 @@ impl IntraFrameCoder {
             .map_or(0, |(weight, _)| weight))
     }
 
+    /// The per-frame metadata OBUs of `plan`; none unless it is an output
+    /// frame (§ 7.3.3).
+    fn frame_obus(&self, plan: &GopFrame) -> Result<Vec<u8>> {
+        if !(plan.show_frame || plan.implicit_output) {
+            return Ok(Vec::new());
+        }
+        self.output_frame_obus(plan.display_index)
+    }
+
+    /// The per-frame metadata OBUs of the output frame `display_index`.
+    fn output_frame_obus(&self, display_index: u64) -> Result<Vec<u8>> {
+        let (metadata, frame_rate) = &self.frame_metadata;
+        metadata.obus(display_index, self.presentation, *frame_rate)
+    }
+
     /// The `grain_seed` of `plan` and, for a key frame whose `source` has
     /// noise, the `OBU_FILM_GRAIN` of its model; nothing without film grain.
     fn film_grain(&self, source: &SourceFrame, plan: &GopFrame) -> Result<(Option<u16>, Vec<u8>)> {
@@ -821,9 +848,14 @@ impl IntraFrameCoder {
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let grain_obu_empty = grain_obu.is_empty();
         let key_obus = if plan.frame_type == FrameType::Key {
-            [self.content_obus.as_slice(), &grain_obu].concat()
+            [
+                self.content_obus.as_slice(),
+                &grain_obu,
+                &self.frame_obus(plan)?,
+            ]
+            .concat()
         } else {
-            grain_obu
+            [grain_obu, self.frame_obus(plan)?].concat()
         };
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
@@ -1077,6 +1109,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
+            display_index: plan.display_index,
             film_grain_model: !grain_obu_empty,
             reference: Some((core, recon, initial, cdfs, ccso_blocks)),
             tip_output: None,
@@ -1146,7 +1179,7 @@ impl IntraFrameCoder {
                 &self.references,
                 ref_frame_idx,
                 (weight, grain_seed, self.preset.plane_delta_q()),
-                self.multi_frame_header,
+                (self.multi_frame_header, &self.frame_obus(plan)?),
                 (qindex, mv, filter, deblocking),
             )?;
             let (core, frame) = self
@@ -1168,6 +1201,7 @@ impl IntraFrameCoder {
                     temporal_unit,
                     recon,
                     frame_type: plan.frame_type,
+                    display_index: plan.display_index,
                     reference: None,
                     tip_output: Some(core),
                     warp: None,
@@ -1224,6 +1258,7 @@ impl IntraFrameCoder {
                 temporal_unit,
                 recon,
                 frame_type: plan.frame_type,
+                display_index: plan.display_index,
                 reference: None,
                 tip_output: Some(core),
                 warp: None,

@@ -35,6 +35,7 @@ impl FrameCoder for FakeCoder {
         slot: u32,
         order_hint: Option<u32>,
         _leading: bool,
+        _display_index: u64,
     ) -> Result<Vec<u8>> {
         let mut unit = vec![0xd0, 0x5e, slot as u8];
         unit.extend(order_hint.map(|hint| hint as u8));
@@ -62,6 +63,7 @@ impl FakeCoder {
             temporal_unit,
             recon,
             frame_type: plan.frame_type,
+            display_index: plan.display_index,
             reference: None,
             tip_output: None,
             warp: None,
