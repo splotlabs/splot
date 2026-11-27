@@ -158,6 +158,8 @@ enum WarpInterMode {
 }
 
 pub(crate) struct InterFilterInputs {
+    #[cfg(feature = "block-evidence")]
+    pub(crate) stage_capture: Option<Arc<crate::block_evidence::BlockEvidenceState>>,
     pub(crate) records: crate::filters::wienerns_lr::FrameFilterRecords,
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<Arc<crate::filters::ccso::CcsoUnitGrid>>,
@@ -584,6 +586,12 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
         params.mi_rows,
         params.mi_cols,
     );
+    #[cfg(feature = "block-evidence")]
+    let _capture_scope = products
+        .block_evidence
+        .as_ref()
+        .and_then(|evidence| evidence.stage_capture())
+        .map(crate::block_evidence::stages::ReconStageScope::install);
     let segment_ids = if previous.is_some() {
         None
     } else {
@@ -617,6 +625,11 @@ pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSamp
     ccso_state.load_reused_blocks(super::reused_ccso_sources(&reused))?;
     let ccso_grid = products.finish_ccso(ccso_state)?;
     let filter_inputs = InterFilterInputs {
+        #[cfg(feature = "block-evidence")]
+        stage_capture: products
+            .block_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.stage_capture()),
         records,
         cdef_grid: walked.cdef_state.into_grid()?,
         ccso_grid,

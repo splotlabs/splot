@@ -618,3 +618,69 @@ fn tile_decode_failure_preserves_the_selected_identity() {
     let coded = report.frame.unwrap().provenance.coded;
     assert_eq!((coded.user_data, coded.offset.get()), (17, 16));
 }
+
+#[test]
+fn stage_samples_match_avm_and_preserve_output() {
+    use splot_decode::block_evidence::{DecodeStage, StageEvidenceStatus};
+    use splot_recon::PlaneId;
+
+    const EIGHT: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-2sb-deblock-intra-128x64-q100.ivf"
+    );
+    const TEN: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    );
+    use DecodeStage::{
+        Ccso, Cdef, Deblock, Prediction, Reconstruction, Reference, Residual, Restoration,
+    };
+    let eight: &[(DecodeStage, i32)] = &[
+        (Prediction, 128),
+        (Residual, -54),
+        (Reconstruction, 74),
+        (Deblock, 73),
+        (Reference, 73),
+    ];
+    let ten: &[(DecodeStage, i32)] = &[
+        (Prediction, 375),
+        (Residual, 622),
+        (Reconstruction, 997),
+        (Deblock, 935),
+        (Cdef, 916),
+        (Ccso, 895),
+        (Restoration, 901),
+        (Reference, 901),
+    ];
+
+    for (fixture, index, region, golden) in [
+        (EIGHT, 0, rect(4, 31, 1, 1), eight),
+        (TEN, 1, rect(127, 50, 1, 1), ten),
+    ] {
+        for threads in [1, 4] {
+            let mut normal = Decoder::new(settings(threads)).unwrap();
+            let original = decode(&mut normal, fixture).unwrap();
+            let coded = original[index].provenance().coded;
+            let (report, inspected) = capture(
+                fixture,
+                threads,
+                BlockEvidenceRequest::new(move |location| location == coded, None, 0, 4096)
+                    .with_stage_samples(PlaneId::Y, region),
+            );
+            assert_eq!(picture_hashes(&original), picture_hashes(&inspected));
+            assert_eq!(report.status, BlockEvidenceStatus::Complete);
+            for &(stage, sample) in golden {
+                let actual = report
+                    .stages
+                    .iter()
+                    .find(|record| record.stage == stage)
+                    .unwrap();
+                assert_eq!(
+                    actual.status,
+                    StageEvidenceStatus::Applied,
+                    "{stage:?} at {region:?}"
+                );
+                assert_eq!(actual.region, Some(region), "{stage:?}");
+                assert_eq!(actual.samples, [sample], "{stage:?}");
+            }
+        }
+    }
+}

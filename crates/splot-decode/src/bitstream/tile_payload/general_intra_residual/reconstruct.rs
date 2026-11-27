@@ -3,6 +3,9 @@
 
 //! Shared transform-block reconstruction setup.
 
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{DecodeStage, stages};
+
 use splot_core::simd::SimdBackend;
 use splot_recon::math::round2_i32;
 use splot_recon::{
@@ -248,6 +251,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
             actual: block.dense_len(),
         });
     }
+    let capture = capture_residual(plane_id, x, y, block_size);
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -273,7 +277,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
             let (dst, stride) = rows.prediction_target();
-            if let Some((fused, flat)) = fused
+            if !capture
+                && let Some((fused, flat)) = fused
                 && fused.add_onto_with(
                     backend,
                     prediction,
@@ -286,7 +291,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
             {
                 return Ok(());
             }
-            if let Some(luma_context) = luma_context
+            if !capture
+                && let Some(luma_context) = luma_context
                 && has_secondary(block)
                 && add_secondary_fused(
                     backend,
@@ -303,6 +309,10 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
             let (setup, secondary) = general()?;
             let residual = intra_residual(backend, block, &setup, secondary.as_ref(), scratch)
                 .map_err(reconstruct_error)?;
+            #[cfg(feature = "block-evidence")]
+            if capture {
+                record_residual(plane_id, x, y, block_size, residual, false);
+            }
             rows.add_block_residual_with(backend, prediction, residual)
                 .map_err(reconstruct_error)
         })
@@ -480,6 +490,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
     let backend = backend.narrow();
+    let capture = capture_residual(plane_id, x, y, block_size);
     let fused = fused_intra_setup(
         block,
         plane_id,
@@ -504,7 +515,8 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     };
     super::with_residual_scratch(|scratch| {
         let mut surface = splot_recon::CurrentFrameSurface::Frame(&mut *workspace);
-        if let Some((fused, flat)) = fused
+        if !capture
+            && let Some((fused, flat)) = fused
             && let Some((dst, stride)) = surface
                 .residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
@@ -519,7 +531,8 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
         {
             return Ok(());
         }
-        if let Some(luma_context) = luma_context
+        if !capture
+            && let Some(luma_context) = luma_context
             && has_secondary(block)
             && let Some((dst, stride)) = surface
                 .residual_rect_mut(plane_id, x, y, block_size)
@@ -539,6 +552,10 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
         let (setup, secondary) = general()?;
         let residual = intra_residual(backend, block, &setup, secondary.as_ref(), scratch)
             .map_err(reconstruct_error)?;
+        #[cfg(feature = "block-evidence")]
+        if capture {
+            record_residual(plane_id, x, y, block_size, residual, false);
+        }
         surface
             .add_residual_rect_block_with(backend, plane_id, x, y, block_size, residual)
             .map_err(reconstruct_error)
@@ -699,6 +716,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
     let backend = backend.narrow();
+    let capture = capture_residual(plane_id, x, y, block_size);
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let use_block_tcq = use_tcq && block.use_tcq;
@@ -712,7 +730,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
         None,
         bit_depth,
     );
-    if let Some((fused, flat)) = fused {
+    if !capture && let Some((fused, flat)) = fused {
         if let Some(residual) = fused.flat_residual(block.quant, Some(flat), bit_depth) {
             sink.add_constant_residual_rect_block_with(
                 backend, plane_id, x, y, block_size, residual,
@@ -735,7 +753,8 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
             return Ok(());
         }
     }
-    if has_secondary(block)
+    if !capture
+        && has_secondary(block)
         && let Some((dst, stride)) = sink.residual_rect_mut(plane_id, x, y, block_size)?
         && add_secondary_fused::<_, T>(
             backend,
@@ -776,6 +795,16 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
             .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
         let residual =
             dct_dc_residual(block.quant.first().copied().unwrap_or(0), &setup, transform);
+        #[cfg(feature = "block-evidence")]
+        if capture {
+            stages::transform_samples(
+                DecodeStage::Residual,
+                plane_id,
+                stages::block_rect(x, y, block_size),
+                true,
+                |_, _| Some(residual),
+            );
+        }
         sink.add_constant_residual_rect_block_with(backend, plane_id, x, y, block_size, residual)?;
         return Ok(());
     }
@@ -796,8 +825,50 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
         residual,
         &mut scratch.dequant_pair,
     )?;
+    #[cfg(feature = "block-evidence")]
+    if capture {
+        record_residual(plane_id, x, y, block_size, residual, true);
+    }
     sink.add_adjusted_residual_rect_block_with(backend, plane_id, x, y, block_size, residual)?;
     Ok(())
+}
+
+#[inline]
+fn capture_residual(plane: PlaneId, x: usize, y: usize, size: IntraRectBlockSize) -> bool {
+    #[cfg(feature = "block-evidence")]
+    {
+        stages::captures_block(plane, stages::block_rect(x, y, size))
+    }
+    #[cfg(not(feature = "block-evidence"))]
+    {
+        let _ = (plane, x, y, size);
+        false
+    }
+}
+
+#[cfg(feature = "block-evidence")]
+fn record_residual(
+    plane: PlaneId,
+    x: usize,
+    y: usize,
+    size: IntraRectBlockSize,
+    residual: &[i32],
+    adjusted: bool,
+) {
+    let width = size.width();
+    let shift_x = usize::from(adjusted && width == 64);
+    let shift_y = usize::from(adjusted && size.height() == 64);
+    stages::transform_samples(
+        DecodeStage::Residual,
+        plane,
+        stages::block_rect(x, y, size),
+        true,
+        |x, y| {
+            residual
+                .get((y >> shift_y) * (width >> shift_x) + (x >> shift_x))
+                .copied()
+        },
+    );
 }
 
 fn check_dense_len(

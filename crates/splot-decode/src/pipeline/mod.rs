@@ -519,6 +519,12 @@ fn decode_key_frame_with_effects(
     ring.reserve(pools);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let core = frames.share_core(core)?;
+    #[cfg(feature = "block-evidence")]
+    let split = split.filter(|_| {
+        !block_evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.captures_stages())
+    });
     if let (Some(rows), Some((unit, shared_sequence))) = (rows, split)
         && inter::splittable_inter_frame(frame_envelope.header.obu_type, &core)
     {
@@ -1601,6 +1607,12 @@ fn decode_frames_in_order(
                             PictureProvenance::direct(display, layer.sequence_location),
                             inter_envelope.header,
                         )
+                    });
+                    #[cfg(feature = "block-evidence")]
+                    let split = split.filter(|_| {
+                        !block_evidence
+                            .as_ref()
+                            .is_some_and(|evidence| evidence.captures_stages())
                     });
                     let _user_qm_scope =
                         crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);

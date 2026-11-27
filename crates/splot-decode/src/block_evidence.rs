@@ -6,8 +6,10 @@
 //! Feature tracking: `DECODE-STREAMING-API`.
 
 mod prediction;
+pub(crate) mod stages;
 mod transform;
 pub use prediction::*;
+pub use stages::{DecodeStage, StageEvidence, StageEvidenceStatus};
 pub(crate) use transform::DecodedTransformUnit;
 pub use transform::{BlockTransformDetails, BlockTransformEvidence, BlockTransformId};
 
@@ -18,7 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use splot_core::obu::ObuHeader;
-use splot_recon::PlaneRect;
+use splot_recon::{BitDepth, PlaneId, PlaneRect};
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, PartitionTreeType, TilePartitionCall};
 use crate::{EmbeddedLayerId, ExtendedLayerId, ObuLocation, PictureProvenance, TemporalLayerId};
@@ -37,6 +39,8 @@ pub enum BlockEvidenceKind {
     PartitionsAndBlocks,
     /// Transform geometry only.
     Transforms,
+    /// Samples at selected reconstruction stages. Use `with_stage_samples` to set the region.
+    Stages,
     /// Partition decisions, coding blocks, motion and transform geometry.
     All,
 }
@@ -67,6 +71,7 @@ pub struct BlockEvidenceRequest {
     frame_limit: NonZeroUsize,
     kind: BlockEvidenceKind,
     transform_details: Option<BlockTransformId>,
+    stage_samples: Option<(PlaneId, PlaneRect)>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
@@ -91,6 +96,7 @@ impl BlockEvidenceRequest {
             frame_limit: NonZeroUsize::MIN,
             kind: BlockEvidenceKind::PartitionsAndBlocks,
             transform_details: None,
+            stage_samples: None,
             cancelled: None,
         }
     }
@@ -109,6 +115,7 @@ impl BlockEvidenceRequest {
     pub fn with_kind(mut self, kind: BlockEvidenceKind) -> Self {
         self.kind = kind;
         self.transform_details = None;
+        self.stage_samples = None;
         self
     }
 
@@ -116,7 +123,19 @@ impl BlockEvidenceRequest {
     #[must_use]
     pub fn with_transform_details(mut self, transform: BlockTransformId) -> Self {
         self.transform_details = Some(transform);
+        self.stage_samples = None;
         self.kind = BlockEvidenceKind::Transforms;
+        self
+    }
+
+    /// Captures sample stages for one plane. The region uses native plane coordinates.
+    /// The decoder intersects the region with the visible plane. The byte budget
+    /// counts allocated sample storage. The event budget applies to structural records.
+    #[must_use]
+    pub fn with_stage_samples(mut self, plane: PlaneId, region: PlaneRect) -> Self {
+        self.stage_samples = Some((plane, region));
+        self.transform_details = None;
+        self.kind = BlockEvidenceKind::Stages;
         self
     }
 
@@ -263,6 +282,8 @@ pub struct BlockEvidenceReport {
     pub frame: Option<BlockEvidenceFrame>,
     /// Records that satisfied the selection before capture stopped.
     pub records: Vec<BlockEvidenceRecord>,
+    /// Sample stages during a region capture.
+    pub stages: Vec<StageEvidence>,
 }
 
 /// The receive end of an evidence capture.
@@ -297,6 +318,8 @@ struct CaptureState {
     stopped: Option<BlockEvidenceStatus>,
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
+    stages: Option<stages::StageSamples>,
+    stage_depth: Option<BitDepth>,
     reports: VecDeque<BlockEvidenceReport>,
     last_report: Option<BlockEvidenceReport>,
 }
@@ -366,6 +389,21 @@ impl BlockEvidenceState {
     ) -> BlockEvidenceRecorder {
         let mut state = self.state.lock();
         state.walking = true;
+        if let Some((plane, region)) = self.request.stage_samples {
+            let sx = 1 << usize::from(plane != PlaneId::Y && subsampling.0);
+            let sy = 1 << usize::from(plane != PlaneId::Y && subsampling.1);
+            let x = visible.x() / sx;
+            let y = visible.y() / sy;
+            if let Ok(bounds) = PlaneRect::new(
+                x,
+                y,
+                (visible.x() + visible.width()).div_ceil(sx) - x,
+                (visible.y() + visible.height()).div_ceil(sy) - y,
+            ) {
+                state.stages = stages::intersect(bounds, region)
+                    .map(|region| stages::StageSamples::new(plane, region, bounds));
+            }
+        }
         BlockEvidenceRecorder {
             state: Arc::clone(self),
             frame_number: state.frames_selected,
@@ -410,10 +448,18 @@ impl BlockEvidenceState {
         let records = core::mem::take(&mut state.records);
         state.remaining_events -= records.len();
         state.remaining_bytes -= records.capacity() * size_of::<BlockEvidenceRecord>();
+        let stages =
+            if let (Some(stages), Some(depth)) = (state.stages.take(), state.stage_depth.take()) {
+                state.remaining_bytes -= stages.bytes();
+                stages.finish(depth)
+            } else {
+                Vec::new()
+            };
         let mut report = BlockEvidenceReport {
             status,
             frame,
             records,
+            stages,
         };
         state.finished = session_ended
             || state.frames_selected == self.request.frame_limit.get()
@@ -441,7 +487,85 @@ impl BlockEvidenceState {
                     .is_some_and(|selected| selected.provenance == frame.provenance)
         };
         if matches {
-            self.complete(frame.wait_settled().is_ok(), false, self.cancelled());
+            let decoded = if self.request.stage_samples.is_some() {
+                match frame.wait_ready_frame() {
+                    Ok(crate::pipeline::PipelineDecodedFrame::Eight(frame)) => {
+                        stages::reference(self, &frame);
+                        true
+                    }
+                    Ok(crate::pipeline::PipelineDecodedFrame::Ten(frame)) => {
+                        stages::reference(self, &frame);
+                        true
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                frame.wait_settled().is_ok()
+            };
+            self.complete(decoded, false, self.cancelled());
+        }
+    }
+
+    pub(crate) fn captures_stages(&self) -> bool {
+        self.request.stage_samples.is_some()
+    }
+
+    pub(crate) fn stage_capture(self: &Arc<Self>) -> Option<Arc<Self>> {
+        self.captures_stages().then(|| Arc::clone(self))
+    }
+
+    pub(crate) fn stage_region(&self) -> Option<(PlaneId, PlaneRect)> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let state = self.state.lock();
+        state
+            .stages
+            .as_ref()
+            .map(|samples| (samples.plane, samples.region))
+    }
+
+    pub(crate) fn record_stage(
+        &self,
+        stage: DecodeStage,
+        plane: PlaneId,
+        source: PlaneRect,
+        applied: bool,
+        sample: impl FnMut(usize, usize) -> Option<i32>,
+    ) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let cancelled = self.cancelled();
+        let state = &mut *self.state.lock();
+        if state.finished || state.stopped.is_some() {
+            return;
+        }
+        let Some(stages) = state.stages.as_mut().filter(|stages| stages.plane == plane) else {
+            return;
+        };
+        let stop = if cancelled {
+            Some(BlockEvidenceStatus::Cancelled)
+        } else {
+            stages
+                .record(stage, source, applied, state.remaining_bytes, sample)
+                .err()
+        };
+        if let Some(stop) = stop {
+            state.stopped = Some(stop);
+            self.stopped.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn prepare_reference_stage(&self, plane: PlaneId, bounds: PlaneRect, depth: BitDepth) {
+        let state = &mut *self.state.lock();
+        state.stage_depth = Some(depth);
+        if state.stages.is_none()
+            && let Some((requested, region)) = self.request.stage_samples
+            && requested == plane
+            && let Some(region) = stages::intersect(bounds, region)
+        {
+            state.stages = Some(stages::StageSamples::new(plane, region, bounds));
         }
     }
 

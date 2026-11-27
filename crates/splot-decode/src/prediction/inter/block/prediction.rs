@@ -162,6 +162,8 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
             blend?;
         }
     }
+    #[cfg(feature = "block-evidence")]
+    capture_inter_prediction(&CurrentFrameSurface::Frame(workspace), placed);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             backend,
@@ -204,6 +206,8 @@ pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: 
         placed.motion_compensation_rect(),
         tile_offset,
     )?;
+    #[cfg(feature = "block-evidence")]
+    capture_inter_prediction(sink, placed);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             backend,
@@ -249,4 +253,38 @@ pub(super) fn predict_refined_inter_block<B: splot_core::simd::SimdBackend, T: R
         mc::predict_refined_block(backend, sink, &block, units, tile_offset)?;
     }
     Ok(())
+}
+
+#[cfg(feature = "block-evidence")]
+pub(super) fn capture_inter_prediction<T: ReconSample>(
+    sink: &CurrentFrameSurface<'_, '_, T>,
+    placed: &PlacedInterBlock,
+) {
+    use crate::block_evidence::{DecodeStage, stages};
+    let Some(plane) = stages::selected_plane() else {
+        return;
+    };
+    let format = sink.info().pixel_format();
+    let chroma = plane != ReconPlaneId::Y;
+    if chroma && !placed.predict_chroma {
+        return;
+    }
+    let mut mc = placed.motion_compensation_rect();
+    mc.chroma_luma_x = placed.chroma_luma_x();
+    mc.chroma_luma_y = placed.chroma_luma_y();
+    mc.chroma_luma_w = placed.chroma_luma_w();
+    mc.chroma_luma_h = placed.chroma_luma_h();
+    let (x, y, width, height) = mc.plane_rect(
+        plane,
+        u32::from(u8::from(chroma) * format.subsampling_x()),
+        u32::from(u8::from(chroma) * format.subsampling_y()),
+    );
+    if let Ok(rect) = splot_recon::PlaneRect::new(x, y, width, height) {
+        stages::surface_prediction(sink, plane, rect);
+        if placed.block.residual.is_none() {
+            stages::transform_samples(DecodeStage::Residual, plane, Some(rect), false, |_, _| {
+                Some(0)
+            });
+        }
+    }
 }
