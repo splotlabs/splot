@@ -10,6 +10,9 @@
 //! `segment_id`, `mrl_index`, `pb_mv_precision` and `mv` from `MB_MODE_INFO`.
 //! Use `get_ref_frame_map_idx` for the reference slots.
 //!
+//! For entropy checks, record the value and descending Q15 cutoffs from
+//! `avm_read_symbol` before adaptation in `av2_read_coeffs_txb`. Omit the terminal zero.
+//!
 //! [AVM]: https://github.com/AOMediaCodec/avm/tree/a1ec4594d97028ebc34083ec8346616d697c2fc9
 
 #![expect(clippy::unwrap_used)]
@@ -650,8 +653,6 @@ fn selected_transform(
 fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
     use splot_decode::block_evidence::{BlockEntropyScope, EntropyCoding};
 
-    // AVM a1ec4594, pre-update avm_read_symbol observations from av2_read_coeffs_txb.
-    // Each expected row omits the terminal zero and keeps AVM's descending ICDF.
     const FILTERS: &[u8] = include_bytes!(
         "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
     );
