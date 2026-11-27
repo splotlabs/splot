@@ -207,7 +207,8 @@ pub struct EncodedFrameHeader {
 /// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
 /// single-picture view, `filters` the sequence cannot carry, bits that do not
 /// parse to a complete inter header with `refs`, `refs` without a valid slot,
-/// or a switch frame [`build_switch_frame_header`] refuses.
+/// or a switch frame it cannot code (`restricted_prediction_switch = 1`, a leading
+/// frame, or a RAS frame without its long-term reference).
 pub fn build_inter_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
