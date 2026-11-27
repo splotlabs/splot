@@ -1289,27 +1289,6 @@ impl InterResidual {
     ) -> Option<&'a [InterResidualBlock]> {
         arena.get(self.block_range.start as usize..self.block_range.end as usize)
     }
-
-    #[cfg(feature = "block-evidence")]
-    pub(crate) fn record_transforms(
-        &self,
-        arena: &[InterResidualBlock],
-        evidence: crate::block_evidence::BlockEvidenceTile<'_>,
-        frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
-    ) {
-        for unit in &arena[self.block_range.start as usize..self.block_range.end as usize] {
-            evidence.record_transform(
-                frontier,
-                &crate::block_evidence::DecodedTransformUnit {
-                    plane: unit.plane,
-                    x: usize::from(unit.x),
-                    y: usize::from(unit.y),
-                    tx_size: unit.tx_size,
-                    coeffs: &unit.coeffs,
-                },
-            );
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
