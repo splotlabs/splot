@@ -16,14 +16,14 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS, TileStarts};
 use splot_decode::encoder_syntax::{
-    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
-    Partition, PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
+    EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding, Partition,
+    PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{
-    BitDepth, DecodedFrame, DequantBlockParams, DpcmDirection, PixelFormat, PlaneId, PlaneSize,
-    QmFrameLevels, QuantizerDeltas, secondary_transform_layout,
+    BitDepth, CCTX_MTX, DecodedFrame, DequantBlockParams, DpcmDirection, PixelFormat, PlaneId,
+    PlaneSize, QmFrameLevels, QuantizerDeltas, secondary_transform_layout,
 };
 
 use crate::cfl_filter::cfl_ds_filter;
@@ -1919,7 +1919,7 @@ impl SourceResidualCoder<'_> {
             let (c, s) = (i128::from(c), i128::from(s));
             s * s * i128::from(uu) + c * c * i128::from(vv) - 2 * c * s * i128::from(uv)
         };
-        let mut ranked: Vec<(i128, usize)> = CCTX_ROTATIONS
+        let mut ranked: Vec<(i128, usize)> = CCTX_MTX
             .iter()
             .map(|&rotation| energy(rotation))
             .enumerate()
@@ -1944,7 +1944,7 @@ impl SourceResidualCoder<'_> {
                 u_coeffs.clone_from(plain_u);
                 v_coeffs.clone_from(plain_v);
             }
-            kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
+            kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_MTX[index]);
             let cctx =
                 i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
             let coded = TransformBlock {

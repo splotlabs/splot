@@ -118,7 +118,7 @@ fn rotate_kernel<S: Simd>(simd: S, u: &mut [i32], v: &mut [i32], rotation: [i32;
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
-    use splot_decode::encoder_syntax::CCTX_ROTATIONS;
+    use splot_recon::CCTX_MTX;
 
     use super::*;
 
@@ -134,8 +134,8 @@ mod tests {
             let len = u.len().min(v.len());
             let (mut su, mut sv) = (u[..len].to_vec(), v[..len].to_vec());
             let (mut vu, mut vv) = (su.clone(), sv.clone());
-            rotate_scalar(&mut su, &mut sv, CCTX_ROTATIONS[rotation]);
-            rotate_simd(&mut vu, &mut vv, CCTX_ROTATIONS[rotation]);
+            rotate_scalar(&mut su, &mut sv, CCTX_MTX[rotation]);
+            rotate_simd(&mut vu, &mut vv, CCTX_MTX[rotation]);
             prop_assert_eq!((su, sv), (vu, vv));
         }
 
@@ -147,7 +147,7 @@ mod tests {
             v in -90_000i32..60_000,
             rotation in 0..6usize,
         ) {
-            let [c, s] = CCTX_ROTATIONS[rotation];
+            let [c, s] = CCTX_MTX[rotation];
             let (mut p, mut q) = ([u], [v]);
             rotate_simd(&mut p, &mut q, [c, s]);
             let back_u = round2_signed_i32(p[0] * c - q[0] * s, PREC_BITS);

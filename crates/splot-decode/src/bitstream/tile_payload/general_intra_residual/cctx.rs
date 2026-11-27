@@ -310,6 +310,8 @@ mod tests {
         })
     }
 
+    /// Which coefficients reach the kernel; its arithmetic has its oracle
+    /// test in `splot-recon`.
     #[test]
     fn cctx_pair_rotates_the_coded_rows_of_both_blocks() {
         let quant = [3, -7, 5, 2, -2, 5, 11, 9, 1];

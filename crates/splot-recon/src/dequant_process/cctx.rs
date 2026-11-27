@@ -37,7 +37,7 @@ pub const CCTX_MTX: [[i32; 2]; 6] = [
 /// # Errors
 /// Returns the errors of [`dequantize_block`](super::dequantize_block) for
 /// either block, and [`ReconError::InvalidDequantBlockShape`] if the V block
-/// does not have the shape and bit depth of the U block.
+/// does not have the shape of the U block.
 pub fn dequantize_cctx_pair_with<B: SimdBackend>(
     backend: B,
     params: [&DequantBlockParams; 2],
@@ -46,7 +46,7 @@ pub fn dequantize_cctx_pair_with<B: SimdBackend>(
     [u_out, v_out]: [&mut [i32]; 2],
 ) -> Result<usize> {
     let [u, v] = params;
-    if (v.tx_width, v.tx_height, v.bit_depth) != (u.tx_width, u.tx_height, u.bit_depth) {
+    if (v.tx_width, v.tx_height) != (u.tx_width, u.tx_height) {
         return Err(ReconError::InvalidDequantBlockShape {
             tx_width: v.tx_width,
             tx_height: v.tx_height,
@@ -73,8 +73,8 @@ fn pair_groups<S: Simd>(
     [cos, sin]: [i32; 2],
     [u_out, v_out]: [&mut [i32]; 2],
 ) -> Result<()> {
-    let bound = 1i32 << (7 + u32::from(u_params.bit_depth.bits()));
     let dequant = |params: &DequantBlockParams, quant: &[i32], group: usize| {
+        let bound = clamp_bound(params);
         let coded = &quant[quant.len().min(8 * group)..];
         let (lanes, len) = match coded.first_chunk() {
             Some(lanes) => (*lanes, 8),
@@ -97,7 +97,14 @@ fn pair_groups<S: Simd>(
     let rotated = |group: usize| -> Result<[i32x8<S>; 2]> {
         let u = dequant(u_params, u_quant, group)?;
         let v = dequant(v_params, v_quant, group)?;
-        Ok([u * cos - v * sin, u * sin + v * cos].map(|sum| round(sum).clamp(-bound, bound - 1)))
+        let clip = |sum: i32x8<S>, params| {
+            let bound = clamp_bound(params);
+            round(sum).clamp(-bound, bound - 1)
+        };
+        Ok([
+            clip(u * cos - v * sin, u_params),
+            clip(u * sin + v * cos, v_params),
+        ])
     };
     let (u_groups, u_half) = u_out.as_chunks_mut::<8>();
     let (v_groups, v_half) = v_out.as_chunks_mut::<8>();
@@ -115,6 +122,11 @@ fn pair_groups<S: Simd>(
         *v = simd.split_i32x8(next_v).0.into();
     }
     Ok(())
+}
+
+/// § 7.14.4 and § 7.14.6 clip coefficients to `±(1 << (BitDepth + 7))`.
+fn clamp_bound(params: &DequantBlockParams) -> i32 {
+    1 << (7 + u32::from(params.bit_depth.bits()))
 }
 
 #[cfg(test)]
@@ -320,22 +332,22 @@ mod tests {
     fn mismatched_pair_blocks_are_rejected() {
         let u = identity_params();
         let (mut u_out, mut v_out) = ([0; 16], [0; 32]);
-        for v in [
-            DequantBlockParams {
-                tx_height: 8,
-                ..identity_params()
-            },
-            DequantBlockParams {
-                bit_depth: BitDepth::Ten,
-                ..identity_params()
-            },
-        ] {
-            let v_out = &mut v_out[..v.tx_width * v.tx_height];
-            assert!(matches!(
-                pair([&u, &v], [&[1], &[1]], CCTX_MTX[0], [&mut u_out, v_out]),
-                Err(ReconError::InvalidDequantBlockShape { tx_width: 4, .. })
-            ));
-        }
+        let tall = DequantBlockParams {
+            tx_height: 8,
+            ..identity_params()
+        };
+        assert!(matches!(
+            pair(
+                [&u, &tall],
+                [&[1], &[1]],
+                CCTX_MTX[0],
+                [&mut u_out, &mut v_out]
+            ),
+            Err(ReconError::InvalidDequantBlockShape {
+                tx_width: 4,
+                tx_height: 8
+            })
+        ));
         assert!(matches!(
             pair(
                 [&u, &u],

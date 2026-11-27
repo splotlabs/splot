@@ -13,10 +13,6 @@ use super::{
     tx_log2,
 };
 
-/// `Cctx_Mtx` (§ 7.14.6): `(cos, sin) << CCTX_PREC_BITS` of `cctx_type`
-/// `1..=6` at index `cctx_type - 1`.
-pub const CCTX_ROTATIONS: [[i32; 2]; 6] = CCTX_MTX;
-
 impl IntraTileSyntax {
     /// Whether U block `tx` with `eob` codes `cctx_type` (§ 5.20.7.27).
     #[must_use]
@@ -46,7 +42,7 @@ impl IntraTileSyntax {
             }
             return Ok(());
         }
-        if usize::from(tx.cctx) > CCTX_ROTATIONS.len() {
+        if usize::from(tx.cctx) > CCTX_MTX.len() {
             return Err(EncoderSyntaxError::Unsupported("CCTX type").into());
         }
         put(self.tile_row(TileCdfSelector::CctxType)?, tx.cctx.into())
