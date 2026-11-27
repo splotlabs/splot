@@ -989,6 +989,14 @@ pub enum ReconError {
         /// Derived filter row index (`offs`).
         offset: i32,
     },
+    /// A film-grain model field holds what its § 5.18.10.2 syntax cannot
+    /// code: a lag above 3, a coefficient count other than the lag's, or a
+    /// coefficient outside 16 bits.
+    #[error("film grain model {field} is outside its AV2 § 5.18.10.2 syntax")]
+    FilmGrainModelOutOfRange {
+        /// Name of the rejected syntax element.
+        field: &'static str,
+    },
 }
 
 #[cfg(test)]
