@@ -82,6 +82,10 @@ fn single_picture_header_parses_with_its_inferred_values() {
     assert!(ccso.planes.iter().all(|plane| !plane.ccso_planes));
 }
 
+/// Temporal layers, implicit output, extended SDP and the high tier (level 8
+/// codes `seq_tier` only without `single_picture_header_flag`) are refused,
+/// and so is an off GDF in a frame inside one GDF block, which codes no
+/// `gdf_per_block`, and `allow_tcq`.
 #[test]
 fn single_picture_refuses_forms_the_reduced_header_cannot_carry() {
     let refused = [
@@ -98,7 +102,6 @@ fn single_picture_refuses_forms_the_reduced_header_cannot_carry() {
             extended_sdp: true,
             ..EncoderToolFlags::default()
         },
-        // Level 8 codes seq_tier only without single_picture_header_flag.
         EncoderToolFlags {
             level: Some(LevelIdx::from_bits(8)),
             tier: Tier::High,
@@ -112,7 +115,6 @@ fn single_picture_refuses_forms_the_reduced_header_cannot_carry() {
         );
     }
 
-    // A frame inside one GDF block codes no gdf_per_block, so GDF cannot be off.
     let gdf = EncoderToolFlags {
         gdf: true,
         ..EncoderToolFlags::default()
