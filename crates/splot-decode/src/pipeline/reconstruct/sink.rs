@@ -3,6 +3,9 @@
 
 //! Block reconstruction sinks: DC, palette, and inter-residual entries plus the shared luma write tail.
 
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{DecodeStage, stages};
+
 use splot_core::simd::SimdBackend;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraDcEdges, IntraPredictionScratchBuffer,
@@ -96,6 +99,17 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<B: SimdBackend, T: Recon
         )
     })?;
     if in_frame.is_some() {
+        #[cfg(feature = "block-evidence")]
+        if let Some(rect) = stages::block_rect(x, y, block_size) {
+            stages::surface_prediction(
+                &splot_recon::CurrentFrameSurface::Frame(workspace),
+                plane_id,
+                rect,
+            );
+            if block.eob == 0 {
+                stages::skip_residual(plane_id, Some(rect));
+            }
+        }
         if block.eob != 0 {
             add_general_intra_coeff_block_residual_in_place_with(
                 backend,
@@ -372,7 +386,33 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
     let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         let (samples, stride) = rows.prediction_target();
-        predict(samples, stride)
+        #[cfg(not(feature = "block-evidence"))]
+        {
+            predict(samples, stride)
+        }
+        #[cfg(feature = "block-evidence")]
+        {
+            let predicted = predict(samples, stride);
+            if predicted.is_ok()
+                && let Some(rect) = stages::block_rect(x, y, block_size)
+            {
+                stages::transform_samples(
+                    DecodeStage::Prediction,
+                    plane_id,
+                    Some(rect),
+                    true,
+                    |x, y| {
+                        samples
+                            .get(y * stride + x)
+                            .map(|value| i32::from(value.to_u16()))
+                    },
+                );
+                if block.eob == 0 {
+                    stages::skip_residual(plane_id, Some(rect));
+                }
+            }
+            predicted
+        }
     })?;
     if predicted.is_none() {
         return Ok(false);
@@ -476,6 +516,23 @@ pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    #[cfg(feature = "block-evidence")]
+    if let Some(rect) = stages::block_rect(x, y, block_size) {
+        stages::transform_samples(
+            DecodeStage::Prediction,
+            plane_id,
+            Some(rect),
+            true,
+            |x, y| {
+                prediction
+                    .get(y * block_size.width() + x)
+                    .map(|value| i32::from(value.to_u16()))
+            },
+        );
+        if block.eob == 0 {
+            stages::skip_residual(plane_id, Some(rect));
+        }
+    }
     if block.eob == 0 {
         return workspace
             .write_rect_block_with(backend, plane_id, x, y, block_size, prediction)
@@ -516,6 +573,8 @@ pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
         luma_context,
         dpcm,
         bit_depth,
+        #[cfg(feature = "block-evidence")]
+        Some((x, y)),
     )
     .and_then(|()| {
         workspace

@@ -356,6 +356,8 @@ impl InterFrameParse {
             info,
             plane_sizes,
             InterFilterInputs {
+                #[cfg(feature = "block-evidence")]
+                stage_capture: None,
                 records,
                 cdef_grid,
                 ccso_grid,

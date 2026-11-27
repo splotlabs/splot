@@ -111,6 +111,8 @@ impl FilterSinkSetup {
         mut sink: WienerNsLrReconSink<T>,
         filter_inputs: InterFilterInputs,
     ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
+        #[cfg(feature = "block-evidence")]
+        sink.set_stage_capture(filter_inputs.stage_capture);
         sink.set_gdf_reference_context(self.gdf_reference);
         sink.set_filter_records(filter_inputs.records);
         sink.set_cdef_grid(Some(filter_inputs.cdef_grid));

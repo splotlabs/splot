@@ -7,9 +7,11 @@
 
 mod entropy;
 mod prediction;
-pub use entropy::*;
+pub(crate) mod stages;
 mod transform;
+pub use entropy::*;
 pub use prediction::*;
+pub use stages::{DecodeStage, StageEvidence, StageEvidenceStatus};
 pub use transform::{
     BlockCoefficientDomain, BlockCoefficientMatrix, BlockCoefficientQuantization,
     BlockSecondaryTransform, BlockTransformCoefficients, BlockTransformDetails,
@@ -24,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
 use splot_core::obu::ObuHeader;
-use splot_recon::PlaneRect;
+use splot_recon::{BitDepth, PlaneId, PlaneRect};
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, PartitionTreeType, TilePartitionCall};
 use crate::{EmbeddedLayerId, ExtendedLayerId, ObuLocation, PictureProvenance, TemporalLayerId};
@@ -43,6 +45,8 @@ pub enum BlockEvidenceKind {
     PartitionsAndBlocks,
     /// Transform geometry only.
     Transforms,
+    /// Samples at selected reconstruction stages. Use `with_stage_samples` to set the region.
+    Stages,
     /// Partition decisions, coding blocks, motion and transform geometry.
     All,
 }
@@ -74,14 +78,15 @@ pub struct BlockEvidenceRequest {
     kind: BlockEvidenceKind,
     transform_details: Option<BlockTransformId>,
     transform_coefficients: bool,
+    stage_samples: Option<(PlaneId, PlaneRect)>,
     entropy: Option<BlockEntropyScope>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl BlockEvidenceRequest {
     /// Selects the first matching coded OBU and a region in coded luma coordinates.
-    /// The byte budget counts record storage and coefficient arrays, including
-    /// spare capacity. Zero stops before the first record.
+    /// The byte budget counts records, coefficients and stage samples. It
+    /// includes spare capacity. Zero stops before the first record.
     ///
     /// Return promptly from the predicate. Do not call this decoder or panic.
     #[must_use]
@@ -100,6 +105,7 @@ impl BlockEvidenceRequest {
             kind: BlockEvidenceKind::PartitionsAndBlocks,
             transform_details: None,
             transform_coefficients: false,
+            stage_samples: None,
             entropy: None,
             cancelled: None,
         }
@@ -120,6 +126,7 @@ impl BlockEvidenceRequest {
         self.kind = kind;
         self.transform_details = None;
         self.transform_coefficients = false;
+        self.stage_samples = None;
         self.entropy = None;
         self
     }
@@ -129,8 +136,23 @@ impl BlockEvidenceRequest {
     pub fn with_transform_details(mut self, transform: BlockTransformId) -> Self {
         self.transform_details = Some(transform);
         self.transform_coefficients = false;
+        self.stage_samples = None;
         self.entropy = None;
         self.kind = BlockEvidenceKind::Transforms;
+        self
+    }
+
+    /// Captures sample stages for one plane. The region uses native plane coordinates.
+    /// The decoder intersects the region with the visible plane. The byte budget
+    /// counts allocated sample storage. The event budget applies to structural records.
+    /// The selected frame uses ordered reconstruction before its filter stages.
+    #[must_use]
+    pub fn with_stage_samples(mut self, plane: PlaneId, region: PlaneRect) -> Self {
+        self.stage_samples = Some((plane, region));
+        self.entropy = None;
+        self.transform_details = None;
+        self.transform_coefficients = false;
+        self.kind = BlockEvidenceKind::Stages;
         self
     }
 
@@ -151,6 +173,7 @@ impl BlockEvidenceRequest {
     #[must_use]
     pub fn with_entropy(mut self, scope: BlockEntropyScope) -> Self {
         self.entropy = Some(scope);
+        self.stage_samples = None;
         self.region = None;
         self.transform_details = None;
         self.transform_coefficients = false;
@@ -302,6 +325,8 @@ pub struct BlockEvidenceReport {
     pub records: Vec<BlockEvidenceRecord>,
     /// The requested coefficient payload, when capture produced it.
     pub coefficients: Option<BlockTransformCoefficients>,
+    /// Sample stages during a region capture.
+    pub stages: Vec<StageEvidence>,
     /// Symbol observations when the decoder found the requested scope.
     pub entropy: Option<BlockEntropyEvidence>,
 }
@@ -340,6 +365,8 @@ struct CaptureState {
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
     coefficients: Option<BlockTransformCoefficients>,
+    stages: Option<stages::StageSamples>,
+    stage_depth: Option<BitDepth>,
     reports: VecDeque<BlockEvidenceReport>,
     last_report: Option<BlockEvidenceReport>,
 }
@@ -409,6 +436,21 @@ impl BlockEvidenceState {
     ) -> BlockEvidenceRecorder {
         let mut state = self.state.lock();
         state.walking = true;
+        if let Some((plane, region)) = self.request.stage_samples {
+            let sx = 1 << usize::from(plane != PlaneId::Y && subsampling.0);
+            let sy = 1 << usize::from(plane != PlaneId::Y && subsampling.1);
+            let x = visible.x() / sx;
+            let y = visible.y() / sy;
+            if let Ok(bounds) = PlaneRect::new(
+                x,
+                y,
+                (visible.x() + visible.width()).div_ceil(sx) - x,
+                (visible.y() + visible.height()).div_ceil(sy) - y,
+            ) {
+                state.stages = intersection(bounds, region)
+                    .map(|region| stages::StageSamples::new(plane, region, bounds));
+            }
+        }
         BlockEvidenceRecorder {
             state: Arc::clone(self),
             frame_number: state.frames_selected,
@@ -439,13 +481,20 @@ impl BlockEvidenceState {
         let walking = core::mem::take(&mut state.walking);
         let entropy = state.entropy.take();
         let entropy_stop = entropy.as_ref().and_then(BlockEntropyEvidence::status);
-        let status = if !decoded {
+        let available = if self.request.entropy.is_some() {
+            entropy.is_some()
+        } else if self.captures_stages() {
+            state.stages.is_some() && state.stage_depth.is_some()
+        } else {
+            walking
+        };
+        let mut status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
         } else if let Some(stopped) = stopped.or(entropy_stop) {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if walking && (self.request.entropy.is_none() || entropy.is_some()) {
+        } else if available {
             BlockEvidenceStatus::Complete
         } else if frame.is_some() {
             BlockEvidenceStatus::Unavailable
@@ -465,11 +514,25 @@ impl BlockEvidenceState {
                 + coefficients.dequantized.capacity())
                 * size_of::<i32>();
         }
+        let stages =
+            if let (Some(stages), Some(depth)) = (state.stages.take(), state.stage_depth.take()) {
+                state.remaining_bytes -= stages.bytes();
+                match stages.finish(depth, walking, status != BlockEvidenceStatus::Complete) {
+                    Ok(stages) => stages,
+                    Err(error) => {
+                        status = error;
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
         let mut report = BlockEvidenceReport {
             status,
             frame,
             records,
             coefficients,
+            stages,
             entropy,
         };
         state.finished = session_ended
@@ -498,7 +561,85 @@ impl BlockEvidenceState {
                     .is_some_and(|selected| selected.provenance == frame.provenance)
         };
         if matches {
-            self.complete(frame.wait_settled().is_ok(), false, self.cancelled());
+            let decoded = if self.request.stage_samples.is_some() {
+                match frame.wait_ready_frame() {
+                    Ok(crate::pipeline::PipelineDecodedFrame::Eight(frame)) => {
+                        stages::reference(self, &frame);
+                        true
+                    }
+                    Ok(crate::pipeline::PipelineDecodedFrame::Ten(frame)) => {
+                        stages::reference(self, &frame);
+                        true
+                    }
+                    Err(_) => false,
+                }
+            } else {
+                frame.wait_settled().is_ok()
+            };
+            self.complete(decoded, false, self.cancelled());
+        }
+    }
+
+    pub(crate) fn captures_stages(&self) -> bool {
+        self.request.stage_samples.is_some()
+    }
+
+    pub(crate) fn stage_capture(self: &Arc<Self>) -> Option<Arc<Self>> {
+        self.captures_stages().then(|| Arc::clone(self))
+    }
+
+    pub(crate) fn stage_region(&self) -> Option<(PlaneId, PlaneRect)> {
+        if self.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let state = self.state.lock();
+        state
+            .stages
+            .as_ref()
+            .map(|samples| (samples.plane, samples.region))
+    }
+
+    pub(crate) fn record_stage(
+        &self,
+        stage: DecodeStage,
+        plane: PlaneId,
+        source: PlaneRect,
+        applied: bool,
+        sample: impl FnMut(usize, usize) -> Option<i32>,
+    ) {
+        if self.stopped.load(Ordering::Relaxed) {
+            return;
+        }
+        let cancelled = self.cancelled();
+        let state = &mut *self.state.lock();
+        if state.finished || state.stopped.is_some() {
+            return;
+        }
+        let Some(stages) = state.stages.as_mut().filter(|stages| stages.plane == plane) else {
+            return;
+        };
+        let stop = if cancelled {
+            Some(BlockEvidenceStatus::Cancelled)
+        } else {
+            stages
+                .record(stage, source, applied, state.remaining_bytes, sample)
+                .err()
+        };
+        if let Some(stop) = stop {
+            state.stopped = Some(stop);
+            self.stopped.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn prepare_reference_stage(&self, plane: PlaneId, bounds: PlaneRect, depth: BitDepth) {
+        let state = &mut *self.state.lock();
+        state.stage_depth = Some(depth);
+        if state.stages.is_none()
+            && let Some((requested, region)) = self.request.stage_samples
+            && requested == plane
+            && let Some(region) = intersection(bounds, region)
+        {
+            state.stages = Some(stages::StageSamples::new(plane, region, bounds));
         }
     }
 

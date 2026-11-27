@@ -18,6 +18,9 @@ use crate::Result;
 use crate::pipeline::inflight::FrameSlotWriter;
 use parking_lot::Mutex;
 
+#[cfg(feature = "block-evidence")]
+use crate::block_evidence::{BlockEvidenceState, DecodeStage};
+
 const MI_SIZE: usize = 4;
 
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
@@ -25,6 +28,8 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
     plane_sizes: [Option<splot_recon::PlaneSize>; 3],
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")]
+    stage_capture: Option<Arc<BlockEvidenceState>>,
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
@@ -51,6 +56,8 @@ pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     mi_cols: usize,
     subsampling: (usize, usize),
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")]
+    stage_capture: Option<Arc<BlockEvidenceState>>,
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
@@ -240,6 +247,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             filter_records: super::FrameFilterRecords::default(),
+            #[cfg(feature = "block-evidence")]
+            stage_capture: None,
             cdef_grid: None,
             ccso_grid: None,
             gdf_grid: None,
@@ -262,6 +271,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     /// decoded-frame info is known before the samples are filtered.
     pub(crate) const fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
         self.info
+    }
+
+    #[cfg(feature = "block-evidence")]
+    pub(crate) fn set_stage_capture(&mut self, capture: Option<Arc<BlockEvidenceState>>) {
+        self.stage_capture = capture;
     }
 
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
@@ -403,6 +417,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             mut filter_records,
+            #[cfg(feature = "block-evidence")]
+            stage_capture,
             cdef_grid,
             ccso_grid,
             gdf_grid,
@@ -422,6 +438,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             luma_width,
             luma_height,
             pixel_format,
+            #[cfg(feature = "block-evidence")]
+            stage_capture,
             cdef_grid,
             cdef_skip_grid,
             cdef_strengths,
@@ -498,6 +516,29 @@ impl<T: ReconSample> OwnedFilterFrontier<T> {
             .progress
             .frontier_rows()
             .ok_or_else(lr_pipeline_state_error)?;
+        #[cfg(feature = "block-evidence")]
+        if let Some(capture) = &setup.stage_capture
+            && let Some((plane, region)) = capture.stage_region()
+        {
+            let _ = rows.with_plane_rows_mut(
+                plane,
+                region.y(),
+                region.y() + region.height(),
+                |samples, stride, _, _, origin| {
+                    capture.record_stage(
+                        DecodeStage::Reconstruction,
+                        plane,
+                        region,
+                        true,
+                        |x, y| {
+                            samples
+                                .get((y - origin) * stride + x)
+                                .map(|value| i32::from(value.to_u16()))
+                        },
+                    );
+                },
+            );
+        }
         let deblock = match setup.core.deblocking_filter_params {
             Some(filter) if filter.apply_deblocking_filter == [false; 4] => None,
             Some(filter) => crate::filters::deblock::FrameDeblock::prepare_owned(
@@ -933,6 +974,64 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             .map(|tile| (tile.mi_row_starts.as_ref(), tile.mi_col_starts.as_ref()))
     }
 
+    #[cfg(feature = "block-evidence")]
+    fn capture_filter(
+        &self,
+        stage: DecodeStage,
+        range: (usize, usize),
+        applied: bool,
+        plane: Option<crate::filters::source::FramePlane<'_, T>>,
+    ) {
+        let Some(capture) = &self.stage_capture else {
+            return;
+        };
+        let Some((id, _)) = capture.stage_region() else {
+            return;
+        };
+        let Some(plane) = plane else { return };
+        let scale = 1
+            << (if id == PlaneId::Y {
+                0
+            } else {
+                self.subsampling.1
+            });
+        let top = range.0 / scale;
+        let bottom = range.1.div_ceil(scale);
+        if let Ok(rect) = splot_recon::PlaneRect::new(0, top, plane.width(), bottom - top) {
+            capture.record_stage(stage, id, rect, applied, |x, y| {
+                plane.row(y)?.get(x).map(|value| i32::from(value.to_u16()))
+            });
+        }
+    }
+
+    #[cfg(feature = "block-evidence")]
+    fn capture_cdef_ccso(
+        &self,
+        stage: DecodeStage,
+        range: (usize, usize),
+        cdef: &crate::filters::cdef::CdefFrame<'_, T>,
+        applied: impl FnOnce(PlaneId) -> bool,
+    ) {
+        let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        else {
+            return;
+        };
+        let filtered = match plane {
+            PlaneId::Y => Some(&cdef.filtered_y),
+            PlaneId::U => cdef.filtered_u.as_ref(),
+            PlaneId::V => cdef.filtered_v.as_ref(),
+        };
+        self.capture_filter(
+            stage,
+            range,
+            applied(plane),
+            filtered.and_then(|filtered| filtered.view().ok()),
+        );
+    }
+
     #[expect(clippy::too_many_arguments)]
     fn cdef_ccso_range<'d, B: splot_core::simd::SimdBackend>(
         &self,
@@ -944,6 +1043,13 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         target: Option<crate::pipeline::frame_progress::DirectStripeTarget<T>>,
         luma_output: bool,
     ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
+        #[cfg(feature = "block-evidence")]
+        let primary = target.is_some()
+            && self
+                .stage_capture
+                .as_ref()
+                .and_then(|capture| capture.stage_region())
+                .is_some_and(|(plane, _)| luma_output || plane != PlaneId::Y);
         let mut cdef = crate::filters::cdef::cdef_stripe_into(
             backend,
             deblocked,
@@ -966,6 +1072,19 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             _ => None,
         })
         .map_err(|plane| filter_error(plane, "CDEF stripe output"))?;
+        #[cfg(feature = "block-evidence")]
+        if primary {
+            self.capture_cdef_ccso(DecodeStage::Cdef, (start, end), &cdef, |plane| {
+                let identity = crate::filters::cdef::cdef_stripe_identity(
+                    self.cdef_strengths.as_deref(),
+                    chain.cdef_grid,
+                    self.cdef_skip_grid.as_ref(),
+                    (self.mi_rows, self.mi_cols),
+                    (start, end),
+                );
+                !identity[usize::from(plane != PlaneId::Y)]
+            });
+        }
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             crate::filters::ccso::ccso_stripe(
                 backend,
@@ -977,6 +1096,15 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 self.filter_records.bru_modes.as_deref(),
             )
             .map_err(|error| ccso_filter_error(&error))?;
+        }
+        #[cfg(feature = "block-evidence")]
+        if primary {
+            self.capture_cdef_ccso(DecodeStage::Ccso, (start, end), &cdef, |plane| {
+                chain
+                    .ccso_grid
+                    .and(self.ccso_config.as_ref())
+                    .is_some_and(|config| config.filters_plane(plane))
+            });
         }
         Ok(cdef)
     }
@@ -1074,6 +1202,41 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
         [all_in_place, chroma_in_place, luma_in_place]: [bool; 3],
     ) -> Result<final_filters::FilteredStripe<T>> {
         let chain = self.chain();
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        {
+            let views = [Some(deblocked.y), deblocked.u, deblocked.v];
+            let direct = target
+                .get(plane)
+                .filter(|dest| dest.holds_deblocked())
+                .and_then(crate::pipeline::frame_progress::DirectPlaneTarget::rows);
+            let view = direct.or(views[plane.index()]);
+            let deb = self.core.deblocking_filter_params.is_some_and(|params| {
+                let switches = params.apply_deblocking_filter;
+                match plane {
+                    PlaneId::Y => switches[0] || switches[1],
+                    PlaneId::U => switches[2],
+                    PlaneId::V => switches[3],
+                }
+            });
+            self.capture_filter(DecodeStage::Deblock, (start, end), deb, view);
+            if all_in_place
+                || (luma_in_place && plane == PlaneId::Y)
+                || (chroma_in_place && plane != PlaneId::Y)
+            {
+                for stage in [
+                    DecodeStage::Cdef,
+                    DecodeStage::Ccso,
+                    DecodeStage::Restoration,
+                    DecodeStage::Gdf,
+                ] {
+                    self.capture_filter(stage, (start, end), false, view);
+                }
+            }
+        }
         let mut in_place = |plane: PlaneId| {
             target
                 .take(plane)
@@ -1109,6 +1272,30 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 ..
             } =
                 self.cdef_ccso_range(backend, deblocked, &chain, start, end, Some(target), false)?;
+            #[cfg(feature = "block-evidence")]
+            if let Some((plane, _)) = self
+                .stage_capture
+                .as_ref()
+                .and_then(|capture| capture.stage_region())
+            {
+                let filtered = match plane {
+                    PlaneId::Y => None,
+                    PlaneId::U => u.as_ref(),
+                    PlaneId::V => v.as_ref(),
+                };
+                self.capture_filter(
+                    DecodeStage::Restoration,
+                    (start, end),
+                    false,
+                    filtered.and_then(|filtered| filtered.view().ok()),
+                );
+                self.capture_filter(
+                    DecodeStage::Gdf,
+                    (start, end),
+                    false,
+                    filtered.and_then(|filtered| filtered.view().ok()),
+                );
+            }
             return Ok(final_filters::FilteredStripe { y: luma, u, v });
         }
         let deblocked = if chroma_in_place {
@@ -1196,6 +1383,24 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 target: lr_target,
             },
         )?;
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+        {
+            let filtered = match plane {
+                PlaneId::Y => Some(frame.post_lr_y.as_ref().unwrap_or(&frame.cdef_y)),
+                PlaneId::U => frame.post_lr_u.as_ref().or(frame.cdef_u.as_ref()),
+                PlaneId::V => frame.post_lr_v.as_ref().or(frame.cdef_v.as_ref()),
+            };
+            self.capture_filter(
+                DecodeStage::Restoration,
+                (start, end),
+                active_lr[plane.index()],
+                filtered.and_then(|filtered| filtered.view().ok()),
+            );
+        }
         if self.gdf_active {
             let (separate_cdef_luma, output_luma) =
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
@@ -1219,6 +1424,25 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             )?;
         }
         let mut filtered = frame.into_filtered();
+        #[cfg(feature = "block-evidence")]
+        if let Some((plane, _)) = self
+            .stage_capture
+            .as_ref()
+            .and_then(|capture| capture.stage_region())
+            && !(chroma_in_place && plane != PlaneId::Y)
+        {
+            let output = match plane {
+                PlaneId::Y => Some(&filtered.y),
+                PlaneId::U => filtered.u.as_ref(),
+                PlaneId::V => filtered.v.as_ref(),
+            };
+            self.capture_filter(
+                DecodeStage::Gdf,
+                (start, end),
+                self.gdf_active && plane == PlaneId::Y,
+                output.and_then(|output| output.view().ok()),
+            );
+        }
         if let Some([u, v]) = chroma {
             (filtered.u, filtered.v) = (u, v);
         }
