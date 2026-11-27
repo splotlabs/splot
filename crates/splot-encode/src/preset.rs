@@ -481,9 +481,19 @@ pub struct PresetParams {
     /// The CDEF search also tries every `CdefDamping` `3..=6`, not only the
     /// one derived from the qindex, and keeps the lowest RD cost.
     pub cdef_damping_search: bool,
+    /// `CdefOnSkipTxfm` (§ 5.4.10): `0` `CDEF_ON_SKIP_TXFM_ADAPTIVE`, where
+    /// [`Self::cdef_on_skip`] chooses per frame; `1` `ALWAYS_ON`, where CDEF
+    /// filters skipped transform blocks and `cdef_on_skip` has no effect; `2`
+    /// `DISABLED`, which refuses `cdef_on_skip`. `0` in every row: a
+    /// restriction removes tools.
+    pub cdef_on_skip_mode: u8,
     /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
     /// restoration off.
     pub wiener_ns_chroma: u8,
+    /// `lr_tools_disable` (§ 5.4.10) of luma `RESTORE_PC_WIENER`, luma
+    /// `RESTORE_WIENER_NONSEP` and chroma `RESTORE_WIENER_NONSEP`: the
+    /// restoration search tries no disabled tool. Off in every row.
+    pub lr_tools_disable: [bool; 3],
     /// The largest `NumFilterClasses` a luma bank fit tries, over the
     /// § 7.20.4 PC-Wiener classes; `1` fits one class.
     pub wiener_ns_classes: u8,
@@ -1189,6 +1199,19 @@ impl PresetParams {
         check!(lr_chroma_unit_sizes)?;
         check!(deblock_offset_bits)?;
         check!(cdef_pairs)?;
+        check(
+            "cdef_on_skip_mode",
+            self.cdef_on_skip_mode,
+            PresetIntegerRange::new(
+                ranges::cdef_on_skip_mode.min,
+                if self.cdef_on_skip {
+                    1
+                } else {
+                    ranges::cdef_on_skip_mode.max
+                },
+            ),
+            " (2, CDEF_ON_SKIP_TXFM_DISABLED, refuses cdef_on_skip: § 5.4.10)",
+        )?;
         check!(compound_refs)?;
         check!(jmvd_scales)?;
         check!(interintra_search)?;
@@ -1799,6 +1822,8 @@ preset_table! {
         lr_chroma_unit_sizes:  [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         "Search depth for the nonseparable chroma Wiener filter."
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        "Code lr_tools_disable for luma PC-Wiener, luma Wiener-NS and chroma Wiener-NS, such as 1,0,0."
+        lr_tools_disable:      [[false; 3]; 11],
         "Maximum number of classes to test in a luma Wiener filter bank." [1, u8::MAX as i32]
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         "Number of guided detail filter candidates to test." [0, 16]
@@ -1809,6 +1834,8 @@ preset_table! {
         cdef_pairs:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Search all allowed CDEF damping values."
         cdef_damping_search:   [false, false, false, false, false, false, false, false, false, false, false],
+        "Code CdefOnSkipTxfm: 0 adaptive (cdef_on_skip chooses), 1 always on, 2 disabled." [0, 2]
+        cdef_on_skip_mode:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Test applying CDEF to skipped transform blocks."
         cdef_on_skip:          [ true, false, false, false, false, false, false, false, false, false, false],
         "Search separate vertical and horizontal luma deblocking offsets. Requires loop_filter_search."

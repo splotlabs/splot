@@ -138,6 +138,65 @@ fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_ne!(luma, one);
 }
 
+/// [`full_split`] with `lr_tools_disable = mask`.
+fn with_lr_tools_disable(mask: [bool; 3]) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        lr_tools_disable: mask,
+        ..*full_split()
+    }))
+}
+
+/// Each `lr_tools_disable` mask reaches the parsed sequence header, no frame
+/// codes a disabled tool (§ 5.18.7.11 `tool_index` cannot carry one), the
+/// Wiener-NS filters that stay enabled still code, the stream decodes to the
+/// encoder recon, and 1 and 2 threads write the same bytes.
+#[test]
+fn disabled_restoration_tools_are_never_coded() {
+    use FrameRestorationType as T;
+    for (mask, chroma) in [
+        ([true, false, false], PixelFormat::Yuv420),
+        ([false, true, false], PixelFormat::Yuv444),
+        ([false, false, true], PixelFormat::Yuv444),
+        ([false, false, true], PixelFormat::Yuv420),
+        ([true, true, false], PixelFormat::Yuv420),
+    ] {
+        let preset = with_lr_tools_disable(mask);
+        let mut config = config(200, 96, BitDepth::Ten, 6, 190);
+        config.chroma = chroma;
+        let filter = IntraFrameCoder::with_preset(&config, preset)
+            .unwrap()
+            .sequence
+            .filter
+            .unwrap();
+        assert_eq!(
+            [
+                filter.lr_pc_wiener_disabled,
+                filter.lr_wiener_nonsep_disabled,
+                filter.lr_uv_wiener_nonsep_disabled
+            ],
+            mask
+        );
+        let (one, recon, lr) = wiener_stream((1, chroma), preset);
+        let luma: Vec<T> = lr.iter().map(|frame| frame[0].0).collect();
+        let allowed = |tool: T| match tool {
+            T::PcWiener => !mask[0],
+            T::WienerNonsep => !mask[1],
+            T::Switchable => !mask[0] && !mask[1],
+            _ => true,
+        };
+        assert!(luma.iter().all(|&tool| allowed(tool)), "{mask:?} {lr:?}");
+        assert_eq!(codes_wiener_ns(&lr, 1..3), !mask[2], "{mask:?} {lr:?}");
+        if !mask[1] {
+            assert!(codes_wiener_ns(&lr, 0..1), "{mask:?} {lr:?}");
+        }
+        assert_same_samples(&decode(&one.concat()), &recon, &format!("{mask:?}"));
+        assert!(
+            wiener_stream((2, chroma), preset).0 == one,
+            "{mask:?}: 2 threads"
+        );
+    }
+}
+
 /// Three frames of a 352x288 pan at preset 9 with banks of up to 16 classes:
 /// the units, the encoder recon and the luma `NumFilterClasses` of each frame.
 fn class_stream() -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<u8>>) {
@@ -212,6 +271,22 @@ fn avm_decodes_wiener_ns_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
+    for mask in [
+        [true, false, false],
+        [false, true, false],
+        [false, false, true],
+    ] {
+        let (units, recon, _) =
+            wiener_stream((1, PixelFormat::Yuv444), with_lr_tools_disable(mask));
+        let name = format!(
+            "lr-disable{}{}{}",
+            u8::from(mask[0]),
+            u8::from(mask[1]),
+            u8::from(mask[2])
+        );
+        let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Ten, &name);
+        assert!(avm == recon, "{name}: AVM output differs");
+    }
     let on = full_split();
     for (speed, preset) in [(1, on), (0, with_wiener_ns(on, (1, 1)))] {
         let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), preset, speed);

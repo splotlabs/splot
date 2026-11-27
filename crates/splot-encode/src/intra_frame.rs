@@ -13,7 +13,9 @@ use splot_core::headers::frame::{
     build_encoder_sequence_header, encode_film_grain_obu, encode_multi_frame_header_obu,
     encoder_film_grain_model,
 };
-use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::{
+    BitDepthIdc, CdefOnSkipTxfm, ChromaFormatIdc, SequenceHeader, SuperblockSize,
+};
 use splot_core::tile::{MAX_TILE_COLS, MAX_TILE_ROWS, TileStarts};
 use splot_decode::encoder_syntax::{
     CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, ParityHiding,
@@ -344,6 +346,12 @@ impl IntraFrameCoder {
                 extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
+                lr_tools_disable: preset.lr_tools_disable,
+                cdef_on_skip_txfm: match preset.cdef_on_skip_mode {
+                    0 => CdefOnSkipTxfm::Adaptive,
+                    1 => CdefOnSkipTxfm::AlwaysOn,
+                    _ => CdefOnSkipTxfm::Disabled,
+                },
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
