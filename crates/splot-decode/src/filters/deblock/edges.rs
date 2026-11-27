@@ -91,7 +91,15 @@ struct Strengths<'a> {
     last: (u16, [u16; 2]),
 }
 
-impl Strengths<'_> {
+impl<'a> Strengths<'a> {
+    /// Strengths that have met no `qindex`: `u16::MAX` is above every `MaxQ`.
+    fn new(cache: &'a StrengthCache) -> Self {
+        Self {
+            cache,
+            last: (u16::MAX, [0; 2]),
+        }
+    }
+
     /// `qThr` and `side` of the current, then the previous, side's lanes.
     #[expect(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
@@ -101,25 +109,33 @@ impl Strengths<'_> {
             let [q_thr, side] = self.last.1.map(|value| u16x16::splat(simd, value));
             return [q_thr, side, q_thr, side];
         }
-        self.gather(simd, [curr, prev])
+        self.of_distinct(simd, [curr, prev])
     }
 
+    /// [`Self::of`] for lanes that differ: one lookup per distinct `qindex`,
+    /// given to every lane of both sides that holds it.
     #[cold]
     #[inline(never)]
-    fn gather<S: Simd>(&mut self, simd: S, sides: [u16x16<S>; 2]) -> [u16x16<S>; 4] {
-        let mut words = [[0; GROUP]; 4];
-        for (side, qindex) in sides.iter().enumerate() {
-            for (lane, qindex) in qindex.to_array().into_iter().enumerate() {
-                if qindex != self.last.0 {
-                    let (q_thr, side) = self.cache.get(u32::from(qindex));
-                    let word = |value: i32| value.clamp(0, 0x7fff) as u16;
-                    self.last = (qindex, [word(q_thr), word(side)]);
-                }
-                words[2 * side][lane] = self.last.1[0];
-                words[2 * side + 1][lane] = self.last.1[1];
+    fn of_distinct<S: Simd>(&mut self, simd: S, sides: [u16x16<S>; 2]) -> [u16x16<S>; 4] {
+        let qindexes = sides.map(SimdBase::to_array);
+        let mut words = [u16x16::splat(simd, 0); 4];
+        let mut pending = u32::MAX;
+        while let Some(&qindex) = qindexes
+            .as_flattened()
+            .get(pending.trailing_zeros() as usize)
+        {
+            let (q_thr, side) = self.cache.get(u32::from(qindex));
+            let strengths = [q_thr, side].map(|value| value.clamp(0, 0x7fff) as u16);
+            self.last = (qindex, strengths);
+            let [q_thr, side] = strengths.map(|value| u16x16::splat(simd, value));
+            for (index, lanes) in sides.into_iter().enumerate() {
+                let same = lanes.simd_eq(u16x16::splat(simd, qindex));
+                words[2 * index] = simd.select_u16x16(same, q_thr, words[2 * index]);
+                words[2 * index + 1] = simd.select_u16x16(same, side, words[2 * index + 1]);
+                pending &= !((same.to_bitmask() as u32) << (GROUP * index));
             }
         }
-        words.map(|words| u16x16::from_slice(simd, &words))
+        words
     }
 }
 
@@ -484,10 +500,7 @@ impl PassEdges {
         cache: &StrengthCache,
     ) -> Result<(), DeblockError> {
         let sub_x = plane_pass.plane_sub_x;
-        let mut strengths = Strengths {
-            cache,
-            last: (u16::MAX, [0; 2]),
-        };
+        let mut strengths = Strengths::new(cache);
         let (rows, cols, stride) = (self.rows, self.cols, self.stride);
         let reach = if PLANE == 0 { 16 } else { 8 };
         let disable = geometry.disable_loopfilters_across_tiles;
@@ -1051,3 +1064,7 @@ impl LoneRun<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "strength_tests.rs"]
+mod strength_tests;
