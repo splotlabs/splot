@@ -246,7 +246,7 @@ impl EncoderReferences {
         Ok(())
     }
 
-    /// `RefTLayerId` of `slot` (§ 7.20); `None` outside the slots.
+    /// `RefTLayerId` of `slot` (§ 7.23); `None` outside the slots.
     #[must_use]
     pub fn slot_tlayer_id(&self, slot: u32) -> Option<splot_core::types::TemporalLayerId> {
         self.state.metadata.slot_tlayer_id(slot as usize)
