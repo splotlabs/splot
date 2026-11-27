@@ -128,7 +128,8 @@ impl EncoderReferences {
     /// Stores the coded frame `core` with its filtered reconstruction `frame`,
     /// the saved CDFs and motion field of its final `tiles`, in tile order,
     /// and its `ccso_blk` flags `ccso_blocks` (as [`apply_loop_filters`] takes
-    /// them), in the slots its `refresh_frame_flags` name (§ 7.23). `initial`
+    /// them), in the slots its `refresh_frame_flags` name (§ 7.23), whose
+    /// `RefTLayerId` becomes the frame's `obu_tlayer_id` `tlayer`. `initial`
     /// is the [`Self::frame_start`] of `core`. A frame that refreshes no slot,
     /// or a sequence without `enable_ref_frame_mvs`, stores no motion field.
     ///
@@ -144,6 +145,7 @@ impl EncoderReferences {
         initial: &FrameStart,
         tiles: &[TileEnd],
         ccso_blocks: &[Vec<u8>],
+        tlayer: splot_core::types::TemporalLayerId,
     ) -> Result<()> {
         let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
         let ccso = super::filters::ccso_unit_grid(&self.sequence, core, ccso_blocks)?;
@@ -170,7 +172,7 @@ impl EncoderReferences {
             core,
             ByteOffset::new(0),
             EmbeddedLayerId::from_bits(0),
-            splot_core::types::TemporalLayerId::BASE,
+            tlayer,
         )
         .map_err(rule("reference update"))?;
         let index = (0..=self.frames.len())
@@ -242,6 +244,12 @@ impl EncoderReferences {
             self.settle()?;
         }
         Ok(())
+    }
+
+    /// `RefTLayerId` of `slot` (§ 7.20); `None` outside the slots.
+    #[must_use]
+    pub fn slot_tlayer_id(&self, slot: u32) -> Option<splot_core::types::TemporalLayerId> {
+        self.state.metadata.slot_tlayer_id(slot as usize)
     }
 
     /// The reference state the next frame header parses with.

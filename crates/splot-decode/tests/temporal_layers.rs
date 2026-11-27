@@ -671,8 +671,14 @@ fn reject_inter_and_sef_references_violating_tlayer_dependency_map() {
     let mut rejected_slots = Vec::new();
     let mut accepted_slots = Vec::new();
     for slot in 0..8u32 {
-        let sef_bytes =
-            encode_show_existing_frame_obu(&seq_view, slot, None, None, (false, false)).unwrap();
+        let sef_bytes = encode_show_existing_frame_obu(
+            &seq_view,
+            slot,
+            None,
+            None,
+            (false, false, splot_core::types::TemporalLayerId::BASE),
+        )
+        .unwrap();
         let sef_obu = &parse_annex_b_obus(&sef_bytes).unwrap()[0];
         let mut hdr = sef_obu.header;
         hdr.temporal_layer_id = TemporalLayerId::from_bits(2);

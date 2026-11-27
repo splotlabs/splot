@@ -668,8 +668,14 @@ fn reject_mlayer_dependency_violation_annex_a_profile_and_missing_lcr() {
     let mut rejected_slots = Vec::new();
     let mut accepted_slots = Vec::new();
     for slot in 0..8u32 {
-        let sef_bytes =
-            encode_show_existing_frame_obu(&seq_view, slot, None, None, (false, false)).unwrap();
+        let sef_bytes = encode_show_existing_frame_obu(
+            &seq_view,
+            slot,
+            None,
+            None,
+            (false, false, splot_core::types::TemporalLayerId::BASE),
+        )
+        .unwrap();
         let sef_obu = &parse_annex_b_obus(&sef_bytes).unwrap()[0];
         let mut candidate_writer = BitWriter::new();
         candidate_writer.write_le(&prefix_tu0).unwrap();
