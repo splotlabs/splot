@@ -37,6 +37,10 @@ use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 use crate::intra_dc_math::round2_u32;
 use crate::{BitDepth, ReconError, Result};
 
+mod cctx;
+
+pub use cctx::{CCTX_MTX, dequantize_cctx_pair_with};
+
 /// Maximum dequantized transform-block side (§ 7.14.4 `Min(32, Tx_Width/Height)`).
 const MAX_DEQUANT_DIM: usize = 32;
 
@@ -196,6 +200,19 @@ fn prepare_dequant_block<'a>(
     quant: &[i32],
     out: &'a mut [i32],
 ) -> Result<(usize, &'a mut [i32])> {
+    let written = dequant_block_prefix(params, quant.len(), out.len())?;
+    let (out, tail) = out[..written].split_at_mut(quant.len());
+    tail.fill(0);
+    Ok((written, out))
+}
+
+/// Validates a § 7.14.4 block of `quant_len` coded coefficients and returns
+/// the length of the whole rows they reach.
+fn dequant_block_prefix(
+    params: &DequantBlockParams,
+    quant_len: usize,
+    out_len: usize,
+) -> Result<usize> {
     let (tx_width, tx_height) = (params.tx_width, params.tx_height);
     if !matches!(tx_width, 4 | 8 | 16 | 32) || !matches!(tx_height, 4 | 8 | 16 | 32) {
         return Err(ReconError::InvalidDequantBlockShape {
@@ -205,23 +222,19 @@ fn prepare_dequant_block<'a>(
     }
     debug_assert!(tx_width <= MAX_DEQUANT_DIM && tx_height <= MAX_DEQUANT_DIM);
     let expected = tx_width * tx_height;
-    if quant.len() > expected || out.len() != expected {
+    if quant_len > expected || out_len != expected {
         return Err(ReconError::DequantBlockLengthMismatch {
             expected,
-            quant_len: quant.len(),
-            out_len: out.len(),
+            quant_len,
+            out_len,
         });
     }
-    let written = quant.len().next_multiple_of(tx_width);
-    let (out, tail) = out[..written].split_at_mut(quant.len());
-    tail.fill(0);
-    let denom = params.dq_denom.max(1);
-    if !denom.is_power_of_two() {
+    if !params.dq_denom.max(1).is_power_of_two() {
         return Err(ReconError::InvalidDequantDenominator {
             dq_denom: params.dq_denom,
         });
     }
-    Ok((written, out))
+    Ok(quant_len.next_multiple_of(tx_width))
 }
 
 /// Dequantizes `quant` into the as long `out` with the § 7.14.4 quantizer
@@ -246,33 +259,48 @@ fn dequantize_groups<S: Simd>(
 ) -> Result<()> {
     let denom_shift = params.dq_denom.max(1).trailing_zeros();
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
-    let ac = params.ac_quant;
-    let quantizers = |group: usize, len: usize| -> Result<u32x8<S>> {
-        let base = if group == 0 {
-            u32x8::load_array(simd, [params.dc_quant, ac, ac, ac, ac, ac, ac, ac])
-        } else {
-            u32x8::splat(simd, ac)
-        };
-        let Some(qm) = params.qm.as_ref() else {
-            return Ok(base);
-        };
-        let weights = qm_weights(simd, params, qm, 8 * group, len)?;
-        Ok(qm_weighted_lanes(simd, base, weights))
-    };
     let (out_groups, out_tail) = out.as_chunks_mut::<8>();
     let (groups, tail) = quant.as_chunks::<8>();
     for (group, (out, &quant)) in out_groups.iter_mut().zip(groups).enumerate() {
         let v = i32x8::load_array(simd, quant);
-        *out = dequant_lanes(simd, v, quantizers(group, 8)?, denom_shift, bound).into();
+        let q2 = group_quantizers(simd, params, group, 8)?;
+        *out = dequant_lanes(simd, v, q2, denom_shift, bound).into();
     }
     if !tail.is_empty() {
         let mut lanes = [0i32; 8];
         lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
-        let q2 = quantizers(groups.len(), tail.len())?;
+        let q2 = group_quantizers(simd, params, groups.len(), tail.len())?;
         let v = dequant_lanes(simd, i32x8::load_array(simd, lanes), q2, denom_shift, bound);
         out_tail.copy_from_slice(&v.as_array()[..out_tail.len()]); // splot-copy-ok: the group's own lanes
     }
     Ok(())
+}
+
+/// The § 7.14.4 quantizers of the `len <= 8` coefficients of lane group
+/// `group`: `dc_quant` for coefficient `(0, 0)` and `ac_quant` for the rest,
+/// each weighted by its quantization-matrix weight under `useQm`.
+#[expect(
+    clippy::inline_always,
+    reason = "measured § 7.14.4 dequantization hot path"
+)]
+#[inline(always)]
+fn group_quantizers<S: Simd>(
+    simd: S,
+    params: &DequantBlockParams,
+    group: usize,
+    len: usize,
+) -> Result<u32x8<S>> {
+    let ac = params.ac_quant;
+    let base = if group == 0 {
+        u32x8::load_array(simd, [params.dc_quant, ac, ac, ac, ac, ac, ac, ac])
+    } else {
+        u32x8::splat(simd, ac)
+    };
+    let Some(qm) = params.qm.as_ref() else {
+        return Ok(base);
+    };
+    let weights = qm_weights(simd, params, qm, 8 * group, len)?;
+    Ok(qm_weighted_lanes(simd, base, weights))
 }
 
 /// The § 7.14.4 quantization-matrix weights of the `len <= 8` coefficients
@@ -610,7 +638,10 @@ mod tests {
     }
 
     /// The per-coefficient § 7.14.4 oracle of [`dequantize_groups`].
-    fn reference_dequantize(params: &DequantBlockParams, quant: &[i32]) -> Result<Vec<i32>> {
+    pub(super) fn reference_dequantize(
+        params: &DequantBlockParams,
+        quant: &[i32],
+    ) -> Result<Vec<i32>> {
         let (tw, th) = (params.tx_width, params.tx_height);
         let mut out = vec![0; quant.len()];
         for (idx, (slot, &coeff)) in out.iter_mut().zip(quant).enumerate() {

@@ -156,8 +156,9 @@ pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_value,
 };
 pub use dequant_process::{
-    DequantBlockParams, QmDequant, QmFrameLevels, QmUserPlane, QmWeightIndex, dequant_coefficient,
-    dequantize_block, dequantize_block_with, qm_weighted_quantizer, quantization_matrix_weight,
+    CCTX_MTX, DequantBlockParams, QmDequant, QmFrameLevels, QmUserPlane, QmWeightIndex,
+    dequant_coefficient, dequantize_block, dequantize_block_with, dequantize_cctx_pair_with,
+    qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};
 pub use film_grain::{apply_film_grain, apply_film_grain_into, apply_film_grain_into_with};
