@@ -565,3 +565,44 @@ fn reports_effective_matrix_even_when_a_user_matrix_is_present() {
         assert!(!matrix.user_defined);
     }
 }
+
+/// AVM a1ec4594 encodes one synthetic 8x8 4:2:0 frame with one thread and no lag.
+/// Start with `AVM_USAGE_GOOD_QUALITY`. Select `AVM_Q` with both quantizer limits at 20.
+/// Set both QM limits to 2. Use `AV2E_SET_USER_DEFINED_QMATRIX` at level 2.
+/// The samples are `64 + (31*x + 17*y + 3*plane) % 139`.
+/// The matrix weights are `32 + (13*i + 3*shape + 5*plane) % 32`.
+/// Index shapes as 8x8, 8x4, 4x8 and planes as Y, U, V. Use an IVF time base of 1/1.
+/// IVF SHA-256 `795f2b3840aef32ba87eeaad22ebda257b91fd4cd0b3cefb86fb68dba8ea8b14`.
+#[test]
+fn selected_small_transform_uses_the_user_matrix() {
+    let input = include_bytes!("data/block-evidence-user-qm.ivf");
+    let report = capture_fixture_transform(input, PlaneId::U, rect(0, 0, 4, 4));
+    let details = transforms(&report).next().unwrap().1.details.unwrap();
+    assert_eq!(details.plane_tx_type, Some(TxType::DctAdst));
+    let coefficients = report.coefficients.unwrap();
+    assert_eq!(coefficients.eob, 16);
+    assert_eq!(
+        coefficients.scan.unwrap(),
+        [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15]
+    );
+    assert_eq!(
+        coefficients.quantized,
+        [
+            57, -33, -41, -24, -4, -63, 18, -30, -51, 25, -18, 7, 15, -20, 13, -7
+        ]
+    );
+    assert_eq!(
+        coefficients.dequantized,
+        [
+            577, -569, -641, -336, -58, -811, 203, -289, -516, 431, -281, 98, 218, -258, 146, -67
+        ]
+    );
+    let quantization = coefficients.quantization.unwrap();
+    assert_eq!(quantization.qindex, 20);
+    assert_eq!(quantization.dc_quant, 70);
+    assert_eq!(quantization.ac_quant, 70);
+    assert_eq!(quantization.denominator, 1);
+    let matrix = quantization.matrix.unwrap();
+    assert_eq!(matrix.level, 2);
+    assert!(matrix.user_defined);
+}

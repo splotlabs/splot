@@ -1,8 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_recon::PlaneId;
+
 use super::{BlockDecodeContext, DecodeBlockFrontier, EntryState, LeafSlot};
-use crate::block_evidence::{BlockEvidenceTile, BlockPrediction, TransformCoefficientContext};
+use crate::block_evidence::{
+    BlockEvidenceTile, BlockPrediction, DecodedTransformUnit, TransformCoefficientContext,
+};
+use crate::prediction::inter::{InterResidual, InterResidualBlock};
 
 #[cold]
 pub(super) fn observe_leaf(
@@ -77,5 +82,39 @@ pub(super) fn observe_leaf(
                 bit_depth: context.sink.params.bit_depth,
             },
         );
+    }
+}
+
+impl InterResidual {
+    fn record_transforms(
+        &self,
+        arena: &[InterResidualBlock],
+        evidence: BlockEvidenceTile<'_>,
+        frontier: &DecodeBlockFrontier,
+        context: &TransformCoefficientContext<'_>,
+    ) {
+        let blocks = &arena[self.block_range.start as usize..self.block_range.end as usize];
+        for (index, unit) in blocks.iter().enumerate() {
+            let cctx_u = if unit.cctx_pair_delta < 0 {
+                index
+                    .checked_add_signed(isize::from(unit.cctx_pair_delta))
+                    .and_then(|u| blocks.get(u))
+                    .map(|u| &u.coeffs)
+            } else {
+                (unit.plane == PlaneId::U).then_some(&unit.coeffs)
+            };
+            evidence.record_transform(
+                frontier,
+                &DecodedTransformUnit {
+                    plane: unit.plane,
+                    x: usize::from(unit.x),
+                    y: usize::from(unit.y),
+                    tx_size: unit.tx_size,
+                    coeffs: &unit.coeffs,
+                    cctx_u,
+                },
+                context,
+            );
+        }
     }
 }
