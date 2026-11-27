@@ -715,9 +715,6 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 }
 
 mod header;
-
-#[cfg(test)]
-pub(crate) use header::INTER_INTRABC;
 pub(crate) use header::{coded_grain_seed, frame_tools, show_existing_unit, shown_grain_seed};
 
 #[cfg(test)]

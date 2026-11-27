@@ -146,10 +146,8 @@ impl GopFrame {
     ) -> Result<FrameHeaderCore> {
         let core = match self.frame_type {
             FrameType::Key if self.open_loop => {
-                let params = InterFrameParams {
-                    tx,
-                    ..self.inter_params(refs, qindex, filters, (tx, compound, mv_tools, tiles))?
-                };
+                let params =
+                    self.inter_params(refs, qindex, filters, (tx, compound, mv_tools, tiles))?;
                 build_open_loop_key_frame_header(view, &refs.header_view(), &params)
                     .map_err(header_error)?
                     .core
@@ -336,10 +334,7 @@ impl GopFrame {
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             filters: *filters,
-            tx: KeyFrameTxParams {
-                allow_intrabc: !self.intra_only && inter_intrabc(),
-                ..tx
-            },
+            tx,
             tiles,
             reference_select: compound,
             skip_mode_present: compound,
@@ -441,22 +436,4 @@ fn header_error<E: std::error::Error + Send + Sync + 'static>(source: E) -> Erro
         stage: "frame header",
         source: Box::new(source),
     }
-}
-
-/// Whether inter frames code `allow_intrabc`: not yet outside tests.
-#[cfg(not(test))]
-const fn inter_intrabc() -> bool {
-    false
-}
-
-#[cfg(test)]
-fn inter_intrabc() -> bool {
-    INTER_INTRABC.get()
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Sets `allow_intrabc` in the inter frames (not `intra_only`) that this
-    /// thread codes.
-    pub(crate) static INTER_INTRABC: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
 }

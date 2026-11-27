@@ -808,6 +808,9 @@ impl IntraFrameCoder {
             (tools.2.1, tools.2.3, tools.2.9) = (false, None, None);
         }
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        if plan.frame_type == FrameType::Inter {
+            tools.0.allow_intrabc = self.preset.intrabc_inter && !plan.intra_only;
+        }
         let ids = (1u32 << self.preset.long_term_id_bits) - 1;
         if plan.frame_type == FrameType::Key && ids > 0 {
             tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
