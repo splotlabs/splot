@@ -170,29 +170,49 @@ impl IntraTileSyntax {
             return Ok(only_type(TxType::Idtx));
         }
         if self.tools.lossless && tx.plane == 0 {
-            return self.lossless_tx_type_options();
+            return self.lossless_tx_type_options(tx);
         }
         self.luma_tx_type_options(tx, eob)
     }
 
-    /// The luma types of a lossless block: `DCT_DCT`, coded as
-    /// `lossless_inter_tx_type = 0` when inter (§ 5.20.8.2). Kept out of line
-    /// so the lossy type search keeps its code.
+    /// The luma types of lossless block `tx` (§ 5.20.8.2): `DCT_DCT` when
+    /// intra; when inter, `DCT_DCT` or IDTX as `lossless_inter_tx_type` 0 or 1
+    /// for a 4x4 block, else an inferred IDTX. Kept out of line so the lossy
+    /// type search keeps its code.
     #[cold]
     #[inline(never)]
-    fn lossless_tx_type_options(&self) -> Result<TxTypeOptions> {
+    fn lossless_tx_type_options(&self, tx: &TransformBlock) -> Result<TxTypeOptions> {
         if !self.leaf_is_inter() {
             return Ok(only_type(TxType::DctDct));
         }
+        if tx.tx_size != 0 {
+            return Ok(only_type(TxType::Idtx));
+        }
         let mut out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
-        let step = (TileCdfSelector::LosslessInterTxType, 0);
-        push_new_type(&mut out, TxType::DctDct, inline_steps(&[step])?)?;
+        for (tx_type, value) in [(TxType::DctDct, 0), (TxType::Idtx, 1)] {
+            let step = (TileCdfSelector::LosslessInterTxType, value);
+            push_new_type(&mut out, tx_type, inline_steps(&[step])?)?;
+        }
         Ok(out)
     }
 
+    /// Whether `leaf` of a lossless frame may code `lossless_tx_size = 1`
+    /// (§ 5.20.6.1): a block above `BLOCK_4X4`.
+    #[must_use]
+    #[inline]
+    pub const fn lossless_tx_size_allowed(&self, leaf: &LeafBlock) -> bool {
+        self.tools.lossless && leaf.frontier.b_size.index() > 0
+    }
+
+    /// Sets `lossless_tx_size` of the next inter leaf that a lossless frame
+    /// plans; the plan takes it, so a later plan without a new call codes 0.
+    pub const fn set_leaf_lossless_tx_size(&mut self, large: bool) {
+        self.next_lossless_tx_size = large;
+    }
+
     /// The [`Self::tx_partition_steps`] of a lossless `leaf`: a lossless inter
-    /// leaf above `BLOCK_4X4` (index 0) codes only `lossless_tx_size = 0`
-    /// (§ 5.20.6.1). Kept out of line so the lossy partition search keeps its
+    /// leaf above `BLOCK_4X4` (index 0) codes only its planned
+    /// `lossless_tx_size` (§ 5.20.6.1). Kept out of line so the lossy partition search keeps its
     /// code.
     #[cold]
     #[inline(never)]
@@ -208,7 +228,7 @@ impl IntraTileSyntax {
                 size_group: super::super::general_intra_block::lossless_tx_size_group(size),
                 is_inter: 1,
             };
-            steps[0] = Some((selector, 0));
+            steps[0] = Some((selector, usize::from(self.lossless_tx_size_leaf)));
         }
         (partition == TxPartition::None).then_some(steps)
     }

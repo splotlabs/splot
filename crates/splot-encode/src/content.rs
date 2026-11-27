@@ -20,6 +20,7 @@ use splot_core::headers::metadata::{
 };
 use splot_core::headers::sequence::TimingInfo;
 use splot_core::span::ByteOffset;
+use splot_core::types::TemporalLayerId;
 use splot_recon::{BitDepth, PixelFormat, for_each_sample_byte_chunk};
 
 use crate::error::{Error, Result};
@@ -239,12 +240,24 @@ impl ContentDescription {
                 luminance_min: display.luminance_min,
             };
             let payload = MetadataPayload::HdrMdcv(display);
-            let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[], 0, false);
+            let obu = encode_metadata_obu(
+                MetadataType::HdrMdcv,
+                payload,
+                &[],
+                (0, TemporalLayerId::BASE),
+                false,
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
         if let Some(light_level) = self.content_light_level {
             let payload = MetadataPayload::HdrCll(light_level);
-            let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[], 0, false);
+            let obu = encode_metadata_obu(
+                MetadataType::HdrCll,
+                payload,
+                &[],
+                (0, TemporalLayerId::BASE),
+                false,
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
         }
         Ok(obus)
@@ -299,7 +312,13 @@ impl KeyFrameMetadata {
     pub(crate) fn obus(&self) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, passthrough: &[u8], what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, passthrough, 0, false);
+            let obu = encode_metadata_obu(
+                metadata_type,
+                payload,
+                passthrough,
+                (0, TemporalLayerId::BASE),
+                false,
+            );
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };
@@ -396,17 +415,17 @@ impl FrameMetadata {
 
     /// The Annex B metadata OBUs of the output frame `display_index`, timed
     /// by `presentation`, at
-    /// `frame_rate`: timecode, temporal point info, scan type, then banding
-    /// hints.
+    /// `frame_rate`, in its temporal layer `tlayer`: timecode, temporal point
+    /// info, scan type, then banding hints.
     pub(crate) fn obus(
         &self,
         display_index: u64,
         presentation: PresentationClock,
-        frame_rate: (u32, u32),
+        (frame_rate, tlayer): ((u32, u32), TemporalLayerId),
     ) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, &[], 2, false);
+            let obu = encode_metadata_obu(metadata_type, payload, &[], (2, tlayer), false);
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };
@@ -461,7 +480,8 @@ impl FrameMetadata {
 impl FrameHash {
     /// The suffix `metadata_decoded_frame_hash()` OBU (§ 5.17.12) of the
     /// visible output `planes` at `bit_depth`, `hash_type` 0 (MD5) over the
-    /// § 6.16.13 sample bytes; a `monochrome` frame hashes only Y.
+    /// § 6.16.13 sample bytes, in the frame's temporal layer `tlayer`; a
+    /// `monochrome` frame hashes only Y.
     #[cold]
     #[inline(never)]
     pub(crate) fn obu(
@@ -469,6 +489,7 @@ impl FrameHash {
         planes: &[Vec<u16>; 3],
         bit_depth: BitDepth,
         monochrome: bool,
+        tlayer: TemporalLayerId,
     ) -> Result<Vec<u8>> {
         let planes = &planes[..if monochrome { 1 } else { 3 }];
         let mut frame = Md5::new();
@@ -493,8 +514,14 @@ impl FrameHash {
             frame_hash: (self == Self::Frame).then(|| frame.finalize().into()),
             plane_hashes,
         });
-        encode_metadata_obu(MetadataType::DecodedFrameHash, payload, &[], 2, true)
-            .map_err(crate::intra_frame::coding("decoded frame hash"))
+        encode_metadata_obu(
+            MetadataType::DecodedFrameHash,
+            payload,
+            &[],
+            (2, tlayer),
+            true,
+        )
+        .map_err(crate::intra_frame::coding("decoded frame hash"))
     }
 }
 

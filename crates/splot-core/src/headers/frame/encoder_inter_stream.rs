@@ -29,7 +29,8 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore,
     FrameHeaderParseStatus, FrameReferenceStateView, FrameType, IntrabcParams, KeyFrameTxParams,
-    TipFrameMode, TxMode, init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    TipFrameMode, TxMode, init_core_from_prefix, parse_core_body, parse_core_body_in_tlayer,
+    parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::frame::{InterpolationFilter, QuantizationParams, TipGlobalMv};
@@ -37,8 +38,9 @@ use crate::headers::metadata::{MetadataPayload, MetadataShortObu, MetadataType, 
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::hls::MultiFrameHeader;
+use crate::obu::ObuHeader;
 use crate::span::ByteOffset;
-use crate::types::ObuType;
+use crate::types::{ObuType, TemporalLayerId};
 use crate::write::write_quantization_params;
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, global_motion::write_global_param, write_annexb_obu,
@@ -138,6 +140,9 @@ pub struct InterFrameParams {
     /// `OBU_LEADING_TILE_GROUP` or `OBU_LEADING_TIP` in place of the regular
     /// type.
     pub leading: bool,
+    /// `obu_tlayer_id` of the frame's OBUs (§ 5.2.2): the § 7.7 reference map
+    /// and the § 5.18.2 `OrderHint` read only the slots its layer may reference.
+    pub tlayer: TemporalLayerId,
 }
 
 impl InterFrameParams {
@@ -166,6 +171,8 @@ pub struct EncodedFrameHeader {
     pub core: FrameHeaderCore,
     /// `NumFrameHeaderBits` bits of `frame_header_info()`.
     pub bits: RecordedFrameHeaderBits,
+    /// `obu_tlayer_id` of the OBUs that carry the header (§ 5.2.2).
+    pub tlayer: TemporalLayerId,
 }
 
 /// Builds an `OBU_REGULAR_TILE_GROUP` inter frame header for `seq` and the § 7.23
@@ -291,7 +298,14 @@ fn parse_inter_frame_header(
     let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
-    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
+    parse_core_body_in_tlayer(
+        &mut reader,
+        &mut core,
+        seq,
+        mfh.as_ref(),
+        refs,
+        params.tlayer,
+    )?;
     core.consumed_bits = reader.consumed_bits();
     let has_reference = core
         .inter
@@ -305,7 +319,11 @@ fn parse_inter_frame_header(
     }
     let bits =
         RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
-    Ok(EncodedFrameHeader { core, bits })
+    Ok(EncodedFrameHeader {
+        core,
+        bits,
+        tlayer: params.tlayer,
+    })
 }
 
 fn inter_frame_header_bits(
@@ -686,7 +704,14 @@ fn intra_header_from_head(
     let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
-    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
+    parse_core_body_in_tlayer(
+        &mut reader,
+        &mut core,
+        seq,
+        mfh.as_ref(),
+        refs,
+        params.tlayer,
+    )?;
     let bit_len = reader.consumed_bits();
     core.consumed_bits = bit_len;
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete
@@ -696,7 +721,11 @@ fn intra_header_from_head(
     }
     let bits =
         RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
-    Ok(EncodedFrameHeader { core, bits })
+    Ok(EncodedFrameHeader {
+        core,
+        bits,
+        tlayer: params.tlayer,
+    })
 }
 
 /// Serializes the tile-group OBUs of `header`, of its OBU type, that carry the
@@ -715,7 +744,7 @@ pub fn encode_inter_frame_obu(
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     write_tile_groups(
         &header.core,
-        header.core.obu_type,
+        obu_header(header.core.obu_type, header.tlayer),
         (tiles, tile_groups),
         |structure, tiles| {
             let mut payload = BitWriter::new();
@@ -755,7 +784,7 @@ pub fn tile_group_ranges(num_tiles: u32, tile_groups: u32) -> Vec<(u32, u32)> {
 /// (§ 5.19), so the frame header stays in the first group alone.
 pub(super) fn write_tile_groups(
     core: &FrameHeaderCore,
-    obu_type: ObuType,
+    obu: ObuHeader,
     (tiles, tile_groups): (&[&[u8]], u32),
     first: impl FnOnce(&TileGroupStructure, &[&[u8]]) -> Result<Vec<u8>, EncoderHeaderError>,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
@@ -782,7 +811,7 @@ pub(super) fn write_tile_groups(
             write_group_tiles(&mut payload, core, &structure, group)?;
             payload.into_bytes()
         };
-        write_annexb_obu(&mut w, &obu_header(obu_type), &payload)?;
+        write_annexb_obu(&mut w, &obu, &payload)?;
     }
     Ok(w.into_bytes())
 }
@@ -940,7 +969,14 @@ pub fn build_tip_output_frame_header(
     let prefix = parse_frame_header_prefix(&mut reader, obu_type, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, obu_type, true);
     let mfh = encoder_mfh_view(seq, params.tx.multi_frame_header);
-    parse_core_body(&mut reader, &mut core, seq, mfh.as_ref(), refs)?;
+    parse_core_body_in_tlayer(
+        &mut reader,
+        &mut core,
+        seq,
+        mfh.as_ref(),
+        refs,
+        params.tlayer,
+    )?;
     core.consumed_bits = reader.consumed_bits();
     let as_output = core
         .inter
@@ -954,7 +990,11 @@ pub fn build_tip_output_frame_header(
     }
     let bits =
         RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
-    Ok(EncodedFrameHeader { core, bits })
+    Ok(EncodedFrameHeader {
+        core,
+        bits,
+        tlayer: params.tlayer,
+    })
 }
 
 /// Serializes the TIP OBU of `header`, of its OBU type: the recorded header
@@ -977,7 +1017,7 @@ pub fn encode_tip_output_frame_obu(
     let mut w = BitWriter::new();
     write_annexb_obu(
         &mut w,
-        &obu_header(header.core.obu_type),
+        &obu_header(header.core.obu_type, header.tlayer),
         &payload.into_bytes(),
     )?;
     Ok(w.into_bytes())
@@ -988,7 +1028,8 @@ pub fn encode_tip_output_frame_obu(
 /// `frame_to_show_map_idx` (§ 5.18.2) with the `film_grain_config()` of
 /// `grain_seed` (see [`KeyFrameTxParams::grain_seed`]): with
 /// `derive_sef_order_hint = 1`, or with `sef_order_hint` = the low
-/// `OrderHintBits` of `order_hint` when it is given.
+/// `OrderHintBits` of `order_hint` when it is given, in temporal layer
+/// `tlayer`.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a slot outside the sequence's reference
@@ -1000,7 +1041,7 @@ pub fn encode_show_existing_frame_obu(
     frame_to_show_map_idx: u32,
     order_hint: Option<u32>,
     grain_seed: Option<u16>,
-    (multi_frame_header, leading): (bool, bool),
+    (multi_frame_header, leading, tlayer): (bool, bool, TemporalLayerId),
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let obu_type = if leading {
         ObuType::LeadingSef
@@ -1041,7 +1082,7 @@ pub fn encode_show_existing_frame_obu(
         return Err(EncoderHeaderError::Incomplete);
     }
     let mut obu = BitWriter::new();
-    write_annexb_obu(&mut obu, &obu_header(obu_type), &payload)?;
+    write_annexb_obu(&mut obu, &obu_header(obu_type, tlayer), &payload)?;
     Ok(obu.into_bytes())
 }
 
@@ -1175,7 +1216,7 @@ pub fn encode_film_grain_obu(
         }],
     };
     annexb_obu(
-        ObuType::FilmGrain,
+        (ObuType::FilmGrain, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
         &[],
     )
@@ -1189,7 +1230,7 @@ pub fn encode_content_interpretation_obu(
     content: &ContentInterpretation,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     annexb_obu(
-        ObuType::ContentInterpretation,
+        (ObuType::ContentInterpretation, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::ContentInterpretation(*content),
         &[],
     )
@@ -1204,7 +1245,7 @@ pub fn encode_content_interpretation_obu(
 /// Returns [`EncoderHeaderError`] if the OBU does not serialize.
 pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
     annexb_obu(
-        ObuType::MultiFrameHeader,
+        (ObuType::MultiFrameHeader, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::MultiFrameHeader(Box::new(MultiFrameHeader {
             mfh_seq_header_id: 0,
             mfh_id_minus_1: 0,
@@ -1224,7 +1265,8 @@ pub fn encode_multi_frame_header_obu() -> Result<Vec<u8>, EncoderHeaderError> {
 /// suffix one when `metadata_is_suffix`, for every layer of its extended
 /// layer (`LAYER_GLOBAL`), with the
 /// `muh_persistence_idc` of § 6.16.3 (0 `GLOBAL_PERSISTENCE` for the whole
-/// sequence, 2 `NO_PERSISTENCE` for the current frame). `passthrough` holds the bytes
+/// sequence, 2 `NO_PERSISTENCE` for the current frame), in the temporal layer
+/// `tlayer` of the frame unit it joins (§ 7.3.3). `passthrough` holds the bytes
 /// of a T.35, ICC profile or user data payload (§ 5.17.4, § 5.17.9,
 /// § 5.17.13); the unit is the payload rounded up to whole bytes.
 ///
@@ -1235,7 +1277,7 @@ pub fn encode_metadata_obu(
     metadata_type: MetadataType,
     payload: MetadataPayload,
     passthrough: &[u8],
-    muh_persistence_idc: u8,
+    (muh_persistence_idc, tlayer): (u8, TemporalLayerId),
     metadata_is_suffix: bool,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut sized = BitWriter::new();
@@ -1254,23 +1296,23 @@ pub fn encode_metadata_obu(
         }),
     };
     annexb_obu(
-        ObuType::MetadataShort,
+        (ObuType::MetadataShort, tlayer),
         &crate::obu::ParsedObu::MetadataShort(Box::new(obu)),
         passthrough,
     )
 }
 
 /// `obu` with the payload bytes `passthrough` as an Annex B OBU of
-/// `obu_type` on layer 0.
+/// `obu_type` in temporal layer `tlayer`.
 fn annexb_obu(
-    obu_type: ObuType,
+    (obu_type, tlayer): (ObuType, TemporalLayerId),
     obu: &crate::obu::ParsedObu,
     passthrough: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let mut payload = BitWriter::new();
     crate::write::write_obu_payload(&mut payload, obu, obu_type.is_extensible_obu(), passthrough)?;
     let mut w = BitWriter::new();
-    write_annexb_obu(&mut w, &obu_header(obu_type), &payload.into_bytes())?;
+    write_annexb_obu(&mut w, &obu_header(obu_type, tlayer), &payload.into_bytes())?;
     Ok(w.into_bytes())
 }
 

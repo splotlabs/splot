@@ -80,6 +80,7 @@ pub struct BlockEvidenceRequest {
     transform_coefficients: bool,
     stage_samples: Option<(PlaneId, PlaneRect)>,
     entropy: Option<BlockEntropyScope>,
+    entropy_start: u64,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
@@ -107,6 +108,7 @@ impl BlockEvidenceRequest {
             transform_coefficients: false,
             stage_samples: None,
             entropy: None,
+            entropy_start: 0,
             cancelled: None,
         }
     }
@@ -177,6 +179,17 @@ impl BlockEvidenceRequest {
         self.region = None;
         self.transform_details = None;
         self.transform_coefficients = false;
+        self
+    }
+
+    /// Starts the [`Self::with_entropy`] capture at this scope ordinal in each
+    /// selected frame. Reads that begin earlier are not recorded and use no
+    /// budget. Ordinals stay absolute. A start at or after the end ordinal gives
+    /// no symbols. To continue a truncated capture, start at the last symbol's
+    /// ordinal plus its bypass bit count (one for a CDF read).
+    #[must_use]
+    pub const fn with_entropy_start(mut self, ordinal: u64) -> Self {
+        self.entropy_start = ordinal;
         self
     }
 

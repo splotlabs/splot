@@ -128,7 +128,8 @@ impl EncoderReferences {
     /// Stores the coded frame `core` with its filtered reconstruction `frame`,
     /// the saved CDFs and motion field of its final `tiles`, in tile order,
     /// and its `ccso_blk` flags `ccso_blocks` (as [`apply_loop_filters`] takes
-    /// them), in the slots its `refresh_frame_flags` name (§ 7.23). `initial`
+    /// them), in the slots its `refresh_frame_flags` name (§ 7.23), whose
+    /// `RefTLayerId` becomes the frame's `obu_tlayer_id` `tlayer`. `initial`
     /// is the [`Self::frame_start`] of `core`. A frame that refreshes no slot,
     /// or a sequence without `enable_ref_frame_mvs`, stores no motion field.
     ///
@@ -144,6 +145,7 @@ impl EncoderReferences {
         initial: &FrameStart,
         tiles: &[TileEnd],
         ccso_blocks: &[Vec<u8>],
+        tlayer: splot_core::types::TemporalLayerId,
     ) -> Result<()> {
         let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
         let ccso = super::filters::ccso_unit_grid(&self.sequence, core, ccso_blocks)?;
@@ -170,7 +172,7 @@ impl EncoderReferences {
             core,
             ByteOffset::new(0),
             EmbeddedLayerId::from_bits(0),
-            splot_core::types::TemporalLayerId::BASE,
+            tlayer,
         )
         .map_err(rule("reference update"))?;
         let index = (0..=self.frames.len())
@@ -242,6 +244,12 @@ impl EncoderReferences {
             self.settle()?;
         }
         Ok(())
+    }
+
+    /// `RefTLayerId` of `slot` (§ 7.23); `None` outside the slots.
+    #[must_use]
+    pub fn slot_tlayer_id(&self, slot: u32) -> Option<splot_core::types::TemporalLayerId> {
+        self.state.metadata.slot_tlayer_id(slot as usize)
     }
 
     /// The reference state the next frame header parses with.
@@ -983,7 +991,9 @@ impl IntraTileSyntax {
             blocks.splice(..1, luma);
         }
         if self.tools.lossless {
-            blocks = lossless_units(&blocks, (mi_cols * 4, mi_rows * 4), (sub_x, sub_y))?;
+            self.lossless_tx_size_leaf = core::mem::take(&mut self.next_lossless_tx_size);
+            let luma = lossless_luma_tx_size(leaf, self.lossless_tx_size_leaf)?;
+            blocks = lossless_units(&blocks, (mi_cols * 4, mi_rows * 4), (sub_x, sub_y), luma)?;
         }
         state.planned = Some(PlannedInter {
             leaf: *leaf,
@@ -1004,7 +1014,8 @@ impl IntraTileSyntax {
 
     /// The type of chroma block `chroma` of the planned inter leaf `leaf`
     /// after its blocks `before`, whose luma blocks each code their `tx_type`
-    /// (`DCT_DCT` when all zero).
+    /// (`DCT_DCT` when all zero); IDTX in a lossless leaf with
+    /// `lossless_tx_size = 1` (§ 5.20.7.29).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid block.
@@ -1014,8 +1025,9 @@ impl IntraTileSyntax {
         before: &[TransformBlock],
         chroma: &TransformBlock,
     ) -> Result<TxType> {
-        if self.tools.lossless {
-            return Ok(TxType::DctDct);
+        let lossless = self.tools.lossless;
+        if lossless && self.lossless_tx_size_leaf {
+            return Ok(TxType::Idtx);
         }
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
@@ -1025,8 +1037,12 @@ impl IntraTileSyntax {
                 .filter(|tx| tx.plane == 0)
                 .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
             (chroma.x, chroma.y),
+            lossless && self.lossless_chroma_reads_leaf_start(leaf),
         )
         .map_err(rule("chroma transform type"))?;
+        if lossless {
+            return TxType::from_value(collocated);
+        }
         TxType::from_value(
             inter_chroma_plane_tx_type(
                 chroma.plane,
@@ -1036,6 +1052,20 @@ impl IntraTileSyntax {
             )
             .map_err(rule("chroma transform type"))?,
         )
+    }
+
+    /// Whether chroma of the lossless inter `leaf` takes the type of the
+    /// leaf's first luma block (§ 5.20.7.29): in an intra frame or when the
+    /// chroma reference is another leaf.
+    #[cold]
+    #[inline(never)]
+    fn lossless_chroma_reads_leaf_start(&self, leaf: &LeafBlock) -> bool {
+        let reference = leaf.frontier.chroma_ref_geometry();
+        let intra_frame = self
+            .inter
+            .as_ref()
+            .is_some_and(|state| state.tile.is_intra_frame());
+        intra_frame || leaf.frontier.r != reference.row() || leaf.frontier.c != reference.col()
     }
 
     /// Adds the residual of the planned inter leaf: `levels[i]` holds the
@@ -1735,32 +1765,57 @@ impl IntraTileSyntax {
 
 const INTRA_FRAME: EncoderSyntaxError =
     EncoderSyntaxError::Unsupported("inter syntax in an intra frame");
-/// The 4x4 units of `blocks` that start in the `(width, height)` luma frame
-/// of `subsampling`, in the raster order of the decoder's lossless parse
-/// (§ 5.20.6.1 `TX_4X4`; § 5.20.7.29 `DCT_DCT` for every inter 4x4 unit).
+/// The luma transform size of the lossless inter `leaf` (§ 5.20.6.1):
+/// `TX_4X4` (index 0), or with `lossless_tx_size` the size of
+/// `find_tx_size(Min(32, width), Min(32, height))`.
+fn lossless_luma_tx_size(leaf: &LeafBlock, lossless_tx_size: bool) -> Result<usize> {
+    if !lossless_tx_size {
+        return Ok(0);
+    }
+    if leaf.frontier.b_size.index() == 0 {
+        return Err(EncoderSyntaxError::Unsupported(
+            "lossless_tx_size of a 4x4 leaf",
+        ));
+    }
+    Ok(super::super::general_intra_block::lossless_max_tx_size(
+        leaf.frontier.b_size,
+    ))
+}
+
+/// The units of `blocks` that start in the `(width, height)` luma frame of
+/// `subsampling`, in the raster order of the decoder's lossless parse:
+/// luma units of size `luma` (IDTX unless `TX_4X4`, § 5.20.8.2) and chroma
+/// 4x4 units (§ 5.20.6.1, § 5.20.7.29), each `DCT_DCT` until it is coded.
 fn lossless_units(
     blocks: &[TransformBlock],
     (width, height): (usize, usize),
     (sub_x, sub_y): (bool, bool),
+    luma: usize,
 ) -> Result<Vec<TransformBlock>> {
     let mut units = Vec::new();
     for block in blocks {
         let (log2_w, log2_h) = super::tx_log2(block.tx_size)?;
         let (w, h) = (1usize << log2_w, 1usize << log2_h);
-        let (sx, sy) = if block.plane > 0 {
-            (sub_x, sub_y)
+        let (sx, sy, tx_size) = if block.plane > 0 {
+            (sub_x, sub_y, 0)
         } else {
-            (false, false)
+            (false, false, luma)
         };
-        for y in (block.y..block.y + h).step_by(4) {
-            for x in (block.x..block.x + w).step_by(4) {
+        let (unit_w, unit_h) = super::tx_log2(tx_size)?;
+        let tx_type = if tx_size == 0 {
+            TxType::DctDct
+        } else {
+            TxType::Idtx
+        };
+        for y in (block.y..block.y + h).step_by(1 << unit_h) {
+            for x in (block.x..block.x + w).step_by(1 << unit_w) {
                 if x < width >> u8::from(sx) && y < height >> u8::from(sy) {
                     units.push(TransformBlock {
                         x,
                         y,
-                        tx_size: 0,
-                        fills_block: block.fills_block && block.tx_size == 0,
-                        tx_type: TxType::DctDct,
+                        tx_size,
+                        fills_block: block.fills_block && block.tx_size == tx_size,
+                        tx_type,
                         ..*block
                     });
                 }

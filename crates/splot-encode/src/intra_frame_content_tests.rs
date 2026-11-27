@@ -691,6 +691,8 @@ fn frame_hashes(units: &[Vec<u8>]) -> Vec<(u16, bool, Vec<[u8; 16]>)> {
             assert!(short.metadata_is_suffix && short.muh_persistence_idc == 2);
             assert_eq!((hash.hash_type, hash.has_grain), (0, false));
             assert!(index > 0 && parsed.obus[index + 1..].is_empty());
+            let frame = &parsed.obus[index - 1].header;
+            assert_eq!(obu.header.temporal_layer_id, frame.temporal_layer_id);
             let digests = match hash.frame_hash {
                 Some(frame) => vec![frame],
                 None => hash.plane_hashes,
@@ -765,6 +767,13 @@ fn output_frames_carry_their_decoded_frame_hash() {
             false,
         ),
         (
+            PixelFormat::Yuv420,
+            BitDepth::Eight,
+            FrameHash::PerPlane,
+            "max_tlayer_id",
+            false,
+        ),
+        (
             PixelFormat::Monochrome,
             BitDepth::Eight,
             FrameHash::PerPlane,
@@ -773,12 +782,16 @@ fn output_frames_carry_their_decoded_frame_hash() {
         ),
     ];
     for (chroma, bit_depth, hash, field, film_grain) in cases {
-        let value = if field == "open_loop_key" {
-            "1"
-        } else {
-            "true"
+        let value = match field {
+            "open_loop_key" => "1",
+            "max_tlayer_id" => "3",
+            _ => "true",
         };
-        let mut config = with_frame_metadata(&[(field, value)], false);
+        let mut overrides = vec![(field, value)];
+        if field == "max_tlayer_id" {
+            overrides.push(("implicit_output", "true"));
+        }
+        let mut config = with_frame_metadata(&overrides, false);
         (config.chroma, config.bit_depth, config.film_grain) = (chroma, bit_depth, film_grain);
         config.frame_metadata.decoded_frame_hash = Some(hash);
         config.frame_metadata.timecode = true;

@@ -365,6 +365,7 @@ impl IntraFrameCoder {
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
+                max_tlayer_id: splot_core::types::TemporalLayerId::from_bits(preset.max_tlayer_id),
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: match config.tiles {
@@ -378,6 +379,7 @@ impl IntraFrameCoder {
                     }),
                     _ => None,
                 },
+                disable_loopfilters_across_tiles: config.disable_loopfilters_across_tiles,
                 short_refresh: preset.short_refresh,
                 plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
@@ -436,7 +438,7 @@ impl FrameCoder for IntraFrameCoder {
             let mut coded =
                 self.code_frame(source, &plan, qp, &self.superblock_quant(&plan, source))?;
             if plan.show_frame || plan.implicit_output {
-                let hash = self.frame_hash_obu(&coded.recon)?;
+                let hash = self.frame_hash_obu(&coded.recon, plan.tlayer)?;
                 coded.temporal_unit.extend(hash);
             }
             Ok(coded)
@@ -473,12 +475,12 @@ impl FrameCoder for IntraFrameCoder {
                 .update_tip_output(&core)
                 .map_err(coding("TIP output update"));
         }
-        let (core, recon, initial, cdfs, ccso_blocks) =
+        let (core, recon, initial, cdfs, ccso_blocks, tlayer) =
             frame.reference.take().ok_or(Error::Unsupported {
                 what: "a frame committed twice",
             })?;
         let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
-        let hash = self.frame_hash_obu(&frame.recon)?;
+        let hash = self.frame_hash_obu(&frame.recon, tlayer)?;
         let slots = self.slot_intra.iter_mut().zip(&mut self.slot_hash);
         for (slot, (intra, slot_hash)) in slots.enumerate() {
             if refreshed >> slot & 1 == 1 {
@@ -492,7 +494,7 @@ impl FrameCoder for IntraFrameCoder {
             self.grain_active = frame.film_grain_model;
         }
         self.references
-            .update(&core, recon, &initial, &cdfs, &ccso_blocks)
+            .update(&core, recon, &initial, &cdfs, &ccso_blocks, tlayer)
             .map_err(coding("reference update"))
     }
 
@@ -509,16 +511,23 @@ impl FrameCoder for IntraFrameCoder {
         leading: bool,
         display_index: u64,
     ) -> Result<Vec<u8>> {
-        let metadata = self.output_frame_obus(display_index)?;
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
+        let tlayer = self
+            .references
+            .slot_tlayer_id(slot)
+            .ok_or(Error::Unsupported {
+                what: "a show-existing frame of a slot outside the sequence",
+            })?;
+        let metadata = self.output_frame_obus(display_index, tlayer)?;
         let mut unit = gop::show_existing_unit(
             &self.view,
             slot,
             order_hint,
             (seed, self.multi_frame_header, leading, &metadata),
+            tlayer,
         )?;
         unit.extend(self.slot_hash.get(slot as usize).into_iter().flatten());
         let obu_type = if leading {
@@ -754,24 +763,33 @@ impl IntraFrameCoder {
         if !(plan.show_frame || plan.implicit_output) {
             return Ok(Vec::new());
         }
-        self.output_frame_obus(plan.display_index)
+        self.output_frame_obus(plan.display_index, plan.tlayer)
     }
 
     /// The suffix decoded frame hash OBU of the visible `recon`; nothing
     /// without [`crate::content::FrameMetadata::decoded_frame_hash`].
-    fn frame_hash_obu(&self, recon: &[Vec<u16>; 3]) -> Result<Vec<u8>> {
+    fn frame_hash_obu(
+        &self,
+        recon: &[Vec<u16>; 3],
+        tlayer: splot_core::types::TemporalLayerId,
+    ) -> Result<Vec<u8>> {
         self.frame_metadata
             .0
             .decoded_frame_hash
             .map_or(Ok(Vec::new()), |hash| {
-                hash.obu(recon, self.bit_depth, self.chroma.is_monochrome())
+                hash.obu(recon, self.bit_depth, self.chroma.is_monochrome(), tlayer)
             })
     }
 
-    /// The per-frame metadata OBUs of the output frame `display_index`.
-    fn output_frame_obus(&self, display_index: u64) -> Result<Vec<u8>> {
+    /// The per-frame metadata OBUs of the output frame `display_index` in
+    /// temporal layer `tlayer`.
+    fn output_frame_obus(
+        &self,
+        display_index: u64,
+        tlayer: splot_core::types::TemporalLayerId,
+    ) -> Result<Vec<u8>> {
         let (metadata, frame_rate) = &self.frame_metadata;
-        metadata.obus(display_index, self.presentation, *frame_rate)
+        metadata.obus(display_index, self.presentation, (*frame_rate, tlayer))
     }
 
     /// The `grain_seed` of `plan` and, for a key frame whose `source` has
@@ -830,6 +848,9 @@ impl IntraFrameCoder {
         let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools((&self.preset, context), &self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
+        if plan.frame_type == FrameType::Inter {
+            tools.0.allow_intrabc = self.preset.intrabc_inter && !plan.intra_only;
+        }
         let ids = (1u32 << self.preset.long_term_id_bits) - 1;
         if plan.frame_type == FrameType::Key && ids > 0 {
             tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
@@ -1135,7 +1156,7 @@ impl IntraFrameCoder {
             frame_type: plan.frame_type,
             display_index: plan.display_index,
             film_grain_model: !grain_obu_empty,
-            reference: Some((core, recon, initial, cdfs, ccso_blocks)),
+            reference: Some((core, recon, initial, cdfs, ccso_blocks, plan.tlayer)),
             tip_output: None,
             intra_cells,
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(
@@ -2078,7 +2099,8 @@ impl SourceResidualCoder<'_> {
 
     /// The source residual of `tx` over `prediction` and its primary forward
     /// transform into `coeffs`, with the block's dequantization parameters;
-    /// a lossless `tx` with a `dpcm` direction codes its residual differences.
+    /// a lossless `tx` with a `dpcm` direction codes its residual differences,
+    /// a lossless IDTX `tx` the residual itself (§ 7.15.4).
     fn forward(
         &self,
         (tx, dpcm): (&TransformBlock, Option<DpcmDirection>),
@@ -2109,6 +2131,10 @@ impl SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         coeffs.resize(forward.coeff_width() * forward.coeff_height(), 0);
+        if self.lossless && tx.tx_type == TxType::Idtx {
+            coeffs.copy_from_slice(residual);
+            return Ok((params, forward));
+        }
         if self.lossless {
             let block = <&[i32; 16]>::try_from(residual.as_slice())
                 .map_err(|_| TileWriterError::Shape("a lossless block that is not 4x4"))?;

@@ -715,6 +715,10 @@ fn unit_row_stats(
     let mut stats = vec![CcsoStats::default(); planes * ladder.len() * grid.cols];
     let mut bands = vec![CcsoStats::default(); if wide { planes * grid.cols } else { 0 }];
     let mut gathered = [Vec::new(), Vec::new(), Vec::new()];
+    let tiles = tile_starts(input);
+    let x_clamps: Vec<(isize, isize)> = (0..grid.cols)
+        .map(|col| luma_clamp(tiles.1, col << grid.luma_size_log2, luma_width))
+        .collect();
     for (plane, id) in [PlaneId::Y, PlaneId::U, PlaneId::V]
         .into_iter()
         .enumerate()
@@ -734,11 +738,13 @@ fn unit_row_stats(
         let unit_x = |col: usize| ((col << grid.luma_size_log2) >> sub_x).min(size.width());
         let top = (row << grid.luma_size_log2) >> sub_y;
         let bottom = (((row + 1) << grid.luma_size_log2) >> sub_y).min(size.height());
+        let (min_y, max_y) = luma_clamp(tiles.0, row << grid.luma_size_log2, luma_height);
         for y in top..bottom {
             let y_luma = (y << sub_y) as isize;
             let luma_at = |dx: isize, dy: isize, x: usize| {
-                let ly = (y_luma + dy).clamp(0, luma_height as isize - 1) as usize;
-                let lx = (((x << sub_x) as isize) + dx).clamp(0, luma_width as isize - 1) as usize;
+                let ly = (y_luma + dy).clamp(min_y, max_y) as usize;
+                let (min_x, max_x) = x_clamps[(x << sub_x) >> grid.luma_size_log2];
+                let lx = (((x << sub_x) as isize) + dx).clamp(min_x, max_x) as usize;
                 luma.samples()
                     .get(ly * luma_stride + lx)
                     .copied()
@@ -786,6 +792,37 @@ fn unit_row_stats(
         }
     }
     Ok((stats, bands))
+}
+
+/// The `MiRowStarts` and `MiColStarts` of the frame when its filters stay
+/// inside their tile, `None` when they read the whole picture.
+fn tile_starts<'a>(input: &CcsoInput<'a>) -> (Option<&'a [u32]>, Option<&'a [u32]>) {
+    let across = input
+        .seq
+        .filter
+        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
+    match input.core.tile_info.as_ref().filter(|_| across) {
+        Some(info) => (Some(&info.mi_row_starts[..]), Some(&info.mi_col_starts[..])),
+        None => (None, None),
+    }
+}
+
+/// The § 7.19.1 luma clamp range of the unit that starts at luma sample
+/// `start` on a picture axis of `len` samples: its tile with `starts`, else
+/// the picture.
+fn luma_clamp(starts: Option<&[u32]>, start: usize, len: usize) -> (isize, isize) {
+    let frame_max = len as isize - 1;
+    let Some(starts) = starts else {
+        return (0, frame_max);
+    };
+    let mi = start / 4;
+    starts
+        .windows(2)
+        .find(|pair| (pair[0] as usize..pair[1] as usize).contains(&mi))
+        .map_or((0, frame_max), |pair| {
+            let min = (pair[0] as isize * 4).min(frame_max);
+            (min, (pair[1] as isize * 4 - 1).min(frame_max).max(min))
+        })
 }
 
 /// The frame sums and counts of the coded classes of `plane` under `params`.

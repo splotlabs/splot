@@ -720,6 +720,10 @@ pub struct IntraTileSyntax {
     dpcm_leaf: [Option<splot_recon::DpcmDirection>; 2],
     /// The DPCM of the next planned intra leaf of a lossless frame.
     next_dpcm: dpcm::Dpcm,
+    /// `lossless_tx_size` of the planned inter leaf of a lossless frame.
+    lossless_tx_size_leaf: bool,
+    /// `lossless_tx_size` of the next planned inter leaf of a lossless frame.
+    next_lossless_tx_size: bool,
     /// The color map of the next palette leaf, then of the planned one.
     palette_map: Vec<u8>,
     /// The color map of one transform block of the planned palette leaf.
@@ -815,6 +819,8 @@ impl IntraTileSyntax {
             fsc_leaf: false,
             dpcm_leaf: [None; 2],
             next_dpcm: dpcm::Dpcm::OFF,
+            lossless_tx_size_leaf: false,
+            next_lossless_tx_size: false,
             palette_map: Vec::new(),
             palette_unit: Vec::new(),
             mode_symbols: Vec::new(),

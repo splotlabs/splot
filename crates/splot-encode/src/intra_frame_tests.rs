@@ -2241,6 +2241,8 @@ mod crop;
 mod delta_q;
 #[path = "intra_frame_ext_sdp_tests.rs"]
 mod ext_sdp;
+#[path = "intra_frame_filter_tiles_tests.rs"]
+mod filter_tiles;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_gm_tests.rs"]
@@ -2281,6 +2283,8 @@ mod tile_group;
 mod tile_layout;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
+#[path = "intra_frame_tlayer_tests.rs"]
+mod tlayer;
 #[path = "intra_frame_warp_tests.rs"]
 mod warp;
 #[path = "intra_frame_wavefront_tests.rs"]

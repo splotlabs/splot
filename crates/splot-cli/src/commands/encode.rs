@@ -108,6 +108,9 @@ pub(crate) struct EncodeArgs {
     /// group OBUs; N above the tile count codes one tile per group.
     #[arg(long, value_name = "N", default_value = "1")]
     tile_groups: NonZeroU32,
+    /// The in-loop filters stop at tile edges (`disable_loopfilters_across_tiles`).
+    #[arg(long)]
+    disable_loopfilters_across_tiles: bool,
     /// Stop after this many input frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
@@ -515,6 +518,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         bail!("--tile-widths and --tile-heights need --tiles 1x1");
     };
     config.tile_groups = args.tile_groups;
+    config.disable_loopfilters_across_tiles = args.disable_loopfilters_across_tiles;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
     config.crop = args.crop;

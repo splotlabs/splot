@@ -50,6 +50,8 @@
 
 use core::num::NonZeroU32;
 
+use splot_core::types::TemporalLayerId;
+
 use crate::error::{Error, Result};
 use crate::rate_control::FrameType;
 
@@ -77,6 +79,9 @@ pub(crate) struct GopFrame {
     /// Depth in the mini-GOP hierarchy: `0` for key frames and the last frame
     /// of each mini-GOP, one more per bisection.
     pub(crate) layer: u8,
+    /// `obu_tlayer_id` (§ 5.2.2): `layer`, at most the planner's
+    /// `max_tlayer_id`.
+    pub(crate) tlayer: TemporalLayerId,
     /// `refresh_frame_flags`.
     pub(crate) refresh_frame_flags: u32,
     /// The slots that hold a frame when this frame is coded: the frames it may
@@ -181,6 +186,8 @@ pub(crate) struct GopPlanner {
     /// The display index of the open-loop key frame of the mini-GOP being
     /// planned.
     open_loop_display: Option<u64>,
+    /// `max_tlayer_id`: the highest temporal layer a frame takes.
+    max_tlayer_id: u8,
 }
 
 impl GopPlanner {
@@ -209,7 +216,24 @@ impl GopPlanner {
             open_loop_key: 0,
             periodic_keys: 0,
             open_loop_display: None,
+            max_tlayer_id: 0,
         }
+    }
+
+    /// The planner whose frames take temporal layer `min(layer,
+    /// max_tlayer_id)`. A frame refreshes only an empty slot or a slot of its
+    /// own or a higher temporal layer, so a decoder that drops the higher
+    /// layers finds every slot the frames it keeps may read in the same state,
+    /// as § 6.4.1 requires of the order hint and the reference map.
+    pub(crate) fn with_max_tlayer_id(self, max_tlayer_id: u8) -> Self {
+        Self {
+            max_tlayer_id,
+            ..self
+        }
+    }
+
+    fn tlayer(&self, layer: u8) -> u8 {
+        layer.min(self.max_tlayer_id)
     }
 
     /// The planner that codes every `every`th periodic key frame, `keyint`
@@ -473,8 +497,9 @@ impl GopPlanner {
         layer: u8,
     ) -> Result<GopStep> {
         let open_loop = frame_type == FrameType::Key && !show_frame;
+        let tlayer = self.tlayer(layer);
         let (slot, refresh_frame_flags) = if open_loop {
-            let slot = self.refresh_slot(false)?;
+            let slot = self.refresh_slot(false, tlayer)?;
             (Some(slot), 1 << slot)
         } else if frame_type == FrameType::Key {
             self.slots = [None; MAX_REF_SLOTS];
@@ -483,7 +508,7 @@ impl GopPlanner {
         } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
             (None, 0)
         } else {
-            let slot = self.refresh_slot(show_frame)?;
+            let slot = self.refresh_slot(show_frame, tlayer)?;
             (Some(slot), 1 << slot)
         };
         let ref_slots = (0..self.ref_slots)
@@ -520,6 +545,7 @@ impl GopPlanner {
             order_hint: (display_index - self.key_display) as u32,
             show_frame,
             layer,
+            tlayer: TemporalLayerId::from_bits(tlayer),
             refresh_frame_flags,
             ref_slots,
             primary_slot,
@@ -543,7 +569,8 @@ impl GopPlanner {
     /// An empty slot, else the slot of the oldest frame no show-existing
     /// frame waits for, other than the newest frame shown when coded; a shown
     /// frame, which becomes the newest shown frame, may take that one last.
-    fn refresh_slot(&self, show_frame: bool) -> Result<usize> {
+    /// A slot of a lower temporal layer than `tlayer` is never taken.
+    fn refresh_slot(&self, show_frame: bool, tlayer: u8) -> Result<usize> {
         if let Some(empty) = self.slots[..self.ref_slots]
             .iter()
             .position(Option::is_none)
@@ -560,7 +587,7 @@ impl GopPlanner {
         (0..self.ref_slots)
             .filter_map(|slot| {
                 self.slots[slot]
-                    .filter(|held| !held.awaiting_show)
+                    .filter(|held| !held.awaiting_show && self.tlayer(held.layer) >= tlayer)
                     .map(|held| {
                         (
                             Some(held.display_index) == newest_shown,
@@ -602,9 +629,6 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 }
 
 mod header;
-
-#[cfg(test)]
-pub(crate) use header::INTER_INTRABC;
 pub(crate) use header::{coded_grain_seed, frame_tools, show_existing_unit, shown_grain_seed};
 
 #[cfg(test)]
