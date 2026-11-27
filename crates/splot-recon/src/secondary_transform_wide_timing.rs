@@ -85,7 +85,7 @@ fn coefs(count: usize, wide: bool) -> [i32; IST_8X8_HEIGHT] {
 fn wide_secondary_sums_match_the_16_lane_sums() {
     let pairs = &IST_8X8_PACKED[0][0][0].pairs;
     for wide in [false, true] {
-        for count in [2, 8, 32] {
+        for count in [2, 8, 12, 16, 20, 24, 32] {
             let coefs = coefs(count, wide);
             baseline_simd!(simd => assert_eq!(
                 wide_sums(simd, pairs, &coefs, wide),
@@ -115,7 +115,7 @@ fn measure_wide_secondary_sums() {
     let pairs = &IST_8X8_PACKED[0][0][0].pairs;
     println!("kernel,case,round,avx2_ns,avx512_ns");
     for wide in [false, true] {
-        for count in [2, 8, 32] {
+        for count in [2, 8, 12, 16, 20, 24, 32] {
             let coefs = coefs(count, wide);
             let narrow =
                 || ns(|| drop(black_box(narrow_sums(avx2, pairs, black_box(&coefs), wide))));

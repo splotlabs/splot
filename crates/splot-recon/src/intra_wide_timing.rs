@@ -6,14 +6,16 @@
 #![allow(clippy::semicolon_if_nothing_returned, dropping_copy_types)]
 
 use super::*;
-use fearless_simd::{Level, u8x64, u16x32};
+use fearless_simd::{Level, SimdCombine as _, u8x64, u16x32};
 use std::{hint::black_box, time::Instant};
 
 fn tables<S: Simd>(simd: S, colors: &[u16; 8]) -> [u8x64<S>; 2] {
     [0, 8].map(|shift| {
-        let bytes: [u8; 64] =
-            core::array::from_fn(|i| colors.get(i & 15).map_or(0, |&c| (c >> shift) as u8));
-        u8x64::load_array_ref(simd, &bytes)
+        let bytes: [u8; 16] =
+            core::array::from_fn(|i| colors.get(i).map_or(0, |&c| (c >> shift) as u8));
+        let quarter = u8x16::from_slice(simd, &bytes);
+        let half = quarter.combine(quarter);
+        half.combine(half)
     })
 }
 
