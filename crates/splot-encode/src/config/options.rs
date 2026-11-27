@@ -292,11 +292,16 @@ const KEY_FRAME_METADATA: ValueShape = ValueShape::Record(options! {
     itut_t35, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy T.35 data before each key frame.", "Supply the country code and terminal provider code.";
     user_data_unregistered, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy unregistered user data before each key frame.", "Start the payload with a 16-byte UUID.";
 });
+const FRAME_HASH: ValueShape = ValueShape::Choice(&[
+    variant("frame", &[], "Hash the Y, U and V samples together."),
+    variant("per_plane", &[], "Hash each plane separately."),
+]);
 const FRAME_METADATA: ValueShape = ValueShape::Record(options! {
     timecode, Setting, ValueShape::Boolean, "Write a timecode before each output frame.", "The frame rate is at most 512 frames per second.";
     temporal_point_info, Setting, ValueShape::Boolean, "Write the presentation time before each output frame.", "Requires timing info.";
     scan_type, Setting, ValueShape::Boolean, "Mark each output frame as progressive.";
     banding_hints, Setting, ValueShape::Optional(&ValueShape::Bytes), "Copy banding hints before each output frame.", "Supply one metadata_banding_hints() padded to a byte.";
+    decoded_frame_hash, Setting, ValueShape::Optional(&FRAME_HASH), "Write an MD5 hash after each output frame.";
 });
 const CROP_OFFSET: ValueShape = integer(0, U32_MAX, "coded luma samples");
 const CROP: ValueShape = ValueShape::Record(options! {

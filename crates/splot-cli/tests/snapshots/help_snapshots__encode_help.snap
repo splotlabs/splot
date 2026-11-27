@@ -96,6 +96,8 @@ Options:
           Every output frame carries a scan type metadata OBU: a progressive frame, not a duplicate. Every key frame then writes a content interpretation OBU
       --banding-hints <FILE>
           Banding hints file: the bytes of one metadata_banding_hints() (AV2 § 5.17.8), padded to a byte. Every output frame carries it in a banding hints metadata OBU. The encoder does not detect banding
+      --frame-hash <FRAME_HASH>
+          Every output frame carries an MD5 decoded frame hash metadata OBU (AV2 § 6.16.13) of its samples before film grain, after its frame [possible values: frame, per-plane]
       --keyint <KEYINT>
           Distance between key frames, in frames [default: 120]
       --stats

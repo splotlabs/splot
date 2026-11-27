@@ -61,8 +61,8 @@ pub use config::{
     TileLayout, Tune,
 };
 pub use content::{
-    ChromaSamplePosition, ContentDescription, ContentLightLevel, FrameMetadata, KeyFrameMetadata,
-    MasteringDisplay,
+    ChromaSamplePosition, ContentDescription, ContentLightLevel, FrameHash, FrameMetadata,
+    KeyFrameMetadata, MasteringDisplay,
 };
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};

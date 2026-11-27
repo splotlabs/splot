@@ -771,6 +771,8 @@ fn frame_metadata_flags_write_metadata_obus() {
         "--timecode",
         "--temporal-point-info",
         "--scan-type-info",
+        "--frame-hash",
+        "per-plane",
         "--banding-hints",
         banding.to_str().unwrap(),
     ];
@@ -787,6 +789,7 @@ fn frame_metadata_flags_write_metadata_obus() {
                 "METADATA_TYPE_TEMPORAL_POINT_INFO",
                 "METADATA_TYPE_SCAN_TYPE",
                 "METADATA_TYPE_BANDING_HINTS",
+                "METADATA_TYPE_DECODED_FRAME_HASH",
             ] {
                 let named = json.matches(name).count();
                 assert!(named >= FRAMES && named % FRAMES == 0, "{name}: {named}");
