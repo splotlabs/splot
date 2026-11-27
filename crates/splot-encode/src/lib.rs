@@ -33,6 +33,7 @@ mod intra_frame;
 mod intrabc;
 pub mod ivf;
 mod kernels;
+mod level;
 mod lookahead;
 mod loop_filter;
 mod mode_decision;
@@ -72,7 +73,7 @@ pub use progress::Progress;
 pub use rate_control::{
     Cbr, ConstantQp, Crf, FirstPass, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
-pub use splot_core::headers::sequence::{CroppingWindow, ProfileIdc};
+pub use splot_core::headers::sequence::{CroppingWindow, LevelIdx, ProfileIdc, Tier};
 pub use splot_parallel::ThreadCount;
 pub use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 pub use stats::FrameStats;

@@ -64,6 +64,10 @@ Options:
           Cropping window: cut L, R, T and B luma samples off the left, right, top and bottom of the coded frame (after --resize-denominator); the stream decodes to the rest. L and T fall on a chroma sample (even for 4:2:0, L even for 4:2:2). Off by default. The `--stats` PSNR covers the full coded frame
       --profile <PROFILE>
           `seq_profile_idc`: 0, 1 or 2 (4:0:0 and 4:2:0), 3 (adds 4:2:2), 4 (adds 4:4:4) or 31 (Configurable, every format). The default is the lowest profile that allows the input chroma format
+      --level <LEVEL>
+          Level: `max` (default, `seq_level_idx` 31, no level limits), a level from 2.0 to 8.3, or `auto` (the lowest level that holds). The encoder refuses a stream over the picture size, tile, display-rate, header-rate, reference-frame or target-bitrate limit of the level; the other Annex A.4 limits (compressed frame size, symbol count, decode rate, buffer model, CRF bitrate) are not checked [default: max]
+      --tier <TIER>
+          Tier: `main` (default), `high` (level 4.0 and above) or `auto` (main first) [default: main] [possible values: auto, main, high]
       --film-grain
           Film grain: each key frame codes a grain model fitted to the noise of its source, and every output frame applies it at decode; off by default. The encoder does not denoise, so the stats PSNR does not include the grain
       --cbr-padding

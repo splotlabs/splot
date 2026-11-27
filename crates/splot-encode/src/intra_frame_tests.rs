@@ -2259,6 +2259,8 @@ mod intra_tools;
 mod intrabc_inter;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
+#[path = "intra_frame_level_tests.rs"]
+mod level;
 #[path = "intra_frame_lossless_tests.rs"]
 mod lossless;
 #[path = "intra_frame_mds_tests.rs"]
@@ -2275,6 +2277,8 @@ mod qm;
 mod refine;
 #[path = "intra_frame_repeat_tests.rs"]
 mod repeat;
+#[path = "intra_frame_restriction_tests.rs"]
+mod restriction;
 #[path = "intra_frame_segmentation_tests.rs"]
 mod segmentation;
 #[path = "intra_frame_switch_tests.rs"]

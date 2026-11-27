@@ -22585,6 +22585,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-LEVEL-TIER"
+name = "Encoder level and tier"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "5.18.7.3", "Annex A.2", "Annex A.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/level.rs"
+change_id = "enc-level-tier"
+owner = "encoder"
+risk = "medium"
+notes = "Config::level and Config::tier (2026-11-27; CLI --level max|2.0..8.3|auto, --tier main|high|auto): the defaults code seq_level_idx 31 and the main tier, the bytes of before. seq_tier is coded only when seq_level_idx > 3 and single_picture_header_flag is 0 (LevelIdx::codes_tier, shared with the parser). Auto codes the lowest level, main tier first, whose checked limits hold, and 31 when none holds. Checked before the first frame, with Error::LevelExceeded: FrameWidth, FrameHeight, MaxPicSize, TileCols, NumTiles (from the key-frame tile_info at that level), display rate and frame-header rate at the frame rate, NumRefFrames against MaxLevelRefFrames, and the CBR, VBR or capped-CRF bitrate against MaxMbps * BitrateProfileFactor. Error::InvalidLevel refuses reserved levels, the high tier below 4.0, a level other than 31 with profile 31 and frames under 16x16. Not checked (the caller's responsibility until the decoder model): CompressedSize, FrameSymbolCount, the per-frame decode rate, the Annex E buffer and the bitrate of CRF and constant-QP streams. splot decode and AVM decode level 2.0, 4.0 high and 8.3 high streams to the encoder recon."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::requested_level_and_tier_reach_the_parsed_header_or_are_refused", "crates/splot-core/src/level.rs::tests::rate_limits_follow_tables_a8_and_a9", "crates/splot-encode/src/intra_frame_level_tests.rs::automatic_levels_are_the_lowest_that_hold", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_refuse_the_limits_the_stream_breaks", "crates/splot-encode/src/intra_frame_level_tests.rs::uncodable_levels_are_refused", "crates/splot-encode/src/intra_frame_level_tests.rs::requested_levels_decode_to_the_encoder_recon", "crates/splot-cli/tests/encode_decode_roundtrip.rs::requested_levels_validate_and_decode"]
+commands = ["cargo test -p splot-core level --locked", "cargo test -p splot-encode level --locked", "cargo test -p splot-cli --test encode_decode_roundtrip requested_levels --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CROP-WINDOW"
 name = "Encoder sequence cropping window"
 category = "encoder"
@@ -22613,5 +22645,37 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::cropping_window_reaches_the_parsed_header", "crates/splot-encode/src/intra_frame_crop_tests.rs::cropped_streams_decode_to_the_window_of_the_recon", "crates/splot-encode/src/intra_frame_crop_tests.rs::windows_that_do_not_fit_the_coded_frame_are_refused", "crates/splot-cli/tests/encode_decode_roundtrip.rs::cropped_clips_decode_to_the_window"]
 commands = ["cargo test -p splot-core cropping_window --locked", "cargo test -p splot-encode crop --locked", "cargo test -p splot-cli --test encode_decode_roundtrip cropped --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-RESTRICTION-SWITCHES"
+name = "Encoder restriction switches of the sequence and frame headers"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.3", "5.4.8", "5.4.10", "5.18.2", "5.20.3.2", "5.20.6.3", "5.20.7.29", "5.20.8.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/preset.rs"
+change_id = "enc-restriction-switches"
+owner = "encoder"
+risk = "low"
+notes = "Off-by-default preset fields (2026-11-27, off in every row by design: each removes tools; not measured): max_pb_aspect_ratio 2 or 4 codes reduce_pb_aspect_ratio with that MaxPbAspectRatio, chroma_dct_only codes enable_chroma_dctonly, reduced_tx_part_set codes reduced_tx_part_set, ccso_unit_sb and gdf_unit_sb code ccso_unit_matches_sb_size and gdf_unit_matches_sb_size, and reduced_tx_set 0..=3 overrides the frame reduced_tx_set that 4 derives from tx_type_depth. The search takes its partitions, transform partitions and types and filter units from the shared syntax of the parsed headers, so no block uses a restricted tool. PresetParams::validate refuses an aspect ratio other than 0, 2 or 4, ccso_unit_sb without CCSO, and gdf_unit_sb without GDF or with superblocks above 64x64."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::restriction_switches_follow_their_syntax_conditions", "crates/splot-encode/src/intra_frame_restriction_tests.rs::max_pb_aspect_ratio_limits_every_coded_block", "crates/splot-encode/src/intra_frame_restriction_tests.rs::chroma_dct_only_codes_dct_chroma_transforms", "crates/splot-encode/src/intra_frame_restriction_tests.rs::reduced_tx_part_set_codes_no_four_way_one_axis_split", "crates/splot-encode/src/intra_frame_restriction_tests.rs::reduced_tx_set_limits_the_luma_types", "crates/splot-encode/src/intra_frame_restriction_tests.rs::unit_size_switches_reach_the_sequence_header", "crates/splot-encode/src/intra_frame_restriction_tests.rs::restriction_switches_refuse_forms_the_syntax_cannot_carry"]
+commands = ["cargo test -p splot-core restriction_switches --locked", "cargo test -p splot-encode restriction --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_restricted -- --ignored"]
 fixtures = []
 diagnostics = []
