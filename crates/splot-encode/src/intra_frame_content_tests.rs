@@ -666,6 +666,39 @@ fn rejects_frame_metadata_the_stream_cannot_carry() {
     }));
 }
 
+#[test]
+fn names_the_config_field_of_the_invalid_metadata_record() {
+    let field = |key_frame: bool, frame: bool| {
+        let mut config = with_frame_metadata(&[], true);
+        if key_frame {
+            config.key_frame_metadata.icc_profile = Some(vec![0; 127]);
+        }
+        if frame {
+            config.frame_metadata.banding_hints = Some(vec![0xA8]);
+        }
+        match config.validate() {
+            Err(Error::InvalidMetadata { field, .. }) => Some(field),
+            other => {
+                assert!(other.is_ok(), "{other:?}");
+                None
+            }
+        }
+    };
+    assert_eq!(field(false, false), None);
+    assert_eq!(field(true, false), Some("key_frame_metadata"));
+    assert_eq!(field(false, true), Some("frame_metadata"));
+    assert_eq!(field(true, true), Some("key_frame_metadata"));
+
+    let mut config = with_frame_metadata(&[], true);
+    config.content.timing_info = false;
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .starts_with("frame_metadata: temporal point info"),
+        "{err}"
+    );
+}
+
 /// `(display index, per_plane, plane hashes or the frame hash)` of every
 /// decoded frame hash in `units`, sorted by the display index of the
 /// timecode in front of its frame OBU; the hash is the last OBU of its unit.

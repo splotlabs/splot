@@ -143,8 +143,11 @@ pub enum Error {
     },
 
     /// A metadata payload that its syntax cannot carry.
-    #[error("metadata: {what}")]
+    #[error("{field}: {what}")]
     InvalidMetadata {
+        /// The `Config` field that holds the record: `key_frame_metadata` or
+        /// `frame_metadata`.
+        field: &'static str,
         /// The rule the payload breaks.
         what: &'static str,
     },

@@ -286,7 +286,12 @@ impl KeyFrameMetadata {
     /// country code (with its extension byte) and terminal provider code
     /// (§ 6.16.4), and a user data UUID.
     pub(crate) fn validate(&self) -> Result<()> {
-        let invalid = |what| Err(Error::InvalidMetadata { what });
+        let invalid = |what| {
+            Err(Error::InvalidMetadata {
+                field: "key_frame_metadata",
+                what,
+            })
+        };
         if self.icc_profile.as_ref().is_some_and(|icc| icc.len() < 128) {
             return invalid("an ICC profile starts with its 128-byte header (§ 6.16.9)");
         }
@@ -400,7 +405,12 @@ impl FrameMetadata {
 
     /// Checks the metadata against the configured `frame_rate` and timing.
     pub(crate) fn validate(&self, frame_rate: (u32, u32), timing_info: bool) -> Result<()> {
-        let invalid = |what| Err(Error::InvalidMetadata { what });
+        let invalid = |what| {
+            Err(Error::InvalidMetadata {
+                field: "frame_metadata",
+                what,
+            })
+        };
         if self.timecode && frame_rate.0.div_ceil(frame_rate.1) > Self::MAX_TIMECODE_RATE {
             return invalid("a timecode counts at most 512 frames per second (§ 6.16.7)");
         }
@@ -563,6 +573,7 @@ fn banding_hints(bytes: &[u8]) -> Result<splot_core::headers::metadata::Metadata
     match parse_metadata_banding_hints(&mut reader) {
         Ok(hints) if reader.remaining_bits() < 8 => Ok(hints),
         _ => Err(Error::InvalidMetadata {
+            field: "frame_metadata",
             what: "banding hints are one metadata_banding_hints() padded to a byte (§ 5.17.8)",
         }),
     }

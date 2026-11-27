@@ -295,7 +295,8 @@ impl Config {
     /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
     /// [`Error::InvalidCrop`], [`Error::InvalidProfile`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidContentDescription`],
-    /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`],
+    /// [`Error::InvalidMasteringDisplay`], [`Error::InvalidMetadata`] (its
+    /// `field` names the failed record, `key_frame_metadata` first),
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
     /// [`Error::PaddingWithoutCbr`], [`Error::KeyintWithTemporalLayers`] or
