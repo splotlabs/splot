@@ -230,8 +230,40 @@ fn lossless_fsc_large_transforms_decode_to_the_source() {
     }
 }
 
+const PALETTE: [&[(&str, &str)]; 2] = [
+    &[("lossless_palette", "1")],
+    &[
+        ("lossless_palette", "1"),
+        ("lossless_fsc", "2"),
+        ("lossless_dpcm", "1"),
+    ],
+];
+
+/// With `lossless_palette`, intra leaves of drawn text code palettes over
+/// 4x4 Walsh-Hadamard residual units, alone and next to FSC on its
+/// coefficient path and DPCM; the streams decode to the source samples with
+/// the same bytes on 1, 2 and 8 threads.
+#[test]
+fn lossless_palette_streams_decode_to_the_source_on_any_thread_count() {
+    each_case(CASES, |case| {
+        for overrides in PALETTE {
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::LOSSLESS_PALETTE_CODED.set(0);
+            let (units, source) = lossless_stream_of(TEXT, case, 1, 8, overrides);
+            let coded = crate::tile_writer::LOSSLESS_PALETTE_CODED.get();
+            assert!(coded > 0, "{name}: no palette leaf");
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+            for threads in [2, 8] {
+                let other = lossless_stream_of(TEXT, case, threads, 8, overrides).0;
+                assert_eq!(other, units, "{name} {threads}");
+            }
+        }
+    });
+}
+
 /// AVM decodes the lossless streams, with and without DPCM,
-/// `lossless_inter_tx` and `lossless_fsc`, to the source samples.
+/// `lossless_inter_tx` and `lossless_fsc`, and the palette streams of drawn
+/// text, to the source samples.
 #[test]
 #[ignore = "needs SPLOT_AVM_DECODER"]
 fn avm_decodes_lossless_streams_to_the_source() {
@@ -249,6 +281,11 @@ fn avm_decodes_lossless_streams_to_the_source() {
             FSC[2],
         ] {
             let (units, source) = lossless_stream(case, 1, 8, overrides);
+            let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
+            assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));
+        }
+        for overrides in PALETTE {
+            let (units, source) = lossless_stream_of(TEXT, case, 1, 8, overrides);
             let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
             assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));
         }

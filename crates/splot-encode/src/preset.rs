@@ -538,6 +538,11 @@ pub struct PresetParams {
     /// `lossless_tx_size` 0 and 1 (§ 5.20.6.1); 2 also codes `enable_fsc`,
     /// whose FSC coefficient path inter IDTX luma takes too. 0 in every row.
     pub lossless_fsc: u8,
+    /// A lossless intra leaf gets the palette trials of `palette` (§ 5.20.8.1)
+    /// over 4x4 Walsh-Hadamard residual units (§ 5.20.6.1); on, the lossless
+    /// switch-off keeps `palette` and so `allow_screen_content_tools`. Off in
+    /// every row.
+    pub lossless_palette: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -1029,7 +1034,7 @@ impl PresetParams {
     /// `CodedLossless`: TCQ, parity hiding, delta-q, the loop filters) or that
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
     /// the tools whose lossless forms are a later search (IST, CCTX, DDT,
-    /// palette, IntraBC) or need a lossless field (FSC, IDTX, transform types).
+    /// IntraBC) or need a lossless field (FSC, IDTX, transform types, palette).
     #[cfg(test)]
     pub(crate) fn set_lossless(&mut self) {
         self.set_lossless_with(|_| {});
@@ -1067,7 +1072,7 @@ impl PresetParams {
             cctx = false;
             fsc = self.lossless_fsc == 2;
             idtx_intra = self.lossless_fsc > 0;
-            palette = false;
+            palette = self.lossless_palette;
             intrabc = false;
             intrabc_inter = false;
             y_dc_delta_q = 0;
@@ -1851,6 +1856,8 @@ preset_table! {
         lossless_inter_tx:     [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Test FSC on lossless intra leaves with plain IDTX coefficients (1), or with the FSC coefficient path (2)." [0, 2]
         lossless_fsc:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Test palette prediction on lossless intra leaves."
+        lossless_palette:      [false, false, false, false, false, false, false, false, false, false, false],
     }
     Gop {
         "Number of frames per mini-GOP. One shows every frame directly." [1, 32]
