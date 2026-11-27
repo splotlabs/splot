@@ -708,7 +708,6 @@ impl IntraTileSyntax {
         if modes.fsc && !self.fsc_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
         }
-        // § 5.20.7.29: lossless chroma is IDTX when the luma at its position codes FSC.
         let lossless_chroma_fsc = self.tools.lossless
             && if leaf.is_chroma_part() {
                 self.intra_facts
