@@ -15,7 +15,8 @@ use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
     BitDepth, ChromaSamplePosition, Config, ContentLightLevel, CroppingWindow, Encoder, FirstPass,
-    MasteringDisplay, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout, Tune,
+    MasteringDisplay, Preset, ProfileIdc, RateControlMode, SourceFrame, ThreadCount, TileLayout,
+    Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -125,6 +126,11 @@ pub(crate) struct EncodeArgs {
     /// full coded frame.
     #[arg(long, value_name = "L,R,T,B", value_parser = parse_crop)]
     crop: Option<CroppingWindow>,
+    /// `seq_profile_idc`: 0, 1 or 2 (4:0:0 and 4:2:0), 3 (adds 4:2:2), 4
+    /// (adds 4:4:4) or 31 (Configurable, every format). The default is the
+    /// lowest profile that allows the input chroma format.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=31))]
+    profile: Option<u8>,
     /// Film grain: each key frame codes a grain model fitted to the noise of
     /// its source, and every output frame applies it at decode; off by
     /// default. The encoder does not denoise, so the stats PSNR does not
@@ -506,6 +512,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
     config.crop = args.crop;
+    config.profile = args.profile.map(ProfileIdc::from_bits);
     config.film_grain = args.film_grain;
     config.cbr_padding = args.cbr_padding;
     config.tune = match args.tune {

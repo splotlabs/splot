@@ -22489,6 +22489,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-PROFILE-SELECTION"
+name = "Encoder profile selection"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "Annex A.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-profile-selection"
+owner = "encoder"
+risk = "low"
+notes = "Config::profile (2026-11-27; CLI --profile): None, the default, codes the lowest Annex A.2 Table A.1 profile that allows the chroma format (0 for 4:0:0 and 4:2:0, 3 for 4:2:2, 4 for 4:4:4). A requested profile 0-4 or 31 is coded as seq_profile_idc; Error::InvalidProfile refuses a reserved value (5-30) or a profile whose chroma set does not hold the input format. The encoder codes one embedded layer, so every profile fits Table A.3 and needs no LCR (Table A.4, Annex A.3). splot decode and AVM decode profiles 1, 2, 3 and 31 to the encoder recon."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::requested_profile_reaches_the_parsed_header_or_is_refused", "crates/splot-encode/src/intra_frame_profile_tests.rs::requested_profiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_profile_tests.rs::profiles_that_do_not_allow_the_chroma_format_are_refused", "crates/splot-cli/tests/encode_decode_roundtrip.rs::requested_profiles_validate_and_decode"]
+commands = ["cargo test -p splot-core requested_profile --locked", "cargo test -p splot-encode profile --locked", "cargo test -p splot-cli --test encode_decode_roundtrip requested_profiles --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CROP-WINDOW"
 name = "Encoder sequence cropping window"
 category = "encoder"

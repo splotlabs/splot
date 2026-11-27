@@ -305,6 +305,14 @@ const CROP: ValueShape = ValueShape::Record(options! {
     top, Setting, CROP_OFFSET, "Set the offset from the top edge.";
     bottom, Setting, CROP_OFFSET, "Set the offset from the bottom edge.";
 });
+const PROFILES: &[VariantDescription] = &[
+    variant("0", &[], "Main_420_10_IP0."),
+    variant("1", &[], "Main_420_10_IP1."),
+    variant("2", &[], "Main_420_10_IP2."),
+    variant("3", &[], "Main_422_10_IP1."),
+    variant("4", &[], "Main_444_10_IP1."),
+    variant("31", &[], "Configurable."),
+];
 const THREADS: ValueShape = ValueShape::Choice(&[
     variant("auto", &[], "Use the host worker count."),
     variant(
@@ -338,6 +346,8 @@ config_options! {
     )), "Encode each axis at eight divided by this value.", "Lossless coding requires the original size.";
     crop, Setting, ValueShape::Optional(&CROP), "Set the crop window after resize.",
         "The window must fit the coded frame. Its origin must align with the chroma grid.";
+    profile, Setting, ValueShape::Optional(&ValueShape::Choice(PROFILES)), "Request a seq_profile_idc.",
+        "The profile must allow the chroma format. Absent selects the lowest profile that allows it.";
     film_grain, Setting, ValueShape::Boolean, "Estimate a grain model from the source.",
         "Lossless coding does not support film grain.";
     cbr_padding, Setting, ValueShape::Boolean, "Add padding to maintain the target bitrate.", "Requires CBR.";
