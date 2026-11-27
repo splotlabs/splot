@@ -13173,6 +13173,17 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/invalid/syn-intrabc-morph-offset-dv-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-local-colo-coded-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-global-delay-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-global-wavefront-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-extra-range-delay-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-local-colo-uncoded-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-global-older-region-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-global-wavefront-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-extra-range-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-inter-local-128x64.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-chroma-offset-local-edge-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-sdp-luma-local-edge-512x128.ivf",
     "tests/conformance/vectors/valid/syn-2frame-reduced-txpart-inter-64x64-q160.ivf",
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
     "local decoder mission fixture",
