@@ -2982,3 +2982,9 @@ id = "syn-12frame-sframe-ref-chain-topo-sort-176x144"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.switch", "inter.mv_prediction_temporal", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "9581b92aeb14fd2386d0ae21310a31a2dcffae61bfee558aed2f0bab5abddbd4"
 avm_raw_sha256 = "71bb382e24446ed1461e0d40b2e34bbf46e8213bf46a8e209c3e20295f5bc56b"
+
+[[fixture]]
+id = "syn-3frame-restricted-switch-bawp-gate-176x144"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.switch", "inter.mv_prediction_temporal", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "3e0f70b49cc2ee8fe0626f2d61ee3f54fd8ec24e72965c1ce7affff40c368aa5"
+avm_raw_sha256 = "514ec036f065ed93e246d07ac604bf6cc1e642b7b8c3b2722676a61b90e2eaf2"
