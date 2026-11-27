@@ -6,7 +6,7 @@ use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, FrameRestorationType, FrameSize, FrameType, TxMode,
 };
-use crate::headers::sequence::DrlReorder;
+use crate::headers::sequence::{CdefOnSkipTxfm, DrlReorder};
 use crate::write::write_frame_header_core;
 
 const SIZES: [(u32, u32); 9] = [
@@ -161,6 +161,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
     let tools = EncoderToolFlags {
         cdef: true,
         loop_restoration: true,
+        lr_tools_disable: [true, false, true],
+        cdef_on_skip_txfm: CdefOnSkipTxfm::AlwaysOn,
         ccso: true,
         gdf: true,
         sdp: true,
@@ -267,6 +269,9 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.explicit_ref_frame_map && !seq.general.monotonic_output_order_flag);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
+    assert!(filter.lr_pc_wiener_disabled && !filter.lr_wiener_nonsep_disabled);
+    assert!(filter.lr_tools_uv_present && filter.lr_uv_wiener_nonsep_disabled);
+    assert_eq!(filter.cdef_on_skip_txfm, CdefOnSkipTxfm::AlwaysOn);
     assert!(filter.enable_ccso && filter.ccso_unit_matches_sb_size);
     assert!(filter.gdf_unit_matches_sb_size);
     assert_eq!(filter.df_par_bits_minus_2, 2);

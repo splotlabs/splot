@@ -241,6 +241,11 @@ impl FrameRefFacts {
         }
     }
 
+    /// § 5.20.7.14 `is_scaled( ref_frame, 1 )`: a restricted reference counts as scaled.
+    pub(super) fn scaled_or_restricted(&self, ref_frame: i8) -> Result<bool> {
+        Ok(self.hint(ref_frame)?.is_restricted() || self.scaled(ref_frame)?)
+    }
+
     /// The per-frame § 7.13.3.18 scalings of `ref_frame`, `None` when the
     /// frame has no size or the reference no frame.
     pub(in crate::prediction::inter) fn scalings(

@@ -46,6 +46,8 @@ impl Case {
             tools: EncoderToolFlags {
                 cdef: false,
                 loop_restoration: false,
+                lr_tools_disable: [false; 3],
+                cdef_on_skip_txfm: splot_core::headers::sequence::CdefOnSkipTxfm::Adaptive,
                 ccso: false,
                 gdf: false,
                 sdp: false,
