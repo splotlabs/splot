@@ -296,6 +296,7 @@ impl RandomLevels {
             inter: None,
             intrabc: None,
             dpcm: splot_decode::encoder_syntax::Dpcm::OFF,
+            lossless_tx_size: false,
         })
     }
 }

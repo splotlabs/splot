@@ -1353,21 +1353,25 @@ impl EncoderInterResidual {
 
 /// The `chroma_inter_tx_type` the decoder reads for the chroma transform at
 /// plane position `(x, y)` of `frontier`, after the luma transforms `luma`,
-/// each `(x, y, tx_size, tx_type)` in luma samples.
+/// each `(x, y, tx_size, tx_type)` in luma samples; with `current_block`
+/// the type of the block's first luma transform (the lossless rule of
+/// § 5.20.7.29 for an intra frame or a chroma reference in another block).
 pub(crate) fn chroma_inter_tx_type(
     frontier: &DecodeBlockFrontier,
     chroma: ChromaFormatIdc,
     luma: impl IntoIterator<Item = (usize, usize, usize, usize)>,
     at: (usize, usize),
+    current_block: bool,
 ) -> Result<usize> {
+    let read = (at, current_block);
     LUMA_TX_TYPES.with(|cell| match cell.try_borrow_mut() {
-        Ok(mut map) => chroma_tx_type_from(&mut map, frontier, chroma, luma, at),
+        Ok(mut map) => chroma_tx_type_from(&mut map, frontier, chroma, luma, read),
         Err(_) => chroma_tx_type_from(
             &mut InterLumaTxTypeMap::default(),
             frontier,
             chroma,
             luma,
-            at,
+            read,
         ),
     })
 }
@@ -1385,7 +1389,7 @@ fn chroma_tx_type_from(
     frontier: &DecodeBlockFrontier,
     chroma: ChromaFormatIdc,
     luma: impl IntoIterator<Item = (usize, usize, usize, usize)>,
-    (x, y): (usize, usize),
+    ((x, y), current_block): ((usize, usize), bool),
 ) -> Result<usize> {
     let (n4w, n4h) = block_size4(frontier)?;
     map.reset(frontier.r, frontier.c, n4h, n4w)?;
@@ -1398,7 +1402,7 @@ fn chroma_tx_type_from(
         y / MI_SIZE,
         x / MI_SIZE,
         chroma.subsampling(),
-        false,
+        current_block,
     ))
 }
 
