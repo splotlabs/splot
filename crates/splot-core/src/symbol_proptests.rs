@@ -322,6 +322,106 @@ proptest! {
     }
 }
 
+/// The truncated unary read one bit per step, the oracle for
+/// [`SymbolDecoder::read_unary`]. Returns the value and the consumed bits.
+fn read_unary_bit_loop(decoder: &mut SymbolDecoder<'_>, max_bits: u32) -> (u32, u32) {
+    let mut split = u64::from(decoder.range()) << max_bits;
+    let mut scaled_value = decoder.scaled_bypass_value(max_bits);
+    let mut value = 0;
+    let mut consumed = 0;
+    for _ in 0..max_bits {
+        split >>= 1;
+        consumed += 1;
+        if scaled_value < split {
+            break;
+        }
+        scaled_value -= split;
+        value += 1;
+    }
+    let symbol_value = u32::try_from(scaled_value >> (max_bits - consumed)).unwrap();
+    decoder.advance_bypass(consumed, symbol_value);
+    decoder.count_symbols(u64::from(consumed));
+    (value, consumed)
+}
+
+/// Every field a read changes, including the buffered bits below
+/// `SymbolValue` that a checkpoint leaves out.
+fn arithmetic_state(decoder: &SymbolDecoder<'_>) -> (u64, i32, u64, u32, u64) {
+    (
+        decoder.dif,
+        decoder.buffered,
+        decoder.fed_bits,
+        decoder.range_hi,
+        decoder.frame_symbol_count,
+    )
+}
+
+/// Reads the symbols and literal bits that move a fresh decoder to an
+/// arbitrary range, value and buffer fill.
+fn prime_unary_decoder(decoder: &mut SymbolDecoder<'_>, lead: &[(u8, u32)]) {
+    let mut row = [8192u16, 16_384, 24_576, 0, 0];
+    for &(_, bits) in lead {
+        decoder.read_symbol_u16(&mut row).unwrap();
+        decoder.read_literal(bits).unwrap();
+    }
+}
+
+proptest! {
+    /// `read_unary` must return the value, consume the bits and leave the
+    /// state of the per-bit loop for every `max_bits`, with the terminator at
+    /// each position and with a capped prefix, which has no terminator.
+    #[test]
+    fn read_unary_matches_bit_loop_at_every_terminator(
+        lead in proptest::collection::vec((0u8..4, 0u32..=32), 0..4),
+        tail in any::<u32>(),
+    ) {
+        for max_bits in 0..=MAX_LITERAL_BITS {
+            for value in 0..=max_bits {
+                let mut encoder = crate::symbol_encoder::SymbolEncoder::new();
+                let mut row = [8192u16, 16_384, 24_576, 0, 0];
+                for &(symbol, bits) in &lead {
+                    encoder.write_symbol_u16(&mut row, Symbol::new(symbol)).unwrap();
+                    encoder.write_literal(tail & mask_for_bits(bits) as u32, bits).unwrap();
+                }
+                encoder.write_unary(value, max_bits).unwrap();
+                encoder.write_literal(tail, 32).unwrap();
+                let output = encoder.finish().unwrap();
+
+                let mut fast = SymbolDecoder::new(output.bytes()).unwrap();
+                let mut oracle = SymbolDecoder::new(output.bytes()).unwrap();
+                prime_unary_decoder(&mut fast, &lead);
+                prime_unary_decoder(&mut oracle, &lead);
+
+                let (oracle_value, consumed) = read_unary_bit_loop(&mut oracle, max_bits);
+                prop_assert_eq!(oracle_value, value);
+                prop_assert_eq!(consumed, (value + 1).min(max_bits));
+                prop_assert_eq!(fast.read_unary(max_bits).unwrap(), value);
+                prop_assert_eq!(arithmetic_state(&fast), arithmetic_state(&oracle));
+                prop_assert_eq!(fast.read_literal(32).unwrap(), tail);
+            }
+        }
+    }
+
+    /// `read_unary` must match the per-bit loop on arbitrary payloads too,
+    /// including reads that run past the payload end.
+    #[test]
+    fn read_unary_matches_bit_loop_on_arbitrary_payloads(
+        data in proptest::collection::vec(any::<u8>(), 0..24),
+        lead in proptest::collection::vec((0u8..4, 0u32..=32), 0..4),
+        widths in proptest::collection::vec(0u32..=MAX_LITERAL_BITS, 1..12),
+    ) {
+        let mut fast = SymbolDecoder::new(&data).unwrap();
+        let mut oracle = SymbolDecoder::new(&data).unwrap();
+        prime_unary_decoder(&mut fast, &lead);
+        prime_unary_decoder(&mut oracle, &lead);
+        for max_bits in widths {
+            let (value, _) = read_unary_bit_loop(&mut oracle, max_bits);
+            prop_assert_eq!(fast.read_unary(max_bits).unwrap(), value);
+            prop_assert_eq!(arithmetic_state(&fast), arithmetic_state(&oracle));
+        }
+    }
+}
+
 /// The first `L` entries of `row` as a fixed-length row for `read_trusted`.
 fn trusted_read<const L: usize>(
     decoder: &mut SymbolDecoder<'_>,
