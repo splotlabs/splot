@@ -167,6 +167,11 @@ fn every_tool_flag_reaches_the_parsed_header() {
         extended_sdp: true,
         ext_partitions: true,
         uneven_4way_partitions: true,
+        reduce_pb_aspect_ratio: Some(true),
+        gdf_unit_matches_sb_size: true,
+        ccso_unit_matches_sb_size: true,
+        chroma_dct_only: true,
+        reduced_tx_part_set: true,
         cfl: true,
         mhccp: true,
         cfl_ds_filter: 2,
@@ -226,6 +231,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     let part = seq.partition.unwrap();
     assert!(part.enable_sdp && part.enable_extended_sdp);
     assert!(part.enable_ext_partitions && part.enable_uneven_4way_partitions);
+    assert!(part.reduce_pb_aspect_ratio && part.max_pb_aspect_ratio == 4);
     let intra = seq.intra.unwrap();
     assert!(intra.enable_dip && intra.enable_mrls && intra.enable_cfl_intra);
     assert!(intra.enable_mhccp && intra.enable_ibp && intra.enable_intra_edge_filter);
@@ -236,6 +242,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         "{tq:?}"
     );
     assert!(tq.enable_cctx && tq.enable_tcq && tq.choose_tcq_per_frame);
+    assert!(tq.enable_chroma_dctonly && tq.reduced_tx_part_set);
     assert!(tq.enable_avg_cdf && tq.avg_cdf_type == 0);
     let inter = seq.inter.unwrap();
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
@@ -257,7 +264,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.explicit_ref_frame_map && !seq.general.monotonic_output_order_flag);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
-    assert!(filter.enable_ccso);
+    assert!(filter.enable_ccso && filter.ccso_unit_matches_sb_size);
+    assert!(filter.gdf_unit_matches_sb_size);
     assert_eq!(filter.df_par_bits_minus_2, 2);
     assert!(seq.general.seq_profile_idc.is_configurable());
     assert_eq!(
@@ -280,6 +288,26 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert_eq!(core.force_integer_mv, Some(false));
     assert_eq!(core.allow_intrabc, Some(false));
     assert_eq!(reparse_core(&core, &view), core);
+}
+
+/// `MaxPbAspectRatio = 2` parses back; the unit and chroma switches are
+/// not coded where § 5.4.8 and § 5.4.10 infer them `0`.
+#[test]
+fn restriction_switches_follow_their_syntax_conditions() {
+    let mut p = params(352, 288, BitDepthIdc::Eight, SuperblockSize::Block128x128);
+    p.tools.reduce_pb_aspect_ratio = Some(false);
+    p.tools.gdf = true;
+    p.tools.gdf_unit_matches_sb_size = true;
+    p.tools.ccso_unit_matches_sb_size = true;
+    p.tools.chroma_dct_only = true;
+    p.chroma = ChromaFormatIdc::Monochrome;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    assert_eq!(reparse_sequence(&seq), seq);
+    assert_eq!(seq.partition.unwrap().max_pb_aspect_ratio, 2);
+    let filter = seq.filter.unwrap();
+    assert!(filter.enable_gdf && !filter.gdf_unit_matches_sb_size);
+    assert!(!filter.enable_ccso && !filter.ccso_unit_matches_sb_size);
+    assert!(!seq.transform_quant_entropy.unwrap().enable_chroma_dctonly);
 }
 
 /// An edge-classified CCSO plane with asymmetric offsets.
