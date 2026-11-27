@@ -563,20 +563,15 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = if LF && (!is_dc || CLASS != 0) { 7 } else { 0 };
-        level + self.read_range::<LUMA, LF>(rows, ctx)
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, LF>(ctx);
+        let row = Self::range_row::<LUMA, LF>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
-    #[expect(
-        clippy::inline_always,
-        reason = "measured: per-coefficient symbol read"
-    )]
-    #[inline(always)]
-    fn read_range<const LUMA: bool, const LF: bool>(
-        &mut self,
-        rows: &mut CoeffLevelRows<'_>,
-        ctx: usize,
-    ) -> u32 {
-        #[cfg(feature = "block-evidence")]
+    #[cfg(feature = "block-evidence")]
+    #[inline]
+    fn annotate_range<const LUMA: bool, const LF: bool>(&self, ctx: usize) {
         if self.symbols.observes_entropy() {
             self.symbols
                 .annotate_entropy(splot_core::symbol::EntropySyntax::new(
@@ -591,14 +586,19 @@ impl LevelPass<'_, '_> {
                     [ctx as u16, 0, 0],
                 ));
         }
-        let row = if !LUMA {
+    }
+
+    fn range_row<'a, const LUMA: bool, const LF: bool>(
+        rows: &'a mut CoeffLevelRows<'_>,
+        ctx: usize,
+    ) -> &'a mut [u16; 5] {
+        if !LUMA {
             row_at(rows.cdf.coeff_br_uv(), ctx)
         } else if LF {
             row_at(rows.cdf.coeff_br_lf(), ctx)
         } else {
             row_at(rows.cdf.coeff_br(), ctx)
-        };
-        self.symbols.read_trusted(row)
+        }
     }
 
     fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
@@ -686,7 +686,10 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(range_sum, !DC || CLASS != 0);
-        level + self.read_range::<LUMA, true>(rows, ctx)
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, true>(ctx);
+        let row = Self::range_row::<LUMA, true>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
     /// Reads a high-frequency level, sharing the packed neighbour sum of
@@ -758,7 +761,10 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
-        level + self.read_range::<LUMA, false>(rows, ctx)
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, false>(ctx);
+        let row = Self::range_row::<LUMA, false>(rows, ctx);
+        level + self.symbols.read_trusted(row)
     }
 
     /// Records a decoded AC level and advances the TCQ and parity state.

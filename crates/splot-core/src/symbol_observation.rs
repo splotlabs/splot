@@ -105,8 +105,8 @@ impl EntropySymbol {
     }
 
     /// Estimates the coding cost as `log2(range / interval)` for CDF reads.
-    /// Each equiprobable bypass bit costs one bit. Returns `None` for an empty
-    /// interval. The estimate excludes termination and padding.
+    /// Each equiprobable bypass bit costs one bit. Returns `None` if a CDF
+    /// interval is empty or exceeds the range. The estimate excludes termination and padding.
     #[must_use]
     pub fn estimated_bits(self) -> Option<f64> {
         if self.coding != EntropyCoding::Cdf {

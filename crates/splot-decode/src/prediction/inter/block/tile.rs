@@ -258,6 +258,7 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
         let entropy = self
             .evidence(work_unit.tile_num() as usize)
             .and_then(|evidence| evidence.start_entropy(frontier));
+        #[cfg(feature = "block-evidence")]
         let mut parse_leaf = |work_unit: &mut DecodeTileWorkUnit,
                               symbols: &mut SymbolDecoder<'_>| {
             if ACTIVE {
@@ -284,7 +285,11 @@ impl<'payload> crate::bitstream::tile_payload::LeafDecoder<'payload>
             parse_leaf(work_unit, symbols)
         };
         #[cfg(not(feature = "block-evidence"))]
-        let leaf = parse_leaf(work_unit, symbols);
+        let leaf = if ACTIVE {
+            decode_block(work_unit, symbols, frontier, self, neighbours)
+        } else {
+            super::bru::decode_bru_leaf(work_unit, symbols, frontier, self)
+        };
         let leaf = leaf?;
         #[cfg(feature = "block-evidence")]
         if let Some(evidence) = self.evidence(work_unit.tile_num() as usize) {

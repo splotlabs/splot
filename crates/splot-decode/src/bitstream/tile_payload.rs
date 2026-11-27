@@ -66,6 +66,10 @@ pub(crate) use general_intra_block::{
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
     read_lossless_luma_tx_size, read_lossless_tx_size,
 };
+#[cfg(not(feature = "block-evidence"))]
+pub(crate) use general_intra_residual::decode_general_intra_plane_coeffs;
+#[cfg(feature = "block-evidence")]
+pub(crate) use general_intra_residual::decode_general_intra_plane_coeffs_observed as decode_general_intra_plane_coeffs;
 #[cfg(test)]
 pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
 pub(crate) use general_intra_residual::{
@@ -75,7 +79,7 @@ pub(crate) use general_intra_residual::{
     LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock, PositionedLumaCoeffBlock,
     ResidualScratch, TransformToolResidualPolicy, add_cctx_pair_residual_in_place_with,
     add_general_intra_coeff_block_residual_in_place_with, current_segment_lossless,
-    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed, luma_partition_record_fills_block,
+    is_cctx_geometry_allowed, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
     read_intra_luma_tx_partition, read_luma_tx_partition_type,
     reconstruct_general_intra_coeff_block_rect_into_frame_with,
