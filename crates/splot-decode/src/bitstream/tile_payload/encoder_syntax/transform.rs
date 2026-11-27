@@ -204,14 +204,14 @@ impl IntraTileSyntax {
         self.tools.lossless && leaf.frontier.b_size.index() > 0
     }
 
-    /// Sets `lossless_tx_size` of the next inter leaf that a lossless frame
-    /// plans; the plan takes it, so a later plan without a new call codes 0.
+    /// Sets `lossless_tx_size` of the next inter or FSC leaf that a lossless
+    /// frame plans; the plan takes it, so a later plan without a new call codes 0.
     pub const fn set_leaf_lossless_tx_size(&mut self, large: bool) {
         self.next_lossless_tx_size = large;
     }
 
     /// The [`Self::tx_partition_steps`] of a lossless `leaf`: a lossless inter
-    /// leaf above `BLOCK_4X4` (index 0) codes only its planned
+    /// or FSC leaf above `BLOCK_4X4` (index 0) codes only its planned
     /// `lossless_tx_size` (§ 5.20.6.1). Kept out of line so the lossy partition search keeps its
     /// code.
     #[cold]
@@ -223,10 +223,11 @@ impl IntraTileSyntax {
     ) -> Option<Steps> {
         let mut steps = NO_STEPS;
         let size = leaf.frontier.b_size;
-        if self.leaf_is_inter() && size.index() > 0 && !leaf.is_chroma_part() {
+        let is_inter = self.leaf_is_inter();
+        if (is_inter || self.planned_fsc()) && size.index() > 0 && !leaf.is_chroma_part() {
             let selector = TileCdfSelector::LosslessTxSize {
                 size_group: super::super::general_intra_block::lossless_tx_size_group(size),
-                is_inter: 1,
+                is_inter: usize::from(is_inter),
             };
             steps[0] = Some((selector, usize::from(self.lossless_tx_size_leaf)));
         }

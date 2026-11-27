@@ -1765,10 +1765,10 @@ impl IntraTileSyntax {
 
 const INTRA_FRAME: EncoderSyntaxError =
     EncoderSyntaxError::Unsupported("inter syntax in an intra frame");
-/// The luma transform size of the lossless inter `leaf` (§ 5.20.6.1):
+/// The luma transform size of the lossless inter or FSC `leaf` (§ 5.20.6.1):
 /// `TX_4X4` (index 0), or with `lossless_tx_size` the size of
 /// `find_tx_size(Min(32, width), Min(32, height))`.
-fn lossless_luma_tx_size(leaf: &LeafBlock, lossless_tx_size: bool) -> Result<usize> {
+pub(super) fn lossless_luma_tx_size(leaf: &LeafBlock, lossless_tx_size: bool) -> Result<usize> {
     if !lossless_tx_size {
         return Ok(0);
     }

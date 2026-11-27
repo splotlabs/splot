@@ -359,6 +359,11 @@ thread_local! {
     /// leaf 4 wide or high (in 4:2:0, a chroma reference in another leaf).
     pub(crate) static LOSSLESS_IDTX_CODED: core::cell::Cell<[usize; 5]> =
         const { core::cell::Cell::new([0; 5]) };
+    /// Lossless FSC intra leaves of the final passes on this thread with
+    /// `lossless_tx_size` 0 and 1, then lossless inter luma blocks on the FSC
+    /// coefficient path.
+    pub(crate) static LOSSLESS_FSC_CODED: core::cell::Cell<[usize; 3]> =
+        const { core::cell::Cell::new([0; 3]) };
     /// The DIP predictions that only the wider DIP search offers (a rank
     /// below the best SATD, or a best that loses to the angular SATD), by
     /// leaf position and size.
@@ -650,10 +655,18 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         if self.syntax.dpcm_allowed() {
             self.syntax.set_leaf_dpcm(dpcm);
+            self.syntax
+                .set_leaf_lossless_tx_size(choice.lossless_tx_size);
         }
         let mut blocks = self
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
+        #[cfg(test)]
+        if self.filters.is_some() && modes.fsc && self.syntax.dpcm_allowed() {
+            let mut counts = LOSSLESS_FSC_CODED.get();
+            counts[usize::from(blocks.iter().any(|tx| tx.plane == 0 && tx.tx_size > 0))] += 1;
+            LOSSLESS_FSC_CODED.set(counts);
+        }
         let mut levels = vec![Vec::new(); blocks.len()];
         let [mut prediction, mut v_prediction] = PREDICTIONS.take();
         // Luma first: the decoder reconstructs CFL chroma after the whole luma.
@@ -745,6 +758,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         #[cfg(test)]
         if self.filters.is_some() && self.syntax.dpcm_allowed() {
             count_lossless_idtx(leaf.dimensions()?, &blocks, &levels);
+            let fsc = blocks.iter().filter(|tx| self.syntax.uses_fsc(tx)).count();
+            let mut counts = LOSSLESS_FSC_CODED.get();
+            counts[2] += fsc;
+            LOSSLESS_FSC_CODED.set(counts);
         }
         self.syntax.write_is_inter(leaf, true, self.sink)?;
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;

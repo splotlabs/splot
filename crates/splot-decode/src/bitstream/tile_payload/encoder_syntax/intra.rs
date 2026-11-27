@@ -708,20 +708,34 @@ impl IntraTileSyntax {
         if modes.fsc && !self.fsc_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
         }
+        let lossless_chroma_fsc = self.tools.lossless
+            && if leaf.is_chroma_part() {
+                self.intra_facts
+                    .uses_fsc_at(leaf.frontier.r, leaf.frontier.c)
+            } else {
+                modes.fsc
+            };
         let mut plan = if leaf.is_chroma_part() {
             let chroma = chroma.ok_or(EncoderSyntaxError::Unsupported("chroma-part plan"))?;
-            let (r, c) = (leaf.frontier.r, leaf.frontier.c);
-            let lossless_luma_fsc = self.tools.lossless && self.intra_facts.uses_fsc_at(r, c);
-            GeneralIntraResidualPlan::chroma(block_ctx, chroma, lossless_luma_fsc)
+            GeneralIntraResidualPlan::chroma(block_ctx, chroma, lossless_chroma_fsc)
         } else {
             let luma = rect_luma_plan(&block_modes, &block_ctx, self.tools.tcq, self.sb_size4)
                 .map_err(rule("luma plan"))?;
+            let lossless_tx_size = if self.tools.lossless && modes.fsc {
+                self.lossless_tx_size_leaf = core::mem::take(&mut self.next_lossless_tx_size);
+                Some(super::inter::lossless_luma_tx_size(
+                    leaf,
+                    self.lossless_tx_size_leaf,
+                )?)
+            } else {
+                None
+            };
             GeneralIntraResidualPlan::rect(
                 block_ctx,
                 luma,
                 chroma,
                 modes.fsc,
-                None,
+                lossless_tx_size,
                 self.tools.lossless,
             )
         }
@@ -753,7 +767,7 @@ impl IntraTileSyntax {
                 x < (mi_cols * 4) >> u8::from(sx) && y < (mi_rows * 4) >> u8::from(sy)
             })
             .map(|(index, (plane, x, y, tx_size, fills_block))| {
-                let tx_type = if plane == 0 && modes.fsc {
+                let tx_type = if (plane == 0 && modes.fsc) || (plane > 0 && lossless_chroma_fsc) {
                     TxType::Idtx
                 } else if plane == 0 || self.tools.lossless {
                     TxType::DctDct

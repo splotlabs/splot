@@ -288,7 +288,7 @@ fn avm_decodes_idtx_intra_frames_like_splot() {
 
 /// Frame `index` of drawn text panning by `(4, 2)` luma samples per frame:
 /// two luma levels with an edge level between, on flat chroma.
-fn screen_frame(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn screen_frame(config: &Config, index: u32) -> SourceFrame {
     drawn_text(config, index, 7)
 }
 

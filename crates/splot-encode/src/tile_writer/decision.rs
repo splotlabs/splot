@@ -95,7 +95,7 @@ pub(crate) struct LeafChoice {
     pub(crate) intrabc: Option<IntrabcModes>,
     /// The DPCM of an intra leaf of a lossless frame.
     pub(crate) dpcm: Dpcm,
-    /// `lossless_tx_size = 1` for an inter leaf of a lossless frame (§ 5.20.6.1).
+    /// `lossless_tx_size = 1` for an inter or FSC leaf of a lossless frame (§ 5.20.6.1).
     pub(crate) lossless_tx_size: bool,
 }
 
