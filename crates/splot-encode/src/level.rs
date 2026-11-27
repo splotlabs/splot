@@ -82,6 +82,9 @@ pub(crate) fn choose_level(
 }
 
 /// Sets `level` and `tier` in `params` when the stream holds their limits.
+///
+/// Each input frame is one output frame and one counted frame header:
+/// show-existing and TIP output frames count none (§ 5.18.1).
 fn check(
     config: &Config,
     preset: &PresetParams,
@@ -154,8 +157,6 @@ fn check(
         u64::from(frame.max_tiles),
     )?;
 
-    // Each input frame is one output frame and one counted frame header:
-    // show-existing and TIP output frames count none (§ 5.18.1).
     let (num, den) = (
         u128::from(config.frame_rate.0),
         u128::from(config.frame_rate.1),
@@ -172,9 +173,7 @@ fn check(
         per_second(1),
         u64::from(frame.max_header_rate) * (1 + 2 * high),
     )?;
-    // shortcut: the screen-content row may turn IntraBC on after setup, so
-    // screen detection counts as IntraBC; upgrade when setup knows the row.
-    let decode_twice = (preset.intrabc || preset.screen_detect) && preset.open_loop_key > 0;
+    let decode_twice = decodes_twice(preset);
     if let (Some(inter), Some(slots)) = (
         sequence.inter.as_ref(),
         frame.ref_frame_slots(&sequence, decode_twice),
@@ -201,4 +200,13 @@ fn check(
     }
     *params = probe;
     Ok(())
+}
+
+/// Whether a frame that is not a closed-loop key frame can have
+/// `DecodeCount` 2: an open-loop key frame with IntraBC and in-loop filters.
+///
+/// shortcut: the screen-content row can turn IntraBC on after setup, so
+/// screen detection counts as IntraBC; upgrade when setup knows the row.
+fn decodes_twice(preset: &PresetParams) -> bool {
+    (preset.intrabc || preset.screen_detect) && preset.open_loop_key > 0
 }

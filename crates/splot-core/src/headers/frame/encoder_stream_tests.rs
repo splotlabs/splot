@@ -1411,8 +1411,6 @@ fn requested_level_and_tier_reach_the_parsed_header_or_are_refused() {
         );
         header_bits.push(bytes);
     }
-    // The parser reads seq_tier only above level 3 (§ 5.4.1), so the
-    // complete reparse above proves the writer codes it only there.
     assert_ne!(header_bits[2], header_bits[3]);
     for (level, tier) in [
         (22, Tier::Main),

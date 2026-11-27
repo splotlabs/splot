@@ -49,7 +49,7 @@ pub struct LevelRateLimits {
 /// `None` for a reserved level and for maximum parameters (31).
 #[must_use]
 pub fn level_rate_limits(level_idx: u8) -> Option<LevelRateLimits> {
-    // (MaxDisplayRate, MainMbps * 10, HighMbps * 10) of Tables A.8 and A.9.
+    /// `(MaxDisplayRate, MainMbps * 10, HighMbps * 10)` of Tables A.8 and A.9.
     const RATES: [(u64, u16, u16); 22] = [
         (4_423_680, 15, 0),
         (8_363_520, 30, 0),
