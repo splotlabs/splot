@@ -182,7 +182,7 @@ fn disabled_restoration_tools_are_never_coded() {
             T::PcWiener => !mask[0],
             T::WienerNonsep => !mask[1],
             T::Switchable => !mask[0] && !mask[1],
-            _ => true,
+            T::None => true,
         };
         assert!(luma.iter().all(|&tool| allowed(tool)), "{mask:?} {lr:?}");
         assert_eq!(codes_wiener_ns(&lr, 1..3), !mask[2], "{mask:?} {lr:?}");
