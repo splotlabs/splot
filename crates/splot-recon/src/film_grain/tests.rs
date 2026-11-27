@@ -6,18 +6,19 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
+use super::template::tests::scalar_templates;
 use super::{
     ActiveFilmGrain, GrainDestination, GrainGeometry, SCALING_LUT_LEN, Stripe, apply_film_grain,
-    apply_film_grain_into, fill_stripe, generate_grain, init_scaling_lut, output_ranges,
-    plane_axis_lengths, plane_from_visible, round2, scale_lut, scaling_points_for_plane,
-    stripe_count, stripe_row_slice,
+    apply_film_grain_into, fill_stripe, init_scaling_lut, output_ranges, plane_axis_lengths,
+    plane_from_visible, round2, scale_lut, scaling_points_for_plane, stripe_count,
+    stripe_row_slice,
 };
 use crate::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
     PlaneRect, PlaneSize, ReconSample,
 };
 
-fn film_grain_model() -> FilmGrainModel {
+pub(super) fn film_grain_model() -> FilmGrainModel {
     let bytes =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-filmgrain-intra-64x64.ivf");
     let ParsedBitstream::Ivf(stream) = parse_bitstream_partial(bytes) else {
@@ -141,10 +142,10 @@ fn assert_u8_matches_u16_reference(
     assert_eq!(output_samples(&direct), output_samples(&reference));
 }
 
-struct TestRng(u64);
+pub(super) struct TestRng(pub(super) u64);
 
 impl TestRng {
-    fn next(&mut self) -> u32 {
+    pub(super) fn next(&mut self) -> u32 {
         self.0 = self
             .0
             .wrapping_mul(6_364_136_223_846_793_005)
@@ -625,7 +626,7 @@ fn reference_output<T: ReconSample>(
     };
     let num_planes = format.num_planes();
     let range = (-(1 << (bit_depth - 1)), (1 << (bit_depth - 1)) - 1);
-    let templates = generate_grain(&grain, sub_x, sub_y, bit_depth, range);
+    let templates = scalar_templates(&grain, sub_x, sub_y, bit_depth, range);
     let luma_size = if model.film_grain_block_size { 32 } else { 16 };
     let mut stripes =
         [0, 1].map(|_| Stripe::new(&geometry.widths[..num_planes], luma_size, sub_x, sub_y));

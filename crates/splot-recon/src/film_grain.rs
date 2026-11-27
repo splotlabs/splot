@@ -18,20 +18,20 @@ use fearless_simd::{Simd, i16x16, i16x32, i32x8, prelude::*, u8x16, u8x32, u16x1
 
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
 use splot_core::simd::SelectedBackend;
-use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
 use crate::{
     DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, Plane, PlaneId, PlaneRect,
     PlaneSize, ReconError, ReconSample, Result,
 };
 
+mod template;
 mod wide_luma;
+use template::{GrainTemplates, generate_grain};
 use wide_luma::add_luma_noise;
 
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
 const LUMA_GRAIN_BASE: usize = 3;
-const MAX_AR_COEFFICIENTS: usize = 24;
 
 struct ActiveFilmGrain<'a> {
     model: &'a FilmGrainModel,
@@ -314,12 +314,13 @@ fn synthesize<S: Simd, T: ReconSample>(
 
     let grain_range = (-(1_i32 << (bit_depth - 1)), (1_i32 << (bit_depth - 1)) - 1);
     let templates = generate_grain(
+        simd,
         grain,
         geometry.sub_x,
         geometry.sub_y,
         bit_depth,
         grain_range,
-    );
+    )?;
     let luma_size = if model.film_grain_block_size { 32 } else { 16 };
     let width = geometry.widths[0];
     let packed_luma = wide_luma.filter(|_| width >= 64).and_then(|apply| {
@@ -867,188 +868,6 @@ fn blend_noise_lanes<S: Simd>(
         col += 16;
     }
     col
-}
-
-struct GrainTemplates {
-    y: Vec<i16>,
-    cb: Vec<i16>,
-    cr: Vec<i16>,
-    chroma_width: usize,
-}
-
-fn generate_grain(
-    grain: &ActiveFilmGrain<'_>,
-    sub_x: usize,
-    sub_y: usize,
-    bit_depth: u8,
-    (grain_min, grain_max): (i32, i32),
-) -> GrainTemplates {
-    let model = grain.model;
-    let mut rng = GrainRng::new(grain.grain_seed);
-    let shift = 12 - bit_depth + model.grain_scale_shift;
-    let mut luma = vec![0; LUMA_GRAIN_WIDTH * LUMA_GRAIN_HEIGHT];
-    for row in 0..LUMA_GRAIN_HEIGHT {
-        for col in 0..LUMA_GRAIN_WIDTH {
-            let g = if model.num_y_points > 0 {
-                GAUSSIAN_SEQUENCE[rng.get(11)]
-            } else {
-                0
-            };
-            luma[row * LUMA_GRAIN_WIDTH + col] = round2(g, shift);
-        }
-    }
-    apply_luma_ar(model, &mut luma, grain_min, grain_max);
-
-    let chroma_width = if sub_x == 1 { 44 } else { 82 };
-    let chroma_height = if sub_y == 1 { 38 } else { 73 };
-    let mut cb = vec![0; chroma_width * chroma_height];
-    let mut cr = vec![0; chroma_width * chroma_height];
-    fill_chroma_white_noise(
-        &mut cb,
-        chroma_width,
-        chroma_height,
-        grain.grain_seed ^ 0xb524,
-        model.num_cb_points > 0 || model.chroma_scaling_from_luma,
-        shift,
-    );
-    fill_chroma_white_noise(
-        &mut cr,
-        chroma_width,
-        chroma_height,
-        grain.grain_seed ^ 0x49d8,
-        model.num_cr_points > 0 || model.chroma_scaling_from_luma,
-        shift,
-    );
-    apply_chroma_ar(
-        model,
-        &luma,
-        &mut cb,
-        &mut cr,
-        chroma_width,
-        chroma_height,
-        sub_x,
-        sub_y,
-        grain_min,
-        grain_max,
-    );
-
-    let narrow = |planes: Vec<i32>| narrow_grain(planes, grain_min, grain_max);
-    GrainTemplates {
-        y: narrow(luma),
-        cb: narrow(cb),
-        cr: narrow(cr),
-        chroma_width,
-    }
-}
-
-/// Packs grain into `i16` lanes clamped to the grain range. Every sample a
-/// noise stripe reads lies in the autoregressive region, which § 7.21.7.3
-/// already clamps, so only the never-read border changes.
-fn narrow_grain(planes: Vec<i32>, grain_min: i32, grain_max: i32) -> Vec<i16> {
-    planes
-        .into_iter()
-        .map(|sample| sample.clamp(grain_min, grain_max) as i16)
-        .collect()
-}
-
-fn apply_luma_ar(model: &FilmGrainModel, luma: &mut [i32], grain_min: i32, grain_max: i32) {
-    let (offsets, offset_count) = ar_neighbor_offsets(model.ar_coeff_lag, LUMA_GRAIN_WIDTH);
-    let shift = model.ar_coeff_shift_minus_6 + 6;
-    for row in LUMA_GRAIN_BASE..LUMA_GRAIN_HEIGHT {
-        for col in LUMA_GRAIN_BASE..(LUMA_GRAIN_WIDTH - LUMA_GRAIN_BASE) {
-            let index = row * LUMA_GRAIN_WIDTH + col;
-            let mut sum = 0;
-            for (&offset, &coeff) in offsets[..offset_count].iter().zip(&model.ar_coeffs_y) {
-                let source = (index as isize + offset) as usize;
-                sum += luma[source] * coeff;
-            }
-            let sample = luma[index] + round2(sum, shift);
-            luma[index] = sample.clamp(grain_min, grain_max);
-        }
-    }
-}
-
-fn fill_chroma_white_noise(
-    out: &mut [i32],
-    width: usize,
-    height: usize,
-    seed: u16,
-    active: bool,
-    shift: u8,
-) {
-    let mut rng = GrainRng::new(seed);
-    for row in 0..height {
-        for col in 0..width {
-            let g = if active {
-                GAUSSIAN_SEQUENCE[rng.get(11)]
-            } else {
-                0
-            };
-            out[row * width + col] = round2(g, shift);
-        }
-    }
-}
-
-#[expect(clippy::too_many_arguments)]
-fn apply_chroma_ar(
-    model: &FilmGrainModel,
-    luma: &[i32],
-    cb: &mut [i32],
-    cr: &mut [i32],
-    width: usize,
-    height: usize,
-    sub_x: usize,
-    sub_y: usize,
-    grain_min: i32,
-    grain_max: i32,
-) {
-    let (offsets, offset_count) = ar_neighbor_offsets(model.ar_coeff_lag, width);
-    let luma_coeff_cb = model.ar_coeffs_cb.get(offset_count).copied().unwrap_or(0);
-    let luma_coeff_cr = model.ar_coeffs_cr.get(offset_count).copied().unwrap_or(0);
-    let shift = model.ar_coeff_shift_minus_6 + 6;
-    for row in LUMA_GRAIN_BASE..height {
-        for col in LUMA_GRAIN_BASE..(width - LUMA_GRAIN_BASE) {
-            let index = row * width + col;
-            let mut sum_cb = 0;
-            let mut sum_cr = 0;
-            for (pos, &offset) in offsets[..offset_count].iter().enumerate() {
-                let source = (index as isize + offset) as usize;
-                sum_cb += cb[source] * model.ar_coeffs_cb.get(pos).copied().unwrap_or(0);
-                sum_cr += cr[source] * model.ar_coeffs_cr.get(pos).copied().unwrap_or(0);
-            }
-            if model.num_y_points > 0 {
-                let luma_x = ((col - LUMA_GRAIN_BASE) << sub_x) + LUMA_GRAIN_BASE;
-                let luma_y = ((row - LUMA_GRAIN_BASE) << sub_y) + LUMA_GRAIN_BASE;
-                let mut average = 0;
-                for y_offset in 0..=sub_y {
-                    for x_offset in 0..=sub_x {
-                        average += luma[(luma_y + y_offset) * LUMA_GRAIN_WIDTH + luma_x + x_offset];
-                    }
-                }
-                let average = round2(average, (sub_x + sub_y) as u8);
-                sum_cb += average * luma_coeff_cb;
-                sum_cr += average * luma_coeff_cr;
-            }
-            cb[index] = (cb[index] + round2(sum_cb, shift)).clamp(grain_min, grain_max);
-            cr[index] = (cr[index] + round2(sum_cr, shift)).clamp(grain_min, grain_max);
-        }
-    }
-}
-
-fn ar_neighbor_offsets(lag: u8, stride: usize) -> ([isize; MAX_AR_COEFFICIENTS], usize) {
-    let lag = i32::from(lag);
-    let mut offsets = [0; MAX_AR_COEFFICIENTS];
-    let mut count = 0;
-    'outer: for delta_row in -lag..=0 {
-        for delta_col in -lag..=lag {
-            if delta_row == 0 && delta_col == 0 {
-                break 'outer;
-            }
-            offsets[count] = delta_row as isize * stride as isize + delta_col as isize;
-            count += 1;
-        }
-    }
-    (offsets, count)
 }
 
 const SCALING_LUT_LEN: usize = 257;
