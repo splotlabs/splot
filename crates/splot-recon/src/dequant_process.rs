@@ -236,7 +236,9 @@ fn dequant_block_prefix(
 /// per-coefficient [`dequant_coefficient`] writes, in the same slots. The
 /// group that `quant` ends in loads zero-padded. Whole rows of 4, 8, 16 or 32
 /// end on a group or on half of one, which stores its low four lanes; the
-/// groups of the row past `quant` are zero.
+/// groups of the row past `quant` are zero. A row holds at most
+/// `MAX_DEQUANT_DIM / 8` groups, and the loop over them is counted to keep the
+/// zero stores inline: an open one compiles to `memset`.
 #[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
@@ -267,8 +269,6 @@ fn dequantize_groups<S: Simd>(
     };
     if let Some((first, zeros)) = rest.split_first_mut() {
         *first = last.into();
-        // A row holds at most `MAX_DEQUANT_DIM / 8` groups. The counted loop
-        // keeps the zero stores inline: an open one compiles to `memset`.
         let mut zeros = zeros.iter_mut();
         for _ in 1..MAX_DEQUANT_DIM / 8 {
             if let Some(out) = zeros.next() {
