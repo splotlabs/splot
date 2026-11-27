@@ -567,14 +567,15 @@ fn temporal_layers_keep_the_slots_of_each_operating_point() {
                 let case = format!(
                     "max_tlayer_id {max_tlayer_id} mini-GOP {mini_gop_size} slots {slots_used}"
                 );
-                let mut probe = GopPlanner::new(NonZeroU32::MAX, mini_gop_size)
-                    .with_ref_slots(slots_used)
-                    .with_max_tlayer_id(max_tlayer_id);
-                let validated = (0..3).all(|_| {
-                    let len = probe.next_len(usize::MAX, true).unwrap_or(1);
-                    probe.plan(len).is_ok()
-                });
-                if !validated {
+                let params = crate::preset::PresetParams {
+                    mini_gop_size,
+                    bitrate_mini_gop_size: mini_gop_size,
+                    lookahead_frames: 32,
+                    num_ref_frames: slots_used,
+                    max_tlayer_id,
+                    ..*crate::preset::Preset::default().params()
+                };
+                if params.validate().is_err() {
                     eprintln!("refused: {case}");
                     continue;
                 }
@@ -588,7 +589,7 @@ fn temporal_layers_keep_the_slots_of_each_operating_point() {
                     while let Some(len) = planner.next_len(queued, ended) {
                         let planned = planner.plan(len);
                         let Ok(planned) = planned else {
-                            panic!("{case}: {planned:?}");
+                            panic!("{case}: {planned:?} at display {}", planner.next_display());
                         };
                         steps.extend(planned);
                         queued -= len;

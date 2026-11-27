@@ -52,6 +52,7 @@ pub(crate) type CodedReference = (
     FrameStart,
     Vec<TileEnd>,
     Vec<Vec<u8>>,
+    splot_core::types::TemporalLayerId,
 );
 
 /// The output of a [`FrameCoder`] for one frame.
@@ -267,7 +268,8 @@ impl Encoder {
             .with_intra_only(params.intra_only)
             .with_open_loop_key(params.open_loop_key)
             .with_implicit_output(params.implicit_output)
-            .with_sef_repeat(params.sef_repeat);
+            .with_sef_repeat(params.sef_repeat)
+            .with_max_tlayer_id(params.max_tlayer_id);
         Ok(Self {
             rate_control,
             stats_sink: None,

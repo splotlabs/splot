@@ -358,6 +358,7 @@ impl IntraFrameCoder {
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
+                max_tlayer_id: splot_core::types::TemporalLayerId::from_bits(preset.max_tlayer_id),
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: match config.tiles {
@@ -457,7 +458,7 @@ impl FrameCoder for IntraFrameCoder {
                 .update_tip_output(&core)
                 .map_err(coding("TIP output update"));
         }
-        let (core, recon, initial, cdfs, ccso_blocks) =
+        let (core, recon, initial, cdfs, ccso_blocks, tlayer) =
             frame.reference.take().ok_or(Error::Unsupported {
                 what: "a frame committed twice",
             })?;
@@ -472,7 +473,7 @@ impl FrameCoder for IntraFrameCoder {
             self.grain_active = frame.film_grain_model;
         }
         self.references
-            .update(&core, recon, &initial, &cdfs, &ccso_blocks)
+            .update(&core, recon, &initial, &cdfs, &ccso_blocks, tlayer)
             .map_err(coding("reference update"))
     }
 
@@ -492,11 +493,18 @@ impl FrameCoder for IntraFrameCoder {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
+        let tlayer = self
+            .references
+            .slot_tlayer_id(slot)
+            .ok_or(Error::Unsupported {
+                what: "a show-existing frame of a slot outside the sequence",
+            })?;
         let unit = gop::show_existing_unit(
             &self.view,
             slot,
             order_hint,
             (seed, self.multi_frame_header, leading),
+            tlayer,
         )?;
         let obu_type = if leading {
             splot_core::types::ObuType::LeadingSef
@@ -1077,7 +1085,7 @@ impl IntraFrameCoder {
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
             film_grain_model: !grain_obu_empty,
-            reference: Some((core, recon, initial, cdfs, ccso_blocks)),
+            reference: Some((core, recon, initial, cdfs, ccso_blocks, plan.tlayer)),
             tip_output: None,
             intra_cells,
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(

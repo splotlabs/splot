@@ -332,6 +332,11 @@ pub struct PresetParams {
     /// long-term slots stay valid after it in sequential decoding but not at
     /// random access. `0` in every row (not measured).
     pub open_loop_key: u8,
+    /// `max_tlayer_id` (§ 5.4.1), `0..=3`: a frame at mini-GOP depth `d`
+    /// codes `obu_tlayer_id = min(d, max_tlayer_id)` (§ 5.2.2), so dropping
+    /// the higher temporal layers leaves a decodable stream. Needs `keyint`
+    /// at most 255. `0` in every row (not measured).
+    pub max_tlayer_id: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -1143,6 +1148,7 @@ impl PresetParams {
         check!(tip)?;
         check!(cdf_update_tile)?;
         check!(long_term_id_bits)?;
+        check!(max_tlayer_id)?;
         check!(num_ref_frames)?;
         check(
             "open_loop_key",
@@ -1159,18 +1165,35 @@ impl PresetParams {
              valid after an open-loop key frame in sequential decoding only)",
         )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
-            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
-                .with_ref_slots(self.num_ref_frames);
-            let fits = self.num_ref_frames == 0
-                || (0..3).all(|_| {
+            let slots = match self.num_ref_frames {
+                0 => 8,
+                slots => slots,
+            };
+            // Temporal layers narrow the slots a frame may take, so their slot
+            // use settles later than the first mini-GOPs.
+            let fits = |max_tlayer_id, plans| {
+                let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                    .with_ref_slots(slots)
+                    .with_max_tlayer_id(max_tlayer_id);
+                (0..plans).all(|_| {
                     let len = probe.next_len(usize::MAX, true).unwrap_or(1);
                     probe.plan(len).is_ok()
-                });
-            if !fits {
+                })
+            };
+            if self.num_ref_frames > 0 && !fits(0, 3) {
                 return Err(PresetError::OutOfRange {
                     field: "num_ref_frames",
                     value: self.num_ref_frames.into(),
                     allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+            if self.max_tlayer_id > 0 && !fits(self.max_tlayer_id, 24) {
+                return Err(PresetError::OutOfRange {
+                    field: "max_tlayer_id",
+                    value: self.max_tlayer_id.into(),
+                    allowed: format!(
+                        "0, or the temporal layers {slots} slots give a mini-GOP of {mini_gop}"
+                    ),
                 });
             }
         }
@@ -1633,6 +1656,8 @@ preset_table! {
         intra_only:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Code every nth periodic key frame as open-loop. Zero disables open-loop key frames. Requires long_term_id_bits to be zero."
         open_loop_key:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Highest temporal layer: mini-GOP depths above it share it. Zero codes one layer. Requires keyint of at most 255." [0, 3]
+        max_tlayer_id:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select which tile information the sequence header signals." [0, 3]
