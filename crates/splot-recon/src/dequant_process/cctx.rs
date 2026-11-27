@@ -8,7 +8,9 @@
 use fearless_simd::{Simd, SimdBase as _, i32x8};
 use splot_core::simd::SimdBackend;
 
-use super::{DequantBlockParams, dequant_block_prefix, dequant_lanes, group_quantizers};
+use super::{
+    DequantBlockParams, dequant_block_prefix, dequant_lanes, group_quantizers, zero_padded_group,
+};
 use crate::{ReconError, Result};
 
 /// AV2 § 3 `CCTX_PREC_BITS`: the fraction bits of `Cctx_Mtx`.
@@ -81,11 +83,7 @@ fn pair_groups<S: Simd>(
         let (lanes, len) = match coded.first_chunk() {
             Some(lanes) => (*lanes, 8),
             None if coded.is_empty() => return Ok(i32x8::splat(simd, 0)),
-            None => {
-                let mut lanes = [0i32; 8];
-                lanes[..coded.len()].copy_from_slice(coded); // splot-copy-ok: zero-padded lane group
-                (lanes, coded.len())
-            }
+            None => (zero_padded_group(coded), coded.len()),
         };
         let q2 = group_quantizers(simd, params, group, len)?;
         let denom_shift = params.dq_denom.max(1).trailing_zeros();
