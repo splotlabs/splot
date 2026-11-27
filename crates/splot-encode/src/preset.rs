@@ -573,6 +573,11 @@ pub struct PresetParams {
     /// switch-off keeps `palette` and so `allow_screen_content_tools`. Off in
     /// every row.
     pub lossless_palette: bool,
+    /// A lossless key or intra-only frame gets the IntraBC search of
+    /// `intrabc` (§ 5.20.5.3, § 5.20.5.4); an IntraBC leaf is `is_inter`, so
+    /// `lossless_inter_tx` gives it the 4x4 type choice and the
+    /// `lossless_tx_size` trial (§ 5.20.6.1, § 5.20.8.2). Off in every row.
+    pub lossless_intrabc: bool,
     /// The first frame switches the sequence to the screen-content row of
     /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
     /// it looks like screen content.
@@ -1064,7 +1069,8 @@ impl PresetParams {
     /// `CodedLossless`: TCQ, parity hiding, delta-q, the loop filters) or that
     /// changes the coded samples (RDOQ, the temporal filter, TIP output), and
     /// the tools whose lossless forms are a later search (IST, CCTX, DDT,
-    /// IntraBC) or need a lossless field (FSC, IDTX, transform types, palette).
+    /// inter-frame IntraBC) or need a lossless field (FSC, IDTX, transform
+    /// types, palette, IntraBC).
     #[cfg(test)]
     pub(crate) fn set_lossless(&mut self) {
         self.set_lossless_with(|_| {});
@@ -1103,7 +1109,7 @@ impl PresetParams {
             fsc = self.lossless_fsc == 2;
             idtx_intra = self.lossless_fsc > 0;
             palette = self.lossless_palette;
-            intrabc = false;
+            intrabc = self.lossless_intrabc;
             intrabc_inter = false;
             y_dc_delta_q = 0;
             u_delta_q = 0;
@@ -1941,6 +1947,8 @@ preset_table! {
         lossless_fsc:          [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Test palette prediction on lossless intra leaves."
         lossless_palette:      [false, false, false, false, false, false, false, false, false, false, false],
+        "Test intra block copy on lossless key and intra-only frames."
+        lossless_intrabc:      [false, false, false, false, false, false, false, false, false, false, false],
     }
     Gop {
         "Number of frames per mini-GOP. One shows every frame directly." [1, 32]

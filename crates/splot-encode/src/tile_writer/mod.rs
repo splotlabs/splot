@@ -367,6 +367,11 @@ thread_local! {
     /// Lossless palette leaves of the final passes on this thread.
     pub(crate) static LOSSLESS_PALETTE_CODED: core::cell::Cell<usize> =
         const { core::cell::Cell::new(0) };
+    /// U blocks of lossless IntraBC leaves at least 8x8 with 4x4 units on
+    /// this thread's final passes whose type differs from the collocated luma
+    /// unit (§ 5.20.7.29: `FrameIsIntra` chroma takes the leaf's first unit).
+    pub(crate) static LOSSLESS_INTRABC_CHROMA: core::cell::Cell<usize> =
+        const { core::cell::Cell::new(0) };
     /// The DIP predictions that only the wider DIP search offers (a rank
     /// below the best SATD, or a best that loses to the angular SATD), by
     /// leaf position and size.
@@ -402,6 +407,33 @@ fn count_lossless_idtx((w, h): (usize, usize), blocks: &[TransformBlock], levels
         counts[slot] += 1;
     }
     LOSSLESS_IDTX_CODED.set(counts);
+}
+
+/// Adds the U blocks of a lossless IntraBC leaf of `(width, height)` whose
+/// type differs from the collocated luma 4x4 unit to [`LOSSLESS_INTRABC_CHROMA`].
+#[cfg(test)]
+fn count_intrabc_chroma((w, h): (usize, usize), blocks: &[TransformBlock]) {
+    let plane = |p: usize| blocks.iter().filter(move |tx| tx.plane == p);
+    if w.min(h) < 8 || blocks.iter().any(|tx| tx.tx_size > 0) {
+        return;
+    }
+    let origin = |p: usize| {
+        let x = plane(p).map(|tx| tx.x).min();
+        Some((x?, plane(p).map(|tx| tx.y).min()?))
+    };
+    let (Some((lx, ly)), Some((cx, cy))) = (origin(0), origin(1)) else {
+        return;
+    };
+    let columns = plane(1).filter(|tx| tx.y == cy).count() * 4;
+    let rows = plane(1).filter(|tx| tx.x == cx).count() * 4;
+    let (sx, sy) = (usize::from(columns < w), usize::from(rows < h));
+    let differs = plane(1)
+        .filter(|chroma| {
+            let (x, y) = (lx + ((chroma.x - cx) << sx), ly + ((chroma.y - cy) << sy));
+            plane(0).any(|luma| luma.x == x && luma.y == y && luma.tx_type != chroma.tx_type)
+        })
+        .count();
+    LOSSLESS_INTRABC_CHROMA.set(LOSSLESS_INTRABC_CHROMA.get() + differs);
 }
 
 #[cfg(test)]
@@ -621,6 +653,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {
+            if self.syntax.dpcm_allowed() {
+                self.syntax
+                    .set_leaf_lossless_tx_size(choice.lossless_tx_size);
+            }
             return self.write_intrabc_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         let LeafChoice {
@@ -822,6 +858,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             MORPH_INTRABC.set(MORPH_INTRABC.get() + 1);
         }
         let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
+        #[cfg(test)]
+        if self.filters.is_some() && self.syntax.dpcm_allowed() {
+            count_lossless_idtx(leaf.dimensions()?, &blocks, &levels);
+            count_intrabc_chroma(leaf.dimensions()?, &blocks);
+        }
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
         self.syntax.write_segment_id(leaf, skip, self.sink)?;
