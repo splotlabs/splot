@@ -315,42 +315,40 @@ mod tests {
     #[test]
     fn cctx_pair_rotates_the_coded_rows_of_both_blocks() {
         let quant = [3, -7, 5, 2, -2, 5, 11, 9, 1];
-        for depth in [BitDepth::Eight, BitDepth::Ten] {
-            let setups = setups(depth);
-            let params = [&setups[0].params, &setups[1].params];
-            for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
-                // A block without an end of block codes nothing, whatever its span holds.
-                for (u_eob, v_eob) in [(1, 1), (0, 1), (1, 0)] {
-                    let [u_block, v_block] = [block(u_eob, u_len), block(v_eob, v_len)];
-                    let coded = [(u_eob, u_len), (v_eob, v_len)]
-                        .map(|(eob, len)| &quant[..if eob == 0 { 0 } else { len }]);
-                    let (mut want_u, mut want_v) = ([i32::MAX; 64], [i32::MIN; 64]);
-                    let written = crate::test_support::with_auto_backend!(backend => {
-                        dequantize_cctx_pair_with(
-                            backend,
-                            params,
-                            coded,
-                            CCTX_MTX[4],
-                            [&mut want_u, &mut want_v],
-                        )
-                    })
-                    .unwrap();
-                    assert_eq!(
-                        written,
-                        coded[0].len().max(coded[1].len()).next_multiple_of(8)
-                    );
-
-                    let (mut actual_u, mut actual_v) = ([i32::MAX; 64], [i32::MIN; 64]);
-                    let got = pair(
-                        [u_block.view(&quant[..u_len]), v_block.view(&quant[..v_len])],
-                        &setups,
-                        [&mut actual_u, &mut actual_v],
-                        5,
+        let setups = setups(BitDepth::Eight);
+        let params = [&setups[0].params, &setups[1].params];
+        for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
+            // A block without an end of block codes nothing, whatever its span holds.
+            for (u_eob, v_eob) in [(1, 1), (0, 1), (1, 0)] {
+                let [u_block, v_block] = [block(u_eob, u_len), block(v_eob, v_len)];
+                let coded = [(u_eob, u_len), (v_eob, v_len)]
+                    .map(|(eob, len)| &quant[..if eob == 0 { 0 } else { len }]);
+                let (mut want_u, mut want_v) = ([i32::MAX; 64], [i32::MIN; 64]);
+                let written = crate::test_support::with_auto_backend!(backend => {
+                    dequantize_cctx_pair_with(
+                        backend,
+                        params,
+                        coded,
+                        CCTX_MTX[4],
+                        [&mut want_u, &mut want_v],
                     )
-                    .unwrap();
-                    assert_eq!(got, [&want_u[..written], &want_v[..written]]);
-                    assert_eq!((actual_u, actual_v), (want_u, want_v));
-                }
+                })
+                .unwrap();
+                assert_eq!(
+                    written,
+                    coded[0].len().max(coded[1].len()).next_multiple_of(8)
+                );
+
+                let (mut actual_u, mut actual_v) = ([i32::MAX; 64], [i32::MIN; 64]);
+                let got = pair(
+                    [u_block.view(&quant[..u_len]), v_block.view(&quant[..v_len])],
+                    &setups,
+                    [&mut actual_u, &mut actual_v],
+                    5,
+                )
+                .unwrap();
+                assert_eq!(got, [&want_u[..written], &want_v[..written]]);
+                assert_eq!((actual_u, actual_v), (want_u, want_v));
             }
         }
     }

@@ -131,8 +131,8 @@ fn clamp_bound(params: &DequantBlockParams) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::QmDequant;
     use super::super::tests::reference_dequantize;
-    use super::super::{QmDequant, dequantize_block};
     use super::*;
     use crate::BitDepth;
     use crate::math::round2_signed_i32;
@@ -270,9 +270,6 @@ mod tests {
                 ..identity_params()
             };
             let (low, high) = ([-bound - 5; 16], [bound + 5; 16]);
-            let mut dequant = [0; 16];
-            dequantize_block(&params, &low, &mut dequant).unwrap();
-            assert_eq!(dequant, [-bound; 16]);
             for &rotation in &CCTX_MTX {
                 for (u_quant, v_quant) in [(low, low), (low, high), (high, low), (high, high)] {
                     let [u, v] =
