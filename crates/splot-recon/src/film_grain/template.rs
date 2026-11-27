@@ -65,22 +65,20 @@ pub(super) fn generate_grain<S: Simd>(
     let chroma_len = chroma_width * chroma_height;
     let mut cb = white_noise(simd, cb_seed, chroma_len, noise_shift);
     let mut cr = white_noise(simd, cr_seed, chroma_len, noise_shift);
-    {
-        let luma = luma_seed.map(|_| LumaTap {
-            grain: &y,
-            sub_x,
-            sub_y,
-        });
-        let mut planes = [
-            (cb_seed, &mut cb, &model.ar_coeffs_cb, "ar_coeffs_cb"),
-            (cr_seed, &mut cr, &model.ar_coeffs_cr, "ar_coeffs_cr"),
-        ]
-        .into_iter()
-        .filter(|plane| plane.0.is_some())
-        .map(|(_, grain, coeffs, name)| ArPlane::new(grain, coeffs, name, &filter, luma.is_some()))
-        .collect::<Result<Vec<_>>>()?;
-        filter.run(simd, &mut planes, chroma_width, luma.as_ref());
-    }
+    let luma = luma_seed.map(|_| LumaTap {
+        grain: &y,
+        sub_x,
+        sub_y,
+    });
+    let mut planes = [
+        (cb_seed, &mut cb, &model.ar_coeffs_cb, "ar_coeffs_cb"),
+        (cr_seed, &mut cr, &model.ar_coeffs_cr, "ar_coeffs_cr"),
+    ]
+    .into_iter()
+    .filter(|plane| plane.0.is_some())
+    .map(|(_, grain, coeffs, name)| ArPlane::new(grain, coeffs, name, &filter, luma.is_some()))
+    .collect::<Result<Vec<_>>>()?;
+    filter.run(simd, &mut planes, chroma_width, luma.as_ref());
 
     Ok(GrainTemplates {
         y,
@@ -243,7 +241,7 @@ impl<'a> ArPlane<'a> {
 impl LumaTap<'_> {
     /// `Round2` of the luma under each of the `STEP` chroma samples of `row`
     /// from `column`.
-    fn average<S: Simd>(&self, simd: S, row: usize, column: usize) -> (i32x8<S>, i32x8<S>) {
+    fn average<S: Simd>(&self, simd: S, (row, column): (usize, usize)) -> (i32x8<S>, i32x8<S>) {
         let luma_row = ((row - LUMA_GRAIN_BASE) << self.sub_y) + LUMA_GRAIN_BASE;
         let luma_column = ((column - LUMA_GRAIN_BASE) << self.sub_x) + LUMA_GRAIN_BASE;
         let rows = |column: usize| {
@@ -299,7 +297,7 @@ impl ArFilter {
             let other = second.as_deref().unwrap_or(first);
             for step in steps.clone() {
                 let at = (row, LUMA_GRAIN_BASE + step);
-                let luma = luma.map(|tap| tap.average(simd, at.0, at.1));
+                let luma = luma.map(|tap| tap.average(simd, at));
                 let a = first.predict(simd, self, width, at, luma);
                 let b = second
                     .as_ref()
