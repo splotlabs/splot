@@ -106,7 +106,7 @@ fn off_skip(core: &FrameHeaderCore) -> bool {
 
 /// `cdef_on_skip_mode` 1 and 2 reach the parsed sequence header; every CDEF
 /// frame parses the value its mode infers (§ 5.18.7.10); the streams decode
-/// to the encoder recon, and 1 and 2 threads write the same bytes.
+/// to the encoder recon, and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn cdef_on_skip_modes_decode_to_the_encoder_recon() {
     use splot_core::headers::sequence::CdefOnSkipTxfm;
@@ -129,10 +129,12 @@ fn cdef_on_skip_modes_decode_to_the_encoder_recon() {
             "mode {mode}"
         );
         assert_same_samples(&decode(&one.concat()), &recon, &format!("mode {mode}"));
-        assert!(
-            filter_stream(2, preset, on_skip).0 == one,
-            "mode {mode}: 2 threads"
-        );
+        for threads in [2, 8] {
+            assert!(
+                filter_stream(threads, preset, on_skip).0 == one,
+                "mode {mode}: {threads} threads"
+            );
+        }
     }
     let mut refused = *base;
     refused.cdef_on_skip = true;

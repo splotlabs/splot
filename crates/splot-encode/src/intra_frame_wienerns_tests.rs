@@ -149,7 +149,7 @@ fn with_lr_tools_disable(mask: [bool; 3]) -> &'static PresetParams {
 /// Each `lr_tools_disable` mask reaches the parsed sequence header, no frame
 /// codes a disabled tool (§ 5.18.7.11 `tool_index` cannot carry one), the
 /// Wiener-NS filters that stay enabled still code, the stream decodes to the
-/// encoder recon, and 1 and 2 threads write the same bytes.
+/// encoder recon, and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn disabled_restoration_tools_are_never_coded() {
     use FrameRestorationType as T;
@@ -190,10 +190,12 @@ fn disabled_restoration_tools_are_never_coded() {
             assert!(codes_wiener_ns(&lr, 0..1), "{mask:?} {lr:?}");
         }
         assert_same_samples(&decode(&one.concat()), &recon, &format!("{mask:?}"));
-        assert!(
-            wiener_stream((2, chroma), preset).0 == one,
-            "{mask:?}: 2 threads"
-        );
+        for threads in [2, 8] {
+            assert!(
+                wiener_stream((threads, chroma), preset).0 == one,
+                "{mask:?}: {threads} threads"
+            );
+        }
     }
 }
 
