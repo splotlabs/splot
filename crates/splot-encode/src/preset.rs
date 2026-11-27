@@ -34,6 +34,10 @@ pub struct PresetParams {
     /// The smallest frame height, at least 64, that codes 256x256
     /// superblocks when `max_block_log2` is `8`.
     pub sb256_min_height: u16,
+    /// `MaxPbAspectRatio` (§ 5.4.3), `2` or `4`: `reduce_pb_aspect_ratio`
+    /// limits the leaves the partition search codes to that aspect ratio.
+    /// `0`, the full set (8), in every row: a restriction removes tools.
+    pub max_pb_aspect_ratio: u8,
     /// Number of luma intra modes, and of chroma modes, tried per block,
     /// best-ranked first: in key (intra) frames the intra search, in the
     /// other frame kinds the intra shortlist of a leaf in an inter frame.
@@ -118,6 +122,16 @@ pub struct PresetParams {
     /// p6 ranks 7 types and tries 2 (CRF keyint 30, 30 frames: 6:1:1 -0.30%
     /// at about 1.01x instructions against 3 exact types).
     pub tx_type_model_keep: u8,
+    /// `enable_chroma_dctonly` (§ 5.4.8): every chroma block takes
+    /// `DCT_DCT` (§ 5.20.7.29). Off in every row: a restriction removes tools.
+    pub chroma_dct_only: bool,
+    /// `reduced_tx_part_set` (§ 5.4.8): a luma block with one split axis
+    /// codes only the two-way transform partition (§ 5.20.6.3). Off in every row.
+    pub reduced_tx_part_set: bool,
+    /// The frame `reduced_tx_set` (§ 5.18.2), `0..=3`, which limits the luma
+    /// types the search offers (§ 5.20.8.3). `4` in every row derives it:
+    /// `2` when `tx_type_depth` is `0`, else `0`.
+    pub reduced_tx_set: u8,
     /// Luma transform-partition search (`TX_MODE_SELECT`); off codes every
     /// block with its largest transform (`TX_MODE_LARGEST`). Off from p8
     /// (paris p6 f10: +2.99% BD-rate at 0.77x CPU), so p6, p7 and p8 step
@@ -460,6 +474,12 @@ pub struct PresetParams {
     /// `ccso_blk` coded per unit; `2` also `sb_reuse_ccso` of the saved
     /// `ccso_blk` flags, with those parameters or fresh ones.
     pub ccso_reuse: u8,
+    /// `ccso_unit_matches_sb_size` (§ 5.4.10): CCSO units take the
+    /// superblock size. Needs CCSO. Off in every row.
+    pub ccso_unit_sb: bool,
+    /// `gdf_unit_matches_sb_size` (§ 5.4.10): GDF units take the 64x64
+    /// superblock size. Needs GDF and `max_block_log2` at most 6. Off in every row.
+    pub gdf_unit_sb: bool,
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
@@ -1163,6 +1183,30 @@ impl PresetParams {
         check!(intrabc_drl)?;
         check!(lossless_inter_tx)?;
         check!(lossless_fsc)?;
+        check!(reduced_tx_set)?;
+        if !matches!(self.max_pb_aspect_ratio, 0 | 2 | 4) {
+            return Err(PresetError::OutOfRange {
+                field: "max_pb_aspect_ratio",
+                value: self.max_pb_aspect_ratio.into(),
+                allowed: "0, 2 or 4 (MaxPbAspectRatio, § 5.4.3)".to_owned(),
+            });
+        }
+        check(
+            "ccso_unit_sb",
+            u8::from(self.ccso_unit_sb),
+            PresetIntegerRange::new(0, i32::from(self.ccso_candidates > 0)),
+            " (1 needs ccso_candidates: § 5.4.10 codes ccso_unit_matches_sb_size with enable_ccso)",
+        )?;
+        check(
+            "gdf_unit_sb",
+            u8::from(self.gdf_unit_sb),
+            PresetIntegerRange::new(
+                0,
+                i32::from(self.gdf_candidates > 0 && self.max_block_log2 <= 6),
+            ),
+            " (1 needs gdf_candidates and 64x64 superblocks, max_block_log2 at most 6: \
+             § 5.4.10 codes gdf_unit_matches_sb_size with enable_gdf at BLOCK_64X64)",
+        )?;
         check!(tpl_delta_q)?;
         check!(ssim_aq)?;
         check!(segmentation)?;
@@ -1519,6 +1563,8 @@ preset_table! {
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
         "Minimum frame height in samples for 256x256 superblocks. Requires max_block_log2 of 8." [64, u16::MAX as i32]
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
+        "Code reduce_pb_aspect_ratio: leaves at most this aspect ratio, 2 or 4. Zero keeps every aspect ratio." [0, 4]
+        max_pb_aspect_ratio:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Stop the partition search when the unsplit cost is at most the best split cost."
         partition_early_exit:  frames([
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
@@ -1619,6 +1665,12 @@ preset_table! {
         tx_type_depth:         [    8,     3,     3,     2,     2,     2,     3,     1,     1,     0,     0],
         "Number of ranked luma transform types to test exactly. Zero tests all offered types."
         tx_type_model_keep:    [    0,     0,     0,     0,     0,     0,     2,     0,     0,     0,     0],
+        "Code enable_chroma_dctonly: every chroma block uses DCT_DCT."
+        chroma_dct_only:       [false, false, false, false, false, false, false, false, false, false, false],
+        "Code reduced_tx_part_set: blocks with one split axis use only two-way transform partitions."
+        reduced_tx_part_set:   [false, false, false, false, false, false, false, false, false, false, false],
+        "Frame reduced_tx_set, 0 to 3. Four derives it from tx_type_depth." [0, 4]
+        reduced_tx_set:        [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         "Search luma transform partitions. If disabled, each block uses its largest transform."
         tx_partition_search:   frames([
                                [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
@@ -1787,6 +1839,10 @@ preset_table! {
         ccso_bo_band_log2:     [    3,     3,     3,     3,     3,     3,     3,     3,     3,     3,     3],
         "Control which earlier CCSO parameters to test again." [0, 2]
         ccso_reuse:            [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Code ccso_unit_matches_sb_size: CCSO units use the superblock size. Requires ccso_candidates."
+        ccso_unit_sb:          [false, false, false, false, false, false, false, false, false, false, false],
+        "Code gdf_unit_matches_sb_size: GDF units use the superblock size. Requires gdf_candidates and max_block_log2 of at most 6."
+        gdf_unit_sb:           [false, false, false, false, false, false, false, false, false, false, false],
         "Search depth for the nonseparable luma Wiener filter."
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         "Number of luma loop restoration unit sizes to test." [1, 4]

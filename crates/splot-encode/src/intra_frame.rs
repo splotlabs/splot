@@ -344,6 +344,12 @@ impl IntraFrameCoder {
                 extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
+                reduce_pb_aspect_ratio: (preset.max_pb_aspect_ratio > 0)
+                    .then_some(preset.max_pb_aspect_ratio == 4),
+                chroma_dct_only: preset.chroma_dct_only,
+                reduced_tx_part_set: preset.reduced_tx_part_set,
+                ccso_unit_matches_sb_size: preset.ccso_unit_sb,
+                gdf_unit_matches_sb_size: preset.gdf_unit_sb,
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
