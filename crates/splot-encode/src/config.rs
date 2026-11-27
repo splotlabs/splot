@@ -236,6 +236,10 @@ pub struct Config {
     /// OBU (§ 5.7) after the sequence header, and every frame header refers
     /// to it with `cur_mfh_id = 1` (§ 5.18.2). Off by default.
     pub multi_frame_header: bool,
+    /// Single picture: the stream is one key frame under a sequence header
+    /// with `single_picture_header_flag = 1` (§ 5.4.1, § 5.18.2); a second
+    /// frame is refused. Off by default.
+    pub single_picture: bool,
     /// The coded bits of each input frame in a first pass, in input order
     /// ([`Self::first_pass_config`]); [`RateControlMode::Vbr`] splits its
     /// budget over the frames in proportion to them. Empty (the default) is
@@ -304,6 +308,7 @@ impl Config {
             first_pass: Vec::new(),
             fast_decode: false,
             multi_frame_header: false,
+            single_picture: false,
         }
     }
 

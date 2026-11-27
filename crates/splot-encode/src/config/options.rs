@@ -367,6 +367,7 @@ config_options! {
     tune, Setting, ValueShape::Choice(TUNES), "Select the quality metric.";
     fast_decode, Setting, ValueShape::Boolean, "Apply the fast-decode preset overrides.";
     multi_frame_header, Setting, ValueShape::Boolean, "Write a multi-frame header with each key frame.";
+    single_picture, Setting, ValueShape::Boolean, "Code one key frame as a single-picture stream.";
     first_pass, FirstPass, ValueShape::List(&integer(0, u64::MAX, "bits per frame")),
         "Supply the coded frame sizes from the first pass.", "Only VBR uses these values. An empty list selects one pass.";
 }

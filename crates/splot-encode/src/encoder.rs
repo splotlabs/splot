@@ -353,7 +353,8 @@ impl Encoder {
     /// [`Error::SendAfterFlush`] after [`Self::flush`],
     /// [`Error::Failed`] after an earlier coding error, or
     /// [`Error::FrameConfigMismatch`] when the frame was built for another
-    /// configuration.
+    /// configuration, or [`Error::SecondSinglePicture`] for a second frame of
+    /// [`Config::single_picture`].
     pub fn send_frame(&mut self, frame: SourceFrame) -> Result<()> {
         self.cancel.check()?;
         match self.state {
@@ -365,6 +366,10 @@ impl Encoder {
             || frame.plane_sizes() != self.config.plane_sizes()?.as_slice()
         {
             return Err(Error::FrameConfigMismatch);
+        }
+        if self.config.single_picture && self.planner.next_display() + self.pending.len() as u64 > 0
+        {
+            return Err(Error::SecondSinglePicture);
         }
         let frame = match &self.resized {
             Some(coded) => frame.resized(coded)?,

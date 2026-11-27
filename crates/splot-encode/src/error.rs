@@ -246,6 +246,10 @@ pub enum Error {
     #[error("frame plane sizes or bit depth do not match the encoder configuration")]
     FrameConfigMismatch,
 
+    /// A second frame was sent to a [`crate::Config::single_picture`] encoder.
+    #[error("a single-picture stream codes one frame")]
+    SecondSinglePicture,
+
     /// A frame was sent after `flush`.
     #[error("send_frame was called after flush")]
     SendAfterFlush,
