@@ -857,6 +857,10 @@ const fn is_valid_side(side: usize) -> bool {
 }
 
 #[cfg(test)]
+#[path = "secondary_transform_wide_timing.rs"]
+mod wide_timing;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::coefficient_scan::coefficient_scan_order;

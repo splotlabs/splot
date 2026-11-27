@@ -44,6 +44,8 @@ use crate::ReconSample;
 use splot_core::simd::SimdBackend;
 
 mod direction_backend;
+#[cfg(all(test, target_arch = "x86_64"))]
+mod wide_direction;
 pub use direction_backend::{
     CdefDirectionBackend, cdef_direction_padded_with, cdef_direction_padded_with_backend,
 };

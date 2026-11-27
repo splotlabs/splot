@@ -58,6 +58,13 @@ jobs:
           core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
             cdef_filter::segment::wide_luma::tests::measure_wide_luma_blocks -- --ignored --exact --nocapture
+          for kernel in intra_basic::wide_timing::measure_wide_paeth_blocks \
+            intra::wide_timing::measure_wide_palette_blocks \
+            secondary_transform::wide_timing::measure_wide_secondary_sums \
+            cdef_filter::wide_direction::measure_wide_direction; do
+            taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+              "$kernel" -- --ignored --exact --nocapture
+          done
 
       - name: Fetch and verify the frozen EwoutH streams
         if: ${{ !inputs.timing || inputs.streams }}

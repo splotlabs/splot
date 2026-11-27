@@ -630,6 +630,10 @@ fn average_lanes<S: Simd, P: IntraLaneSample>(simd: S, primary: &mut [P], second
 }
 
 #[cfg(test)]
+#[path = "intra_wide_timing.rs"]
+mod wide_timing;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

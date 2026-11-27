@@ -348,6 +348,10 @@ fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
 }
 
 #[cfg(test)]
+#[path = "intra_basic_wide_timing.rs"]
+mod wide_timing;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
