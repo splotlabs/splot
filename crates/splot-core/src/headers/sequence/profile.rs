@@ -111,6 +111,19 @@ impl ProfileIdc {
             _ => false,
         }
     }
+
+    /// Returns `BitrateProfileFactor` (Annex A.2 Table A.2) in thousandths:
+    /// 1000 for profiles 0-2, 1667 for 3 and 2500 for 4. The Configurable
+    /// and reserved profiles define none.
+    #[must_use]
+    pub const fn bitrate_factor_milli(self) -> Option<u32> {
+        match self.get() {
+            0..=2 => Some(1000),
+            3 => Some(1667),
+            4 => Some(2500),
+            _ => None,
+        }
+    }
 }
 
 impl PartialEq for ProfileIdc {
@@ -149,6 +162,16 @@ mod tests {
         ChromaFormatIdc::Yuv422,
         ChromaFormatIdc::Yuv444,
     ];
+
+    #[test]
+    fn bitrate_factors_match_table_a2() {
+        let factor = |value| ProfileIdc::from_bits(value).bitrate_factor_milli();
+        assert_eq!(
+            [0, 1, 2, 3, 4].map(factor),
+            [1000, 1000, 1000, 1667, 2500].map(Some)
+        );
+        assert_eq!([5, 30, 31].map(factor), [None; 3]);
+    }
 
     #[test]
     fn allowed_chroma_sets_match_table_a1() {

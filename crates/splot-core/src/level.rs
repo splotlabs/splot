@@ -33,6 +33,55 @@ pub fn level_limits(level_idx: u8) -> Option<FrameLevelLimits> {
     Some(group_limits(level_group(level_idx)?))
 }
 
+/// Display-rate and bitrate maxima for a table-mapped level (Annex A.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelRateLimits {
+    /// `MaxDisplayRate` in luma samples per second (Table A.8).
+    pub max_display_rate: u64,
+    /// `MainMbps` in kbit/s (Table A.9).
+    pub main_kbps: u32,
+    /// `HighMbps` in kbit/s (Table A.9); `None` below level 4.0, where
+    /// `seq_tier` is always 0.
+    pub high_kbps: Option<u32>,
+}
+
+/// Looks up the display-rate and bitrate maxima of a sequence level, or
+/// `None` for a reserved level and for maximum parameters (31).
+#[must_use]
+pub fn level_rate_limits(level_idx: u8) -> Option<LevelRateLimits> {
+    /// `(MaxDisplayRate, MainMbps * 10, HighMbps * 10)` of Tables A.8 and A.9.
+    const RATES: [(u64, u16, u16); 22] = [
+        (4_423_680, 15, 0),
+        (8_363_520, 30, 0),
+        (19_975_680, 60, 0),
+        (31_950_720, 100, 0),
+        (70_778_880, 120, 300),
+        (141_557_760, 200, 500),
+        (267_386_880, 300, 1000),
+        (534_773_760, 400, 1600),
+        (1_069_547_520, 600, 2400),
+        (1_069_547_520, 600, 2400),
+        (1_069_547_520, 600, 2400),
+        (2_139_095_040, 1000, 4800),
+        (4_278_190_080, 1600, 8000),
+        (4_278_190_080, 1600, 8000),
+        (4_278_190_080, 1600, 8000),
+        (8_556_380_160, 2000, 9600),
+        (17_112_760_320, 3200, 16000),
+        (17_112_760_320, 3200, 16000),
+        (17_112_760_320, 3200, 16000),
+        (34_225_520_640, 4000, 19200),
+        (68_451_041_280, 6400, 32000),
+        (68_451_041_280, 6400, 32000),
+    ];
+    let &(max_display_rate, main, high) = RATES.get(usize::from(level_idx))?;
+    Some(LevelRateLimits {
+        max_display_rate,
+        main_kbps: u32::from(main) * 100,
+        high_kbps: (high > 0).then_some(u32::from(high) * 100),
+    })
+}
+
 fn group_limits(group: usize) -> FrameLevelLimits {
     const LEVELS: [(u32, u16, u16, u8, u16); 9] = [
         (147_456, 640, 8, 4, 150),
@@ -137,18 +186,28 @@ impl FrameLevelLimits {
             return None;
         }
         let count = sequence.inter.as_ref()?.num_ref_frames;
-        let area = u64::from(sequence.general.max_frame_width.get())
-            * u64::from(sequence.general.max_frame_height.get());
         let reserve = frame.is_some_and(|frame| {
             (sequence.general.max_mlayer_id.get() != 0 || frame.obu_type != ObuType::ClosedLoopKey)
                 && requires_second_decode(frame)
         });
-        let slots = self
-            .max_pic_size
-            .checked_mul(8)?
-            .checked_div(area)?
-            .saturating_sub(u64::from(reserve));
+        let slots = self.ref_frame_slots(sequence, reserve)?;
         (u64::from(count) > slots).then_some((count, slots as u8))
+    }
+
+    /// `8 * MaxPicSize / (max_frame_width * max_frame_height)` of
+    /// `MaxLevelRefFrames` (Annex A.4), one less with `reserve`: a frame with
+    /// `DecodeCount` 2 that is not a closed-loop key frame, or any such frame
+    /// when `max_mlayer_id` is not 0.
+    #[must_use]
+    pub fn ref_frame_slots(&self, sequence: &SequenceHeader, reserve: bool) -> Option<u64> {
+        let area = u64::from(sequence.general.max_frame_width.get())
+            * u64::from(sequence.general.max_frame_height.get());
+        Some(
+            self.max_pic_size
+                .checked_mul(8)?
+                .checked_div(area)?
+                .saturating_sub(u64::from(reserve)),
+        )
     }
 }
 
@@ -245,5 +304,25 @@ mod tests {
         assert_eq!(limits.excess_ref_frames(&seq, Some(&frame)), None);
         seq.general.still_picture = true;
         assert_eq!(limits.excess_ref_frames(&seq, None), None);
+    }
+
+    #[test]
+    fn rate_limits_follow_tables_a8_and_a9() {
+        let row = |level| level_rate_limits(level).unwrap();
+        assert_eq!(row(0).max_display_rate, 4_423_680);
+        assert_eq!((row(0).main_kbps, row(0).high_kbps), (1_500, None));
+        assert_eq!(row(3).high_kbps, None);
+        assert_eq!((row(4).main_kbps, row(4).high_kbps), (12_000, Some(30_000)));
+        assert_eq!(row(9).max_display_rate, 1_069_547_520);
+        assert_eq!(
+            (row(19).main_kbps, row(19).high_kbps),
+            (400_000, Some(1_920_000))
+        );
+        assert_eq!(row(21).max_display_rate, 68_451_041_280);
+        assert_eq!(
+            (row(21).main_kbps, row(21).high_kbps),
+            (640_000, Some(3_200_000))
+        );
+        assert!(level_rate_limits(22).is_none() && level_rate_limits(31).is_none());
     }
 }

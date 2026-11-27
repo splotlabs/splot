@@ -220,7 +220,7 @@ fn intra_leaves(
 /// sequence of `params` and `view`:
 /// an explicit layout gets the start of each listed size, and one more
 /// column or row when the sizes end inside the frame.
-fn frame_tiles(
+pub(crate) fn frame_tiles(
     config: &Config,
     preset: &PresetParams,
     (params, view): (&EncoderStreamParams, &CoreSeqView),
@@ -292,7 +292,7 @@ impl IntraFrameCoder {
     }
 
     fn stream_params(config: &Config, preset: &PresetParams) -> Result<EncoderStreamParams> {
-        Ok(EncoderStreamParams {
+        let mut params = EncoderStreamParams {
             width: config.width,
             height: config.height,
             bit_depth: match config.bit_depth {
@@ -344,6 +344,12 @@ impl IntraFrameCoder {
                 extended_sdp: preset.sdp && preset.extended_sdp > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
+                reduce_pb_aspect_ratio: (preset.max_pb_aspect_ratio > 0)
+                    .then_some(preset.max_pb_aspect_ratio == 4),
+                chroma_dct_only: preset.chroma_dct_only,
+                reduced_tx_part_set: preset.reduced_tx_part_set,
+                ccso_unit_matches_sb_size: preset.ccso_unit_sb,
+                gdf_unit_matches_sb_size: preset.gdf_unit_sb,
                 avg_cdf: preset.cdf_carry.then_some(preset.cdf_avg_across_tiles),
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
@@ -387,7 +393,9 @@ impl IntraFrameCoder {
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
-        })
+        };
+        crate::level::choose_level(config, preset, &mut params)?;
+        Ok(params)
     }
 
     /// A coder of `config` with the search limits of `preset`; only the
@@ -579,7 +587,7 @@ pub(crate) fn check_frame_setup(config: &Config, preset: &PresetParams) -> Resul
     Ok(())
 }
 
-fn sequence_view(params: &EncoderStreamParams) -> Result<(SequenceHeader, CoreSeqView)> {
+pub(crate) fn sequence_view(params: &EncoderStreamParams) -> Result<(SequenceHeader, CoreSeqView)> {
     let sequence = build_encoder_sequence_header(params).map_err(coding("sequence header"))?;
     let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
         what: "an incomplete sequence header",
