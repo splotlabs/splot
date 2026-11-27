@@ -1901,7 +1901,7 @@ fn decode_block(
     let reference_scaled = if tip_ref {
         false
     } else {
-        params.ref_facts.scaled(ref_frame0)?
+        params.ref_facts.scaled_or_restricted(ref_frame0)?
     };
     let bawp = if tip_ref {
         BawpSyntax::default()

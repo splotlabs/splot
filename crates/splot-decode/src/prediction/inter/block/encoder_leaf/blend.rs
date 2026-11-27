@@ -363,7 +363,8 @@ impl EncoderInterTile {
                     .inter_tail
                     .as_ref()
                     .is_some_and(|tail| tail.allow_bawp),
-            reference_scaled: !single.tip && self.ref_facts.scaled(single.ref_frame)?,
+            reference_scaled: !single.tip
+                && self.ref_facts.scaled_or_restricted(single.ref_frame)?,
             frame_is_switch: self.core.frame_type == Some(FrameType::Switch),
             single_mode: single.mode,
             use_amvd: single.use_amvd,
