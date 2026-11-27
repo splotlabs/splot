@@ -214,9 +214,11 @@ pub struct Config {
     /// Annex A.4 limits: picture size, width, height and the 16-sample
     /// minimum; tile count and tile columns; display rate and frame-header
     /// rate at the frame rate; reference frames; and the CBR, VBR or capped
-    /// CRF bitrate. The caller is responsible for the other limits:
-    /// `CompressedSize`, `FrameSymbolCount`, the decode rate, the Annex E
-    /// buffer model, and the bitrate of CRF and constant-QP streams.
+    /// CRF bitrate; with [`Self::decoder_model`] also the decode rate and the
+    /// tile count at one frame per decoding tick. The caller is responsible
+    /// for the other limits: `CompressedSize`, `FrameSymbolCount`, the decode
+    /// rate without the decoder model, the Annex E buffer model, and the
+    /// bitrate of CRF and constant-QP streams.
     pub tier: Option<Tier>,
     /// Film grain: every key frame codes a grain model fitted to the noise of
     /// its source (none under a threshold), and every output frame applies it
@@ -240,6 +242,24 @@ pub struct Config {
     /// with `single_picture_header_flag = 1` (§ 5.4.1, § 5.18.2); a second
     /// frame is refused. Off by default.
     pub single_picture: bool,
+    /// Decoder model in decoding schedule mode (Annex E.4.2): the sequence
+    /// header codes `seq_initial_display_delay_minus_1` (the largest distance
+    /// from coding order to display order), `num_units_in_decoding_tick`
+    /// (one frame period) and `seq_decoder_model_info()`, and each frame unit
+    /// that decodes a frame codes a buffer removal timing OBU whose `br_time`
+    /// counts the decoded frames since the last random access point
+    /// (§ 5.4.1, § 5.4.13, § 5.12). The smoothing buffer fills at the level
+    /// BitRate (Annex E.3); `decoder_buffer_delay` is the initial buffer of
+    /// the rate control, 90 units per millisecond, and `encoder_buffer_delay`
+    /// makes their sum one second (Annex E.7.8). Off by default.
+    ///
+    /// It needs a level other than 31, [`ContentDescription::timing_info`],
+    /// CBR or capped CRF with an initial buffer of 1 to 1000 ms, a `keyint`
+    /// up to 511, and a preset without `open_loop_key` and `sef_repeat`. The
+    /// level also refuses a decode rate or tile count above its limits at one
+    /// frame per decoding tick (Annex A.4). The encoder does not run the
+    /// Annex E model: the rate control keeps its own buffer.
+    pub decoder_model: bool,
     /// The coded bits of each input frame in a first pass, in input order
     /// ([`Self::first_pass_config`]); [`RateControlMode::Vbr`] splits its
     /// budget over the frames in proportion to them. Empty (the default) is
@@ -309,6 +329,7 @@ impl Config {
             fast_decode: false,
             multi_frame_header: false,
             single_picture: false,
+            decoder_model: false,
         }
     }
 
@@ -322,7 +343,7 @@ impl Config {
     /// `field` names the failed record, `key_frame_metadata` first),
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
-    /// [`Error::SinglePictureWith`],
+    /// [`Error::SinglePictureWith`], [`Error::DecoderModelWith`],
     /// [`Error::PaddingWithoutCbr`], [`Error::KeyintWithTemporalLayers`] or
     /// [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
@@ -354,6 +375,9 @@ impl Config {
                 what: "cdef_on_skip_mode (CdefOnSkipTxfm is inferred adaptive, § 5.4.10)"
                     .to_owned(),
             });
+        }
+        if let Some(what) = self.decoder_model_refusal(&rows) {
+            return Err(Error::DecoderModelWith { what });
         }
         if self.keyint.get() > MAX_TEMPORAL_LAYER_KEYINT
             && rows.iter().any(|row| row.max_tlayer_id > 0)
@@ -502,6 +526,42 @@ impl Config {
             _ => return None,
         };
         Some((level, reason))
+    }
+
+    /// The decoder buffer level before the first frame of CBR and capped
+    /// CRF, in milliseconds.
+    pub(crate) const fn initial_buffer_ms(&self) -> Option<u32> {
+        match self.rate_control {
+            RateControlMode::Cbr { initial_ms, .. }
+            | RateControlMode::CappedCrf { initial_ms, .. } => Some(initial_ms),
+            _ => None,
+        }
+    }
+
+    /// Why [`Self::decoder_model`] cannot code this configuration with the
+    /// preset `rows`; level 31 is refused when the level is chosen.
+    fn decoder_model_refusal(&self, rows: &[PresetParams; 2]) -> Option<&'static str> {
+        if !self.decoder_model {
+            return None;
+        }
+        let initial_ms = self.initial_buffer_ms();
+        Some(if self.single_picture {
+            "a single picture, which codes no decoder model (§ 5.4.1)"
+        } else if !self.content.timing_info {
+            "a stream without timing_info(), which gives DecCT its time_scale (§ 6.4.1)"
+        } else if initial_ms.is_none() {
+            "a rate control without a decoder buffer: it needs CBR or capped CRF"
+        } else if !initial_ms.is_some_and(|ms| (1..=1000).contains(&ms)) {
+            "an initial buffer outside 1..=1000 ms: decoder_buffer_delay is 1..=90000 (Annex E.7.8)"
+        } else if self.keyint.get() > 511 {
+            "a keyint above 511: br_time rg(4) codes at most 511 ticks (§ 4.11.10)"
+        } else if rows.iter().any(|row| row.open_loop_key > 0) {
+            "open_loop_key: random access there drops the leading frames (Annex E.7.1)"
+        } else if rows.iter().any(|row| row.sef_repeat) {
+            "sef_repeat: a repeat decodes no frame, so removal runs ahead of the output"
+        } else {
+            return None;
+        })
     }
 
     /// The configuration of the coded frames: the frame size after

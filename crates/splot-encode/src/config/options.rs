@@ -368,6 +368,8 @@ config_options! {
     fast_decode, Setting, ValueShape::Boolean, "Apply the fast-decode preset overrides.";
     multi_frame_header, Setting, ValueShape::Boolean, "Write a multi-frame header with each key frame.";
     single_picture, Setting, ValueShape::Boolean, "Code one key frame as a single-picture stream.";
+    decoder_model, Setting, ValueShape::Boolean, "Signal the Annex E decoder model with removal times.",
+        "Requires a level other than 31, timing info, CBR or capped CRF with an initial buffer of 1 to 1000 ms, and a keyint up to 511.";
     first_pass, FirstPass, ValueShape::List(&integer(0, u64::MAX, "bits per frame")),
         "Supply the coded frame sizes from the first pass.", "Only VBR uses these values. An empty list selects one pass.";
 }

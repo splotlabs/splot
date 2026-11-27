@@ -2237,6 +2237,8 @@ mod compound;
 mod content;
 #[path = "intra_frame_crop_tests.rs"]
 mod crop;
+#[path = "intra_frame_decoder_model_tests.rs"]
+mod decoder_model;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
 #[path = "intra_frame_ext_sdp_tests.rs"]

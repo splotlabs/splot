@@ -93,6 +93,11 @@ pub(crate) struct EncodeArgs {
     /// (`single_picture_header_flag = 1`) and reads no other frame.
     #[arg(long)]
     still: bool,
+    /// Decoder model: signals the Annex E decoder model with a removal time
+    /// per decoded frame. Needs `--level` other than `max`, `--timing-info`,
+    /// and `--rc cbr` or `--max-bitrate` with an initial buffer of 1 to 1000 ms.
+    #[arg(long)]
+    decoder_model: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -592,6 +597,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.fast_decode = args.fast_decode;
     config.multi_frame_header = args.multi_frame_header;
     config.single_picture = args.still;
+    config.decoder_model = args.decoder_model;
     let ivf = args.output_format == OutputFormat::Ivf;
     if ivf && (u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err()) {
         bail!("IVF output supports at most 65535 samples per side");

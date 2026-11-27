@@ -22,7 +22,7 @@ use crate::headers::frame::{
 };
 use crate::headers::sequence::{
     BitDepthIdc, CdefOnSkipTxfm, ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc,
-    SequenceHeader, SuperblockSize, Tier, parse_sequence_header,
+    SequenceDecoderModelInfo, SequenceHeader, SuperblockSize, Tier, parse_sequence_header,
 };
 use crate::headers::tile_group::TileGroupFraming;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -30,6 +30,7 @@ use crate::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use crate::span::ByteOffset;
 use crate::tile::{TileParamsInput, TileSpacing, TileStarts};
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
+use crate::write::seq_header::write_sequence_decoder_model_info;
 use crate::write::seq_tile::{explicit_tile_layout, uniform_tile_layout, write_tile_params};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
@@ -271,6 +272,15 @@ pub struct EncoderToolFlags {
     /// of the maximum frame (§ 5.4.1); the decoder outputs the
     /// `CropWidth x CropHeight` window (§ 5.18.4.4, § 7.21.2).
     pub crop: Option<CroppingWindow>,
+    /// `seq_initial_display_delay_minus_1`, `0..=15` (§ 5.4.1); `None` codes
+    /// `seq_initial_display_delay_present_flag = 0`.
+    pub initial_display_delay_minus_1: Option<u8>,
+    /// `num_units_in_decoding_tick` (§ 5.4.1, above 0); `None` codes
+    /// `decoder_model_info_present_flag = 0`.
+    pub num_units_in_decoding_tick: Option<u32>,
+    /// `seq_decoder_model_info()` (§ 5.4.13); it needs
+    /// [`Self::num_units_in_decoding_tick`].
+    pub decoder_model_info: Option<SequenceDecoderModelInfo>,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -703,9 +713,28 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
             w.write_uvlc(offset)?;
         }
     }
+    let delay = tools.initial_display_delay_minus_1;
+    let tick = tools.num_units_in_decoding_tick;
+    let info_without_tick = tick.is_none() && tools.decoder_model_info.is_some();
+    if info_without_tick || single && (delay.is_some() || tick.is_some()) {
+        return Err(WriteError::NonCanonicalSequenceValue {
+            what: "decoder_model_info_present_flag",
+        }
+        .into());
+    }
     if !single {
-        w.write_flag(false)?; // seq_initial_display_delay_present_flag
-        w.write_flag(false)?; // decoder_model_info_present_flag
+        w.write_flag(delay.is_some())?; // seq_initial_display_delay_present_flag
+        if let Some(delay) = delay {
+            w.write_bits(u32::from(delay), 4)?;
+        }
+        w.write_flag(tick.is_some())?; // decoder_model_info_present_flag
+        if let Some(tick) = tick {
+            w.write_bits(tick, 32)?;
+            w.write_flag(tools.decoder_model_info.is_some())?;
+            if let Some(info) = &tools.decoder_model_info {
+                write_sequence_decoder_model_info(&mut w, info)?;
+            }
+        }
     }
     if tools.max_tlayer_id.get() > 0 {
         w.write_flag(false)?; // tlayer_dependency_present_flag

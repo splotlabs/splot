@@ -117,6 +117,14 @@ pub enum Error {
         what: String,
     },
 
+    /// A [`crate::Config::decoder_model`] configuration asks for a form that
+    /// the decoder model does not cover.
+    #[error("the decoder model cannot code {what}")]
+    DecoderModelWith {
+        /// The refused setting and the reason.
+        what: &'static str,
+    },
+
     /// The rate factor is outside `1..=63`.
     #[error("crf {crf} is outside 1..={max}", max = crate::rate_control::Crf::MAX)]
     InvalidCrf {

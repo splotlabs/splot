@@ -228,6 +228,9 @@ fn every_tool_flag_reaches_the_parsed_header() {
         interintra: true,
         bawp: true,
         crop: None,
+        initial_display_delay_minus_1: None,
+        num_units_in_decoding_tick: None,
+        decoder_model_info: None,
         max_tlayer_id: TemporalLayerId::BASE,
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
@@ -1460,4 +1463,58 @@ fn requested_level_and_tier_reach_the_parsed_header_or_are_refused() {
             "{level} {tier:?}"
         );
     }
+}
+
+/// The initial display delay and the decoder model (§ 5.4.1, § 5.4.13) reach
+/// the parsed header; a header cut inside `num_units_in_decoding_tick` does
+/// not parse; `seq_decoder_model_info()` without a decoding tick and any of
+/// them in a single-picture header are refused.
+#[test]
+fn decoder_model_reaches_the_parsed_header_or_is_refused() {
+    let mut p = params(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let plain = sequence_header_bits(&p).unwrap();
+    let info = SequenceDecoderModelInfo {
+        decoder_buffer_delay: 45_000,
+        encoder_buffer_delay: 45_000,
+        low_delay_mode_flag: false,
+    };
+    p.tools.initial_display_delay_minus_1 = Some(3);
+    p.tools.num_units_in_decoding_tick = Some(1001);
+    p.tools.decoder_model_info = Some(info);
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    let general = &seq.general;
+    assert_eq!(general.seq_initial_display_delay_minus_1, Some(3));
+    assert!(general.decoder_model_info_present_flag);
+    assert_eq!(general.num_units_in_decoding_tick, Some(1001));
+    assert!(general.seq_decoder_model_info_present_flag);
+    assert_eq!(general.decoder_model_info, Some(info));
+    assert_eq!(reparse_sequence(&seq), seq);
+    let bytes = sequence_header_bits(&p).unwrap();
+    assert!(bytes.len() > plain.len());
+    let cut = &bytes[..plain.len() - 1];
+    assert!(parse_sequence_header(&mut BitReader::new(cut, ByteOffset::new(0))).is_err());
+
+    p.tools.decoder_model_info = None;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    assert!(seq.general.decoder_model_info_present_flag);
+    assert!(!seq.general.seq_decoder_model_info_present_flag);
+    p.tools.num_units_in_decoding_tick = None;
+    p.tools.decoder_model_info = Some(info);
+    let refused = |p: &EncoderStreamParams| {
+        matches!(
+            build_encoder_sequence_header(p),
+            Err(EncoderHeaderError::Write(
+                WriteError::NonCanonicalSequenceValue {
+                    what: "decoder_model_info_present_flag"
+                }
+            ))
+        )
+    };
+    assert!(refused(&p));
+    p.tools.decoder_model_info = None;
+    p.tools.single_picture = true;
+    assert!(refused(&p));
+    p.tools.initial_display_delay_minus_1 = None;
+    p.tools.num_units_in_decoding_tick = Some(1);
+    assert!(refused(&p));
 }

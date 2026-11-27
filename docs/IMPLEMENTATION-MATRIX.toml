@@ -22618,6 +22618,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-DECODER-MODEL"
+name = "Encoder decoder model and buffer removal timing"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["4.11.10", "5.4.1", "5.4.13", "5.12", "6.11", "7.3.3", "7.3.4", "Annex A.4", "Annex E"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/level.rs"
+change_id = "enc-decoder-model"
+owner = "encoder"
+risk = "medium"
+notes = "Config::decoder_model (2026-11-27; CLI --decoder-model), off by default with the bytes of before. Decoding schedule mode (Annex E.4.2): the sequence header codes seq_initial_display_delay_minus_1 (the largest coding-to-display distance of the coding order), num_units_in_decoding_tick = num_units_in_display_tick and seq_decoder_model_info() with decoder_buffer_delay = 90 * the CBR or capped-CRF initial_ms, encoder_buffer_delay = 90000 - decoder_buffer_delay and low_delay_mode_flag 0; each frame unit with a decoded frame codes one OBU_BUFFER_REMOVAL_TIMING (br_ops_dependent_flag 0) whose br_time counts the decoded frames since the last closed-loop key or RAS frame. BitRate and BufferSize come from the level (Annex E.3). Refused with Error::DecoderModelWith: a single picture, no timing_info(), CRF/QP/VBR, initial_ms outside 1..=1000, keyint above 511 (rg(4)), open_loop_key and sef_repeat; level 31 (also from auto) with Error::InvalidLevel. With the model the level also checks LumaSampleCount * DecodeCount and NumTiles at FrameParsingTime = one frame period. The encoder does not run the Annex E model: the encoder tests check the streams with an independent model of E.5 and E.7 (underflow, overflow, RAP delay consistency, minimum decode time, decode deadline, presentation interval, CompressedSize). Not checked: the E.6 frame-buffer pool and the E.7.1 resource-availability bound on br_time; the Annex E validator rule is AV2-E-DECODER-MODEL."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_stream_tests.rs::decoder_model_reaches_the_parsed_header_or_is_refused", "crates/splot-encode/src/intra_frame_decoder_model_tests.rs::decoder_model_streams_keep_annex_e", "crates/splot-encode/src/intra_frame_decoder_model_tests.rs::annex_e_model_finds_violations", "crates/splot-encode/src/intra_frame_decoder_model_tests.rs::decoder_model_refusals", "crates/splot-cli/tests/encode_decode_roundtrip.rs::decoder_model_streams_validate_and_decode"]
+commands = ["cargo test -p splot-core decoder_model --locked", "cargo test -p splot-encode decoder_model --locked", "cargo test -p splot-cli --test encode_decode_roundtrip decoder_model --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SINGLE-PICTURE"
 name = "Encoder single-picture stream"
 category = "encoder"
