@@ -132,12 +132,14 @@ impl FrameDecodeGeometry {
 
     pub(crate) fn motion_field_header(self, hints: &[Option<u32>]) -> TemporalMotionField {
         let size = self.info.coded_luma_size();
-        TemporalMotionField::metadata_only(
+        let mut field = TemporalMotionField::metadata_only(
             self.motion_layout,
             !self.frame_is_intra,
             (size.width(), size.height()),
             hints,
-        )
+        );
+        field.set_switch(self.is_switch);
+        field
     }
 
     pub(crate) fn new_motion_field(
