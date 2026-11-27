@@ -19,8 +19,8 @@ fn chosen(config: &Config) -> Result<(u8, Tier)> {
     Ok((general.seq_level_idx.get(), general.seq_tier))
 }
 
-fn level(index: u8) -> Option<LevelIdx> {
-    Some(LevelIdx::from_bits(index))
+fn level(index: u8) -> LevelIdx {
+    LevelIdx::from_bits(index)
 }
 
 /// The automatic level is the lowest level whose checked limits hold; the
@@ -87,7 +87,7 @@ fn requested_levels_refuse_the_limits_the_stream_breaks() {
     };
     let base = {
         let mut config = config(64, 64, BitDepth::Eight, 6, 150);
-        config.level = level(0);
+        config.level = Some(level(0));
         config
     };
     assert_eq!(chosen(&base).unwrap(), (0, Tier::Main));
@@ -144,16 +144,16 @@ fn uncodable_levels_are_refused() {
         (3, Tier::High, None),
         (4, Tier::Main, Some(ProfileIdc::Configurable)),
     ] {
-        (config.level, config.tier, config.profile) = (level(index), Some(tier), profile);
+        (config.level, config.tier, config.profile) = (Some(level(index)), Some(tier), profile);
         assert!(
             matches!(config.validate(), Err(Error::InvalidLevel { level, .. }) if level.get() == index),
             "{index} {tier:?}"
         );
     }
-    (config.level, config.tier, config.profile) = (level(31), Some(Tier::High), None);
+    (config.level, config.tier, config.profile) = (Some(level(31)), Some(Tier::High), None);
     assert!(config.validate().is_ok());
     config.width = 8;
-    config.level = level(0);
+    config.level = Some(level(0));
     assert!(matches!(chosen(&config), Err(Error::InvalidLevel { .. })));
 }
 
@@ -174,7 +174,9 @@ fn level_stream(
 /// The level and tier of every sequence header in `units`, the payloads of
 /// the other OBUs, the number of frame headers that count for the header
 /// rate (§ 5.18.1) and the number of show-existing frames.
-fn split_level(units: &[Vec<u8>]) -> (Vec<(u8, Tier)>, Vec<Vec<u8>>, usize, usize) {
+type LevelSplit = (Vec<(u8, Tier)>, Vec<Vec<u8>>, usize, usize);
+
+fn split_level(units: &[Vec<u8>]) -> LevelSplit {
     let stream = units.concat();
     let parsed = parse_annex_b_obus_partial(&stream);
     assert!(parsed.error.is_none());
