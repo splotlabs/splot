@@ -375,6 +375,7 @@ impl IntraFrameCoder {
                     }),
                     _ => None,
                 },
+                disable_loopfilters_across_tiles: config.disable_loopfilters_across_tiles,
                 short_refresh: preset.short_refresh,
                 plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),

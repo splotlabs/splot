@@ -2241,6 +2241,8 @@ mod crop;
 mod delta_q;
 #[path = "intra_frame_ext_sdp_tests.rs"]
 mod ext_sdp;
+#[path = "intra_frame_filter_tiles_tests.rs"]
+mod filter_tiles;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_gm_tests.rs"]

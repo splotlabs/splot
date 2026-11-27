@@ -331,6 +331,7 @@ config_options! {
     tiles, Setting, ValueShape::Choice(TILE_LAYOUTS), "Set the tile layout for each frame.";
     tile_groups, Setting, integer(1, U32_MAX, "groups per frame"), "Set the number of tile groups.",
         "The encoder limits the number of groups to the number of coded tiles.";
+    disable_loopfilters_across_tiles, Setting, ValueShape::Boolean, "Stop the in-loop filters at tile edges.";
     keyint, Setting, integer(1, U32_MAX, "frames"), "Set the key-frame interval.";
     resize_denominator, Setting, ValueShape::Optional(&integer(
         *Config::RESIZE_DENOMINATORS.start() as u64, *Config::RESIZE_DENOMINATORS.end() as u64, "",
