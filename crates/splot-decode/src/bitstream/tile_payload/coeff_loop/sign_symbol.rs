@@ -167,11 +167,31 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
         CoeffSignReadSource::Cdf(selector) => {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "dc_sign",
+                    "plane_type,group,ctx",
+                    [
+                        selector.plane_type as u16,
+                        selector.group as u16,
+                        selector.ctx as u16,
+                    ],
+                ));
+            }
             let rows = row_at(cdfs.block_rows_mut().dc_sign(), selector.plane_type);
             let row = row_at(row_at(rows, selector.group), selector.ctx);
             (CoeffSignReadSymbol::Cdf, read_row(symbols, row) != 0)
         }
         CoeffSignReadSource::SignBit => {
+            #[cfg(feature = "block-evidence")]
+            if symbols.observes_entropy() {
+                symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_sign",
+                    "",
+                    [0; 3],
+                ));
+            }
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?

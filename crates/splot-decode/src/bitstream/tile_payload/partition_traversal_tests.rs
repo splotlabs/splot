@@ -158,6 +158,8 @@ pub(crate) fn make_work_unit_at(
             std::sync::Arc::new(FrameCdfSubset::from_defaults()),
         ),
         bru_tile_active: None,
+        #[cfg(feature = "block-evidence")]
+        entropy_transform: None,
     }
 }
 
