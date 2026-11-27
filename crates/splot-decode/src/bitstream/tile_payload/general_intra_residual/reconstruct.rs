@@ -12,9 +12,9 @@ use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
     FlatDequant, IntraRectBlockSize, InverseTransform2dOuter, InverseTransformAdd, PlaneId,
     ReconSample, SecondaryInverseTransform, coefficient_scan_slice, dequant_coefficient,
-    dequantize_block_with, dequantize_with_secondary_and_backend,
-    inverse_transform_2d_outer_adjusted_with, inverse_transform_2d_outer_with_scratch_and_backend,
-    secondary_inverse_transform_scan_with, tx_class,
+    dequantize_with_secondary_and_backend, inverse_transform_2d_outer_adjusted_with,
+    inverse_transform_2d_outer_with_scratch_and_backend, secondary_inverse_transform_scan_with,
+    tx_class,
 };
 
 use super::{
@@ -874,7 +874,7 @@ pub(super) fn record_residual(
     );
 }
 
-fn check_dense_len(
+pub(super) fn check_dense_len(
     block: CoeffBlock<'_>,
     setup: &ReconstructBlockSetup,
 ) -> Result<(), GeneralIntraResidualError> {
@@ -981,37 +981,6 @@ pub(super) fn reconstruct_block_setup(
             lossless,
             dpcm,
         ),
-    })
-}
-
-/// Dequantizes the whole-row prefix of `block`, returning the number of
-/// samples it wrote and leaving the rest of `out` untouched.
-pub(super) fn dequantize_coeff_block_with<B: SimdBackend>(
-    backend: B,
-    block: CoeffBlock<'_>,
-    params: &DequantBlockParams,
-    out: &mut [i32],
-) -> Result<usize, GeneralIntraResidualError> {
-    if block.eob == 0 {
-        return Ok(0);
-    }
-    if block.dense_len() != out.len() {
-        return Err(GeneralIntraResidualError::QuantLength {
-            expected: out.len(),
-            actual: block.dense_len(),
-        });
-    }
-    dequantize_block_with(backend, params, block.quant, out).map_err(Into::into)
-}
-
-#[cfg(test)]
-pub(super) fn dequantize_coeff_block(
-    block: CoeffBlock<'_>,
-    params: &DequantBlockParams,
-    out: &mut [i32],
-) -> Result<usize, GeneralIntraResidualError> {
-    crate::test_support::with_auto_backend!(backend => {
-        dequantize_coeff_block_with(backend, block, params, out)
     })
 }
 

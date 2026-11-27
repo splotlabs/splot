@@ -62,8 +62,6 @@ pub(crate) mod reconstruct;
 
 pub(crate) use cctx::add_cctx_pair_residual_in_place_with;
 #[cfg(test)]
-use cctx::apply_cross_chroma_transform;
-#[cfg(test)]
 pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
 #[cfg(test)]
 use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;

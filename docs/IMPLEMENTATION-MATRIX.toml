@@ -13966,12 +13966,13 @@ perf = "not-applicable"
 [feature.proof]
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::dctonly_residual_lr_handoff_reads_cctx_metadata",
-    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::cctx_minus30_rotates_saved_chroma_dequant_pair",
+    "crates/splot-recon/src/dequant_process/cctx.rs::tests::minus_30_degrees_rotates_a_u_only_pair",
+    "crates/splot-recon/src/dequant_process/cctx.rs::tests::pair_groups_match_the_per_coefficient_reference",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs::tests::cctx_pair_uses_u_transform_type_for_all_zero_v_block",
 ]
 commands = [
     "cargo test -p splot-decode dctonly_residual_lr_handoff_reads_cctx_metadata --locked",
-    "cargo test -p splot-decode cctx_minus30_rotates_saved_chroma_dequant_pair --locked",
+    "cargo test -p splot-recon dequant_process::cctx --locked",
     "cargo test -p splot-decode cctx_pair_uses_u_transform_type_for_all_zero_v_block --locked",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",

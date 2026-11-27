@@ -3,12 +3,10 @@
 
 //! Cross-chroma transforms (CCTX, § 5.20.7.27, § 7.14.6) of the encoder facade.
 
-use splot_recon::PlaneId;
+use splot_recon::{CCTX_MTX, PlaneId};
 
 use super::super::cdf::TileCdfSelector;
-use super::super::general_intra_residual::cctx::{
-    CCTX_MTX, reconstruct_general_intra_chroma_cctx_pair_into_with,
-};
+use super::super::general_intra_residual::cctx::reconstruct_general_intra_chroma_cctx_pair_into_with;
 use super::super::general_intra_residual::{CoeffBlock, LumaCoeffBlock, is_cctx_geometry_allowed};
 use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, coefficient_scan, rule,
