@@ -131,6 +131,7 @@ impl BlockEvidenceRequest {
     /// Captures sample stages for one plane. The region uses native plane coordinates.
     /// The decoder intersects the region with the visible plane. The byte budget
     /// counts allocated sample storage. The event budget applies to structural records.
+    /// The selected frame uses ordered reconstruction before its filter stages.
     #[must_use]
     pub fn with_stage_samples(mut self, plane: PlaneId, region: PlaneRect) -> Self {
         self.stage_samples = Some((plane, region));
@@ -432,17 +433,18 @@ impl BlockEvidenceState {
         }
         let stopped = state.stopped.take();
         let walking = core::mem::take(&mut state.walking);
+        let available = if self.captures_stages() {
+            state.stages.is_some() && state.stage_depth.is_some()
+        } else {
+            walking
+        };
         let mut status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
         } else if let Some(stopped) = stopped {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if if self.captures_stages() {
-            state.stages.is_some() && state.stage_depth.is_some()
-        } else {
-            walking
-        } {
+        } else if available {
             BlockEvidenceStatus::Complete
         } else if frame.is_some() {
             BlockEvidenceStatus::Unavailable

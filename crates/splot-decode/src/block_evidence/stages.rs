@@ -281,13 +281,11 @@ pub(crate) fn transform_samples(
     applied: bool,
     mut sample: impl FnMut(usize, usize) -> Option<i32>,
 ) {
-    if let Some(rect) = rect {
-        RECON_CAPTURE.with_borrow(|state| {
-            if let Some(state) = state {
-                state.record_stage(stage, plane, rect, applied, |x, y| {
-                    sample(x - rect.x(), y - rect.y())
-                });
-            }
+    if let Some(rect) = rect
+        && let Some(state) = RECON_CAPTURE.with_borrow(Clone::clone)
+    {
+        state.record_stage(stage, plane, rect, applied, |x, y| {
+            sample(x - rect.x(), y - rect.y())
         });
     }
 }
@@ -297,28 +295,28 @@ pub(crate) fn surface_prediction<T: ReconSample>(
     plane: PlaneId,
     rect: PlaneRect,
 ) {
-    RECON_CAPTURE.with_borrow(|state| {
-        let Some(state) = state else { return };
-        let Some((selected, region)) = state.stage_region() else {
-            return;
-        };
-        if selected != plane {
-            return;
+    let Some(state) = RECON_CAPTURE.with_borrow(Clone::clone) else {
+        return;
+    };
+    let Some((selected, region)) = state.stage_region() else {
+        return;
+    };
+    if selected != plane {
+        return;
+    }
+    let Some(area) = intersect(rect, region) else {
+        return;
+    };
+    let Ok(mut rows) = sink.rect_rows(plane, area) else {
+        return;
+    };
+    let mut row = rows.next();
+    state.record_stage(DecodeStage::Prediction, plane, area, true, |x, _| {
+        let x = x - area.x();
+        let value = row?.get(x).map(|v| i32::from(v.to_u16()));
+        if x + 1 == area.width() {
+            row = rows.next();
         }
-        let Some(area) = intersect(rect, region) else {
-            return;
-        };
-        let Ok(mut rows) = sink.rect_rows(plane, area) else {
-            return;
-        };
-        let mut row = rows.next();
-        state.record_stage(DecodeStage::Prediction, plane, area, true, |x, _| {
-            let x = x - area.x();
-            let value = row?.get(x).map(|v| i32::from(v.to_u16()));
-            if x + 1 == area.width() {
-                row = rows.next();
-            }
-            value
-        });
+        value
     });
 }

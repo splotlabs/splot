@@ -9,6 +9,10 @@
 //! In `av2/decoder/inspection.c`, read the block modes, `current_qindex`,
 //! `segment_id`, `mrl_index`, `pb_mv_precision` and `mv` from `MB_MODE_INFO`.
 //! Use `get_ref_frame_map_idx` for the reference slots.
+//! Read stage planes in `av2_decode_tg_tiles_and_wrapup` before deblock and
+//! after each filter. Read `predicted_pixels` with inspection enabled.
+//! For clipped residuals, record the signed input to `highbd_clip_pixel_add`
+//! in the C inverse transform. Compare the resulting output with ordinary AVM.
 //!
 //! [AVM]: https://github.com/AOMediaCodec/avm/tree/a1ec4594d97028ebc34083ec8346616d697c2fc9
 
@@ -662,16 +666,18 @@ fn stage_samples_match_avm_and_preserve_output() {
         (Deblock, 248),
         (Cdef, 248),
         (Ccso, 248),
+        (Restoration, 248),
         (Gdf, 249),
         (Reference, 249),
     ];
 
-    for (fixture, index, region, golden) in [
-        (EIGHT, 0, rect(4, 31, 1, 1), eight),
-        (TEN, 1, rect(127, 50, 1, 1), ten),
-        (GDF, 0, rect(145, 42, 1, 1), eight_clip),
-        (GDF, 0, rect(503, 42, 1, 1), gdf),
-        (TEN, 1, rect(31, 20, 1, 1), ten_clip),
+    let gdf_skipped: &[DecodeStage] = &[Ccso, Restoration];
+    for (fixture, index, region, golden, skipped) in [
+        (EIGHT, 0, rect(4, 31, 1, 1), eight, &[][..]),
+        (TEN, 1, rect(127, 50, 1, 1), ten, &[][..]),
+        (GDF, 0, rect(145, 42, 1, 1), eight_clip, &[][..]),
+        (GDF, 0, rect(503, 42, 1, 1), gdf, gdf_skipped),
+        (TEN, 1, rect(31, 20, 1, 1), ten_clip, &[][..]),
     ] {
         for threads in [1, 4] {
             let mut normal = Decoder::new(settings(threads)).unwrap();
@@ -691,11 +697,12 @@ fn stage_samples_match_avm_and_preserve_output() {
                     .iter()
                     .find(|record| record.stage == stage)
                     .unwrap();
-                assert_eq!(
-                    actual.status,
-                    StageEvidenceStatus::Applied,
-                    "{stage:?} at {region:?}"
-                );
+                let expected = if skipped.contains(&stage) {
+                    StageEvidenceStatus::Skipped
+                } else {
+                    StageEvidenceStatus::Applied
+                };
+                assert_eq!(actual.status, expected, "{stage:?} at {region:?}");
                 assert_eq!(actual.region, Some(region), "{stage:?}");
                 assert_eq!(actual.samples, [sample], "{stage:?}");
             }
@@ -761,4 +768,22 @@ fn film_grain_presentation_keeps_the_reference_values() {
     assert_eq!(reference.provenance(), presentation.provenance());
     assert_eq!(sample(&presentation), 940);
     assert_eq!(sample(reference), 961);
+}
+
+#[test]
+fn monochrome_frame_cannot_supply_chroma_stages() {
+    use splot_recon::PlaneId;
+
+    const MONO: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-4frame-mono-inter-256x128.ivf"
+    );
+    let (report, _) = capture(
+        MONO,
+        1,
+        BlockEvidenceRequest::new(|_| true, None, 0, 4096)
+            .with_stage_samples(PlaneId::V, rect(0, 0, 1, 1)),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Unavailable);
+    assert!(report.frame.is_some());
+    assert!(report.stages.is_empty());
 }
