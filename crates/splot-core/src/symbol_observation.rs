@@ -196,7 +196,7 @@ impl EntropyObserver {
     pub(super) fn push(&self, mut event: EntropySymbol) {
         let mut capture = self.lock();
         event.ordinal = capture.end_ordinal;
-        event.syntax = event.syntax.or(capture.next_syntax.take());
+        event.syntax = capture.next_syntax.take();
         event.scope_tag = capture.scope_tag;
         capture.end_ordinal += u64::from(event.bypass_bits.max(1));
         if capture.stopped.is_some() {
@@ -232,9 +232,8 @@ mod tests {
         let mut decoder = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
         let observer = EntropyObserver::new(2, usize::MAX, || false);
         let mut row = [16384, 0, 0];
-        let syntax = EntropySyntax::new("test_symbol", "ctx", [7, 0, 0]);
         decoder.with_entropy_observer(&observer, |scoped| {
-            assert_eq!(scoped.read_trusted_with_syntax(&mut row, syntax), 0);
+            assert_eq!(scoped.read_trusted(&mut row), 0);
             assert_eq!(row, [17408, 1 << CDF_COUNT_SHIFT, 0]);
             let mut copied = scoped.clone();
             assert_eq!(copied.read_trusted(&mut row), 0);
@@ -257,8 +256,6 @@ mod tests {
         let capture = observer.into_capture();
         assert_eq!(capture.stopped, None);
         assert_eq!(capture.end_ordinal, 2);
-        assert_eq!(capture.symbols[0].syntax, Some(syntax));
-        assert_eq!(capture.symbols[1].syntax, None);
         let first = capture.symbols[0].cdf.unwrap();
         let second = capture.symbols[1].cdf.unwrap();
         assert_eq!((first.cutoffs[0], first.adaptation_count), (16384, 0));

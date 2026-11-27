@@ -874,12 +874,11 @@ impl<'a> SymbolDecoder<'a> {
         cur: u32,
         prev: u32,
         updates: bool,
-        syntax: Option<EntropySyntax>,
     ) {
         if let Some(observer) = self.observer {
             observer.push(EntropySymbol {
                 ordinal: 0,
-                syntax,
+                syntax: None,
                 scope_tag: None,
                 value,
                 coding: EntropyCoding::Cdf,
@@ -1145,7 +1144,6 @@ impl<'a> SymbolDecoder<'a> {
                 cur,
                 prev,
                 self.config.cdf_update == CdfUpdateMode::Enabled,
-                None,
             );
         }
         self.consume(cur, prev);
@@ -1166,31 +1164,8 @@ impl<'a> SymbolDecoder<'a> {
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_trusted<const L: usize>(&mut self, cdf: &mut [u16; L]) -> u32 {
-        self.read_trusted_len(
-            cdf,
-            self.config.cdf_update == CdfUpdateMode::Enabled,
-            #[cfg(feature = "entropy-observation")]
-            None,
-        )
-        .unwrap_or(0)
-    }
-
-    /// Reads a trusted row and records its syntax if observation is active.
-    /// The arithmetic read and CDF update use the same path as [`Self::read_trusted`].
-    #[cfg(feature = "entropy-observation")]
-    #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    pub fn read_trusted_with_syntax<const L: usize>(
-        &mut self,
-        cdf: &mut [u16; L],
-        syntax: EntropySyntax,
-    ) -> u32 {
-        self.read_trusted_len(
-            cdf,
-            self.config.cdf_update == CdfUpdateMode::Enabled,
-            Some(syntax),
-        )
-        .unwrap_or(0)
+        self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
+            .unwrap_or(0)
     }
 
     /// [`Self::read_trusted`] of a row of three to five symbols, from its
@@ -1210,16 +1185,7 @@ impl<'a> SymbolDecoder<'a> {
             4 => self.read_carried::<3>(cdf, carried, update),
             5 => self.read_carried::<4>(cdf, carried, update),
             6 => self.read_carried::<5>(cdf, carried, update),
-            _ => (
-                self.read_trusted_len(
-                    cdf,
-                    update,
-                    #[cfg(feature = "entropy-observation")]
-                    None,
-                )
-                .unwrap_or(0),
-                0,
-            ),
+            _ => (self.read_trusted_len(cdf, update).unwrap_or(0), 0),
         }
     }
 
@@ -1237,20 +1203,8 @@ impl<'a> SymbolDecoder<'a> {
         debug_assert!(carried.is_none_or(|word| word == row_word::<N>(cdf)));
         self.ensure_buffered(15);
         match carried {
-            Some(word) => self.read_trusted_word::<N>(
-                cdf,
-                word,
-                update,
-                #[cfg(feature = "entropy-observation")]
-                None,
-            ),
-            None => self.read_trusted_word::<N>(
-                cdf,
-                row_word::<N>(cdf),
-                update,
-                #[cfg(feature = "entropy-observation")]
-                None,
-            ),
+            Some(word) => self.read_trusted_word::<N>(cdf, word, update),
+            None => self.read_trusted_word::<N>(cdf, row_word::<N>(cdf), update),
         }
     }
 
@@ -1263,40 +1217,20 @@ impl<'a> SymbolDecoder<'a> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
             return None;
         }
-        self.read_trusted_len(
-            cdf,
-            self.config.cdf_update == CdfUpdateMode::Enabled,
-            #[cfg(feature = "entropy-observation")]
-            None,
-        )
+        self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
     }
 
     #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_len(
-        &mut self,
-        cdf: &mut [u16],
-        update: bool,
-        #[cfg(feature = "entropy-observation")] syntax: Option<EntropySyntax>,
-    ) -> Option<u32> {
-        macro_rules! read_arity {
-            ($arity:literal) => {
-                self.read_trusted_arity::<$arity>(
-                    cdf,
-                    update,
-                    #[cfg(feature = "entropy-observation")]
-                    syntax,
-                )
-            };
-        }
+    fn read_trusted_len(&mut self, cdf: &mut [u16], update: bool) -> Option<u32> {
         Some(match cdf.len() {
-            3 => read_arity!(2),
-            4 => read_arity!(3),
-            5 => read_arity!(4),
-            6 => read_arity!(5),
-            7 => read_arity!(6),
-            8 => read_arity!(7),
-            9 => read_arity!(8),
+            3 => self.read_trusted_arity::<2>(cdf, update),
+            4 => self.read_trusted_arity::<3>(cdf, update),
+            5 => self.read_trusted_arity::<4>(cdf, update),
+            6 => self.read_trusted_arity::<5>(cdf, update),
+            7 => self.read_trusted_arity::<6>(cdf, update),
+            8 => self.read_trusted_arity::<7>(cdf, update),
+            9 => self.read_trusted_arity::<8>(cdf, update),
             _ => return None,
         })
     }
@@ -1384,25 +1318,14 @@ impl<'a> SymbolDecoder<'a> {
     /// non-decreasing and at most 32768, which the decoder's `rows_valid` asserts.
     #[expect(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
-    fn read_trusted_arity<const N: usize>(
-        &mut self,
-        cdf: &mut [u16],
-        update: bool,
-        #[cfg(feature = "entropy-observation")] syntax: Option<EntropySyntax>,
-    ) -> u32 {
+    fn read_trusted_arity<const N: usize>(&mut self, cdf: &mut [u16], update: bool) -> u32 {
         if cdf.len() <= N {
             return 0;
         }
         self.ensure_buffered(15);
         if (3..=6).contains(&N) && !cfg!(target_arch = "x86_64") {
             return self
-                .read_trusted_word::<N>(
-                    cdf,
-                    row_word::<N>(cdf),
-                    update,
-                    #[cfg(feature = "entropy-observation")]
-                    syntax,
-                )
+                .read_trusted_word::<N>(cdf, row_word::<N>(cdf), update)
                 .0;
         }
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
@@ -1410,19 +1333,12 @@ impl<'a> SymbolDecoder<'a> {
             && let Some(token) = lane_token()
         {
             let symbol_value = (self.dif >> SV_SHIFT) as u32;
-            return self.read_trusted_lanes::<N>(
-                token,
-                cdf,
-                symbol_value,
-                update,
-                #[cfg(feature = "entropy-observation")]
-                syntax,
-            );
+            return self.read_trusted_lanes::<N>(token, cdf, symbol_value, update);
         }
         let (symbol, cur, prev) = early_exit_search::<u16, N>(cdf, self.dif, self.range_hi);
         #[cfg(feature = "entropy-observation")]
         if self.observe_entropy {
-            self.observe_cdf::<u16, N>(cdf, symbol as u32, cur, prev, update, syntax);
+            self.observe_cdf::<u16, N>(cdf, symbol as u32, cur, prev, update);
         }
         self.consume(cur, prev);
         if update {
@@ -1452,7 +1368,6 @@ impl<'a> SymbolDecoder<'a> {
         cdf: &mut [u16],
         word: u64,
         update: bool,
-        #[cfg(feature = "entropy-observation")] syntax: Option<EntropySyntax>,
     ) -> (u32, u64) {
         let gap = (u64::from(CDF_PROB_SCALE) * LANES).wrapping_sub(word);
         let r12 = (self.range_hi >> 24) << 12;
@@ -1477,7 +1392,7 @@ impl<'a> SymbolDecoder<'a> {
         }
         #[cfg(feature = "entropy-observation")]
         if self.observe_entropy {
-            self.observe_cdf::<u16, N>(cdf, symbol, cur, prev, update, syntax);
+            self.observe_cdf::<u16, N>(cdf, symbol, cur, prev, update);
         }
         self.consume(cur, prev);
         if update {
@@ -1530,13 +1445,12 @@ impl<'a> SymbolDecoder<'a> {
         cdf: &mut [u16],
         symbol_value: u32,
         update: bool,
-        #[cfg(feature = "entropy-observation")] syntax: Option<EntropySyntax>,
     ) -> u32 {
         let (symbol, cur, prev, value, below) =
             row_search_lanes::<N>(token, cdf, symbol_value, self.range());
         #[cfg(feature = "entropy-observation")]
         if self.observe_entropy {
-            self.observe_cdf::<u16, N>(cdf, symbol, cur << 16, prev << 16, update, syntax);
+            self.observe_cdf::<u16, N>(cdf, symbol, cur << 16, prev << 16, update);
         }
         self.consume(cur << 16, prev << 16);
         if update {

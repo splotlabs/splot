@@ -41,19 +41,6 @@ use super::sign_symbol::{
 };
 use super::{CoeffLoopContextError, TxGeometry};
 
-macro_rules! read_level {
-    ($symbols:expr, $row:expr, $key:expr, $context:expr, $values:expr) => {{
-        #[cfg(feature = "block-evidence")]
-        let level = $symbols.read_trusted_with_syntax(
-            $row,
-            splot_core::symbol::EntropySyntax::new($key, $context, $values),
-        );
-        #[cfg(not(feature = "block-evidence"))]
-        let level = $symbols.read_trusted($row);
-        level
-    }};
-}
-
 const PHTHRESH: u32 = 4;
 
 /// A neighbour `[row, col]` as an offset into the level grid.
@@ -576,25 +563,28 @@ impl LevelPass<'_, '_> {
             return level;
         }
         let ctx = if LF && (!is_dc || CLASS != 0) { 7 } else { 0 };
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, LF>(ctx);
         let row = Self::range_row::<LUMA, LF>(rows, ctx);
-        level
-            + read_level!(
-                self.symbols,
-                row,
-                Self::range_key::<LUMA, LF>(),
-                "ctx",
-                [ctx as u16, 0, 0]
-            )
+        level + self.symbols.read_trusted(row)
     }
 
     #[cfg(feature = "block-evidence")]
-    const fn range_key<const LUMA: bool, const LF: bool>() -> &'static str {
-        if !LUMA {
-            "coeff_br_uv"
-        } else if LF {
-            "coeff_br_lf"
-        } else {
-            "coeff_br"
+    #[inline]
+    fn annotate_range<const LUMA: bool, const LF: bool>(&self, ctx: usize) {
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    if !LUMA {
+                        "coeff_br_uv"
+                    } else if LF {
+                        "coeff_br_lf"
+                    } else {
+                        "coeff_br"
+                    },
+                    "ctx",
+                    [ctx as u16, 0, 0],
+                ));
         }
     }
 
@@ -639,14 +629,17 @@ impl LevelPass<'_, '_> {
             let count = if CLASS == 0 { 3 } else { 2 };
             let mag = (self.sum(grid, &offsets[..count]) >> 8) & 0xff;
             let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_lf_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
             let row = row_at(rows.cdf.coeff_base_lf_uv(), ctx);
-            return read_level!(
-                self.symbols,
-                row,
-                "coeff_base_lf_uv",
-                "ctx",
-                [ctx as u16, 0, 0]
-            );
+            return self.symbols.read_trusted(row);
         }
         let (mag, range_sum) = if CLASS == 0 {
             let near = self.sum(grid, &offsets[..3]);
@@ -679,28 +672,24 @@ impl LevelPass<'_, '_> {
         };
         let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
         #[cfg(feature = "block-evidence")]
-        let tx_size_ctx = rows.tx_size as u16;
+        if self.symbols.observes_entropy() {
+            self.symbols
+                .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                    "coeff_base_lf",
+                    "tx_size_ctx,ctx,tcq_ctx",
+                    [rows.tx_size as u16, ctx as u16, q0 as u16],
+                ));
+        }
         let row = &mut row_at(rows.base_lf(), ctx)[q0];
-        let level = read_level!(
-            self.symbols,
-            row,
-            "coeff_base_lf",
-            "tx_size_ctx,ctx,tcq_ctx",
-            [tx_size_ctx, ctx as u16, q0 as u16]
-        );
+        let level = self.symbols.read_trusted(row);
         if level <= LF_NUM_BASE_LEVELS {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(range_sum, !DC || CLASS != 0);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, true>(ctx);
         let row = Self::range_row::<LUMA, true>(rows, ctx);
-        level
-            + read_level!(
-                self.symbols,
-                row,
-                Self::range_key::<LUMA, true>(),
-                "ctx",
-                [ctx as u16, 0, 0]
-            )
+        level + self.symbols.read_trusted(row)
     }
 
     /// Reads a high-frequency level, sharing the packed neighbour sum of
@@ -727,54 +716,55 @@ impl LevelPass<'_, '_> {
         let mag = (near + far) & 0xff;
         let level = if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
+            #[cfg(feature = "block-evidence")]
+            if self.symbols.observes_entropy() {
+                self.symbols
+                    .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                        "coeff_base_uv",
+                        "ctx",
+                        [ctx as u16, 0, 0],
+                    ));
+            }
             let row = row_at(rows.cdf.coeff_base_uv(), ctx);
-            read_level!(
-                self.symbols,
-                row,
-                "coeff_base_uv",
-                "ctx",
-                [ctx as u16, 0, 0]
-            )
+            self.symbols.read_trusted(row)
         } else {
             let q0 = if TCQ { self.tcq_q0 & 1 } else { 0 };
-            #[cfg(feature = "block-evidence")]
-            let tx_size_ctx = rows.tx_size as u16;
-            if CLASS == 0 {
+            let row = if CLASS == 0 {
                 let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
                 let row_index = (first | q0) & 31;
-                let row = &mut rows.base().as_flattened_mut()[row_index];
-                read_level!(
-                    self.symbols,
-                    row,
-                    "coeff_base",
-                    "tx_size_ctx,ctx,tcq_ctx",
-                    [tx_size_ctx, (row_index >> 1) as u16, q0 as u16]
-                )
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, (row_index >> 1) as u16, q0 as u16],
+                        ));
+                }
+                &mut rows.base().as_flattened_mut()[row_index]
             } else {
                 let ctx = half_capped(mag, 4) + 15;
-                let row = &mut row_at(rows.base(), ctx)[q0];
-                read_level!(
-                    self.symbols,
-                    row,
-                    "coeff_base",
-                    "tx_size_ctx,ctx,tcq_ctx",
-                    [tx_size_ctx, ctx as u16, q0 as u16]
-                )
-            }
+                #[cfg(feature = "block-evidence")]
+                if self.symbols.observes_entropy() {
+                    self.symbols
+                        .annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                            "coeff_base",
+                            "tx_size_ctx,ctx,tcq_ctx",
+                            [rows.tx_size as u16, ctx as u16, q0 as u16],
+                        ));
+                }
+                &mut row_at(rows.base(), ctx)[q0]
+            };
+            self.symbols.read_trusted(row)
         };
         if level <= NUM_BASE_LEVELS {
             return level;
         }
         let ctx = Self::br_ctx_from_word_sum::<LUMA>(near, false);
+        #[cfg(feature = "block-evidence")]
+        self.annotate_range::<LUMA, false>(ctx);
         let row = Self::range_row::<LUMA, false>(rows, ctx);
-        level
-            + read_level!(
-                self.symbols,
-                row,
-                Self::range_key::<LUMA, false>(),
-                "ctx",
-                [ctx as u16, 0, 0]
-            )
+        level + self.symbols.read_trusted(row)
     }
 
     /// Records a decoded AC level and advances the TCQ and parity state.
