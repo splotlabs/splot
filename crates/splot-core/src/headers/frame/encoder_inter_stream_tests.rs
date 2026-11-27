@@ -693,11 +693,13 @@ fn metadata_obus_parse_back() {
         ),
     ] {
         let persistence = u8::from(passthrough.is_empty()) * 2;
+        let suffix = passthrough.is_empty();
         let obu = encode_metadata_obu(
             metadata_type,
             payload.clone(),
             passthrough,
             (persistence, TemporalLayerId::from_bits(persistence)),
+            suffix,
         )
         .unwrap();
         let parsed = parse_annex_b_obus_partial(&obu);
@@ -708,7 +710,10 @@ fn metadata_obus_parse_back() {
         assert_eq!(envelope.header.obu_type, ObuType::MetadataShort);
         assert_eq!(envelope.header.temporal_layer_id.get(), persistence);
         let short = parse(envelope.payload).unwrap();
-        assert!(!short.metadata_is_suffix && !short.muh_cancel_flag);
+        assert_eq!(
+            (short.metadata_is_suffix, short.muh_cancel_flag),
+            (suffix, false)
+        );
         assert_eq!(
             (short.muh_layer_idc, short.muh_persistence_idc),
             (1, persistence)
@@ -743,6 +748,7 @@ fn metadata_obus_parse_back() {
             payload,
             passthrough,
             (0, TemporalLayerId::BASE),
+            false,
         )
         .unwrap();
         let envelope = &parse_annex_b_obus_partial(&obu).obus[0];
@@ -754,7 +760,8 @@ fn metadata_obus_parse_back() {
             MetadataType::HdrCll,
             MetadataPayload::HdrMdcv(display),
             &[],
-            (0, TemporalLayerId::BASE)
+            (0, TemporalLayerId::BASE),
+            false
         )
         .is_err()
     );
@@ -763,7 +770,8 @@ fn metadata_obus_parse_back() {
             MetadataType::IccProfile,
             MetadataPayload::IccProfile(icc),
             &[1],
-            (0, TemporalLayerId::BASE)
+            (0, TemporalLayerId::BASE),
+            false
         )
         .is_err()
     );

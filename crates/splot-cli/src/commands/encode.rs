@@ -15,8 +15,8 @@ use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
     BitDepth, ChromaSamplePosition, Config, ContentLightLevel, CroppingWindow, Encoder, FirstPass,
-    MasteringDisplay, Preset, ProfileIdc, RateControlMode, SourceFrame, ThreadCount, TileLayout,
-    Tune,
+    FrameHash, MasteringDisplay, Preset, ProfileIdc, RateControlMode, SourceFrame, ThreadCount,
+    TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -208,6 +208,10 @@ pub(crate) struct EncodeArgs {
     /// banding hints metadata OBU. The encoder does not detect banding.
     #[arg(long, value_name = "FILE")]
     banding_hints: Option<PathBuf>,
+    /// Every output frame carries an MD5 decoded frame hash metadata OBU
+    /// (AV2 § 6.16.13) of its samples before film grain, after its frame.
+    #[arg(long, value_enum)]
+    frame_hash: Option<FrameHashArg>,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -344,6 +348,13 @@ fn parse_preset_set(value: &str) -> Result<(String, String), String> {
 enum RcMode {
     Vbr,
     Cbr,
+}
+
+/// Hashes of `splot encode --frame-hash`: one over all planes, or one per plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum FrameHashArg {
+    Frame,
+    PerPlane,
 }
 
 /// Containers of `splot encode --output-format`.
@@ -485,6 +496,10 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     frame_metadata.temporal_point_info = args.temporal_point_info;
     frame_metadata.scan_type = args.scan_type_info;
     frame_metadata.banding_hints = read(&args.banding_hints)?;
+    frame_metadata.decoded_frame_hash = args.frame_hash.map(|hash| match hash {
+        FrameHashArg::Frame => FrameHash::Frame,
+        FrameHashArg::PerPlane => FrameHash::PerPlane,
+    });
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     if args.low_delay {

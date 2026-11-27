@@ -108,6 +108,9 @@ pub(crate) struct IntraFrameCoder {
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
     slot_intra: [Option<Arc<IntraCells>>; 16],
+    /// The decoded frame hash OBU of the frame in each slot, which a
+    /// show-existing frame of the slot repeats.
+    slot_hash: [Vec<u8>; 16],
     /// Stops the frames of a cancelled encoder.
     pub(crate) cancel: crate::cancel::CancelToken,
     /// Counts the searched superblocks of the encoder's frames.
@@ -423,6 +426,7 @@ impl IntraFrameCoder {
             key_frames: 0,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
+            slot_hash: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
             progress: crate::progress::Progress::default(),
         })
@@ -432,7 +436,13 @@ impl IntraFrameCoder {
 impl FrameCoder for IntraFrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
-            self.code_frame(source, &plan, qp, &self.superblock_quant(&plan, source))
+            let mut coded =
+                self.code_frame(source, &plan, qp, &self.superblock_quant(&plan, source))?;
+            if plan.show_frame || plan.implicit_output {
+                let hash = self.frame_hash_obu(&coded.recon, plan.tlayer)?;
+                coded.temporal_unit.extend(hash);
+            }
+            Ok(coded)
         })
     }
 
@@ -471,9 +481,12 @@ impl FrameCoder for IntraFrameCoder {
                 what: "a frame committed twice",
             })?;
         let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
-        for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
+        let hash = self.frame_hash_obu(&frame.recon, tlayer)?;
+        let slots = self.slot_intra.iter_mut().zip(&mut self.slot_hash);
+        for (slot, (intra, slot_hash)) in slots.enumerate() {
             if refreshed >> slot & 1 == 1 {
                 intra.clone_from(&frame.intra_cells);
+                slot_hash.clone_from(&hash);
             }
         }
         if frame.frame_type == FrameType::Key {
@@ -510,13 +523,14 @@ impl FrameCoder for IntraFrameCoder {
                 what: "a show-existing frame of a slot outside the sequence",
             })?;
         let metadata = self.output_frame_obus(display_index, tlayer)?;
-        let unit = gop::show_existing_unit(
+        let mut unit = gop::show_existing_unit(
             &self.view,
             slot,
             order_hint,
             (seed, self.multi_frame_header, leading, &metadata),
             tlayer,
         )?;
+        unit.extend(self.slot_hash.get(slot as usize).into_iter().flatten());
         let obu_type = if leading {
             splot_core::types::ObuType::LeadingSef
         } else {
@@ -751,6 +765,21 @@ impl IntraFrameCoder {
             return Ok(Vec::new());
         }
         self.output_frame_obus(plan.display_index, plan.tlayer)
+    }
+
+    /// The suffix decoded frame hash OBU of the visible `recon`; nothing
+    /// without [`crate::content::FrameMetadata::decoded_frame_hash`].
+    fn frame_hash_obu(
+        &self,
+        recon: &[Vec<u16>; 3],
+        tlayer: splot_core::types::TemporalLayerId,
+    ) -> Result<Vec<u8>> {
+        self.frame_metadata
+            .0
+            .decoded_frame_hash
+            .map_or(Ok(Vec::new()), |hash| {
+                hash.obu(recon, self.bit_depth, self.chroma.is_monochrome(), tlayer)
+            })
     }
 
     /// The per-frame metadata OBUs of the output frame `display_index` in

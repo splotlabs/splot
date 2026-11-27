@@ -193,6 +193,23 @@ fn read_unary_matches_literal_bit_loop_state() {
 }
 
 #[test]
+fn read_unary_rejects_symbol_value_not_below_range() {
+    let range_hi = SYMBOL_RANGE_INIT << 16;
+    for (dif, range_hi) in [(u64::from(range_hi) << 32, range_hi), (0, 0)] {
+        let mut decoder = SymbolDecoder::new(&[0x80, 0x00]).unwrap();
+        decoder.dif = dif;
+        decoder.range_hi = range_hi;
+        assert!(matches!(
+            decoder.read_unary(6),
+            Err(Error::InvalidSymbolDecoderState {
+                kind: SymbolDecoderErrorKind::InvalidArithmeticRange,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn read_literal_chunks_match_one_bit_loop_state() {
     let payloads = [
         [0xA7, 0x39, 0xC1, 0x5E, 0x82, 0x44, 0x19, 0xD0],

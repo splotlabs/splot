@@ -257,15 +257,25 @@ fn fill_sample_bytes<T: ReconSample>(bit_depth: BitDepth, row: &[T], row_bytes: 
 }
 
 fn hash_visible_plane<T: ReconSample>(bit_depth: BitDepth, plane: &Plane<T>, hasher: &mut Sha256) {
+    for row in plane.visible_rows() {
+        for_each_sample_byte_chunk(bit_depth, row, |bytes| hasher.update(bytes));
+    }
+}
+
+/// Passes the § 6.16.13 hash input bytes of `samples`, in order, to
+/// `update` in chunks: one byte per 8-bit sample, two little-endian bytes
+/// per 10-bit sample.
+pub fn for_each_sample_byte_chunk<T: ReconSample>(
+    bit_depth: BitDepth,
+    samples: &[T],
+    mut update: impl FnMut(&[u8]),
+) {
     let bytes_per_sample = bytes_per_sample(bit_depth);
     let mut chunk = [0u8; 4096];
-    let samples_per_chunk = chunk.len() / bytes_per_sample;
-    for row in plane.visible_rows() {
-        for samples in row.chunks(samples_per_chunk) {
-            let filled = &mut chunk[..samples.len() * bytes_per_sample];
-            fill_sample_bytes(bit_depth, samples, filled);
-            hasher.update(&*filled);
-        }
+    for samples in samples.chunks(chunk.len() / bytes_per_sample) {
+        let filled = &mut chunk[..samples.len() * bytes_per_sample];
+        fill_sample_bytes(bit_depth, samples, filled);
+        update(filled);
     }
 }
 
