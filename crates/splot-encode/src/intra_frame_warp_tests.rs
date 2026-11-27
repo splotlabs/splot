@@ -188,8 +188,16 @@ pub(super) fn zooming_stream(
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     units.extend(coded.temporal_unit);
                 }
-                crate::gop::GopStep::ShowExisting { slot, .. } => {
-                    units.extend(coder.show_existing_frame(slot, None, false).unwrap());
+                crate::gop::GopStep::ShowExisting {
+                    slot,
+                    display_index,
+                    ..
+                } => {
+                    units.extend(
+                        coder
+                            .show_existing_frame(slot, None, false, display_index)
+                            .unwrap(),
+                    );
                 }
             }
         }

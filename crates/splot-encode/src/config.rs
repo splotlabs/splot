@@ -11,7 +11,7 @@ use splot_core::headers::sequence::{ChromaFormatIdc, CroppingWindow};
 use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
-use crate::content::{ContentDescription, KeyFrameMetadata};
+use crate::content::{ContentDescription, FrameMetadata, KeyFrameMetadata};
 use crate::error::{Error, Result};
 use crate::preset::{Preset, PresetParams};
 use crate::rate_control::{Crf, check_bitrate, check_cbr, max_qindex};
@@ -160,6 +160,9 @@ pub struct Config {
     /// ICC profile, T.35 and user data payloads written in front of every
     /// key frame. None by default.
     pub key_frame_metadata: KeyFrameMetadata,
+    /// Timecode, temporal point info, scan type and banding hints metadata
+    /// written in front of every output frame. None by default.
+    pub frame_metadata: FrameMetadata,
     /// Rate-control mode.
     pub rate_control: RateControlMode,
     /// Speed preset.
@@ -251,6 +254,7 @@ impl Config {
             frame_rate: (30, 1),
             content: ContentDescription::default(),
             key_frame_metadata: KeyFrameMetadata::default(),
+            frame_metadata: FrameMetadata::default(),
             rate_control: RateControlMode::ConstantQp {
                 qp: Self::DEFAULT_QP,
             },
@@ -336,6 +340,8 @@ impl Config {
         }
         self.content.validate(self.chroma)?;
         self.key_frame_metadata.validate()?;
+        self.frame_metadata
+            .validate(self.frame_rate, self.content.timing_info)?;
         let tiles_refused = match &self.tiles {
             TileLayout::Uniform {
                 cols_log2,

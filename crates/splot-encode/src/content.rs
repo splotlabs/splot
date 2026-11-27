@@ -5,6 +5,7 @@
 //! frame as a content interpretation OBU (§ 5.15) and metadata OBUs
 //! (§ 5.17).
 
+use splot_core::bitio::BitReader;
 use splot_core::headers::content_interpretation::{
     AspectRatioInfo, ChromaSamplePosition as CodedChromaSamplePosition, ColorDescription,
     ColorPrimariesTriple, ContentInterpretation, DerivedColorInfo,
@@ -12,10 +13,12 @@ use splot_core::headers::content_interpretation::{
 use splot_core::headers::frame::{encode_content_interpretation_obu, encode_metadata_obu};
 pub use splot_core::headers::metadata::MetadataHdrCll as ContentLightLevel;
 use splot_core::headers::metadata::{
-    MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataType,
-    MetadataUserDataUnregistered,
+    MetadataHdrMdcv, MetadataIccProfile, MetadataItutT35, MetadataPayload, MetadataScanType,
+    MetadataTemporalPointInfo, MetadataTimecode, MetadataType, MetadataUserDataUnregistered,
+    parse_metadata_banding_hints,
 };
 use splot_core::headers::sequence::TimingInfo;
+use splot_core::span::ByteOffset;
 use splot_recon::PixelFormat;
 
 use crate::error::{Error, Result};
@@ -185,8 +188,15 @@ impl ContentDescription {
     /// The Annex B OBUs of a progressive stream at `frame_rate`, in the order
     /// of § 7.3.3: the content interpretation OBU, the multi-frame header
     /// OBUs `mfh`, then the mastering display and content light level
-    /// metadata OBUs. Empty when nothing is described and `mfh` is empty.
-    pub(crate) fn obus(&self, frame_rate: (u32, u32), mfh: &[u8]) -> Result<Vec<u8>> {
+    /// metadata OBUs. The content interpretation OBU is written when it
+    /// describes more than a progressive stream, or when `progressive` asks
+    /// for it.
+    pub(crate) fn obus(
+        &self,
+        frame_rate: (u32, u32),
+        mfh: &[u8],
+        progressive: bool,
+    ) -> Result<Vec<u8>> {
         let code_points = ColorPrimariesTriple {
             color_primaries: self.color_primaries,
             transfer_characteristics: self.transfer_characteristics,
@@ -212,7 +222,7 @@ impl ContentDescription {
             num_ticks_per_picture_minus_1: Some(0),
         });
         let mut obus = Vec::new();
-        if content != ContentInterpretation::progressive() {
+        if progressive || content != ContentInterpretation::progressive() {
             obus = encode_content_interpretation_obu(&content)
                 .map_err(crate::intra_frame::coding("content interpretation"))?;
         }
@@ -228,12 +238,12 @@ impl ContentDescription {
                 luminance_min: display.luminance_min,
             };
             let payload = MetadataPayload::HdrMdcv(display);
-            let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[]);
+            let obu = encode_metadata_obu(MetadataType::HdrMdcv, payload, &[], 0);
             obus.extend(obu.map_err(crate::intra_frame::coding("mastering display"))?);
         }
         if let Some(light_level) = self.content_light_level {
             let payload = MetadataPayload::HdrCll(light_level);
-            let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[]);
+            let obu = encode_metadata_obu(MetadataType::HdrCll, payload, &[], 0);
             obus.extend(obu.map_err(crate::intra_frame::coding("content light level"))?);
         }
         Ok(obus)
@@ -288,7 +298,7 @@ impl KeyFrameMetadata {
     pub(crate) fn obus(&self) -> Result<Vec<u8>> {
         let mut obus = Vec::new();
         let mut push = |metadata_type, payload, passthrough: &[u8], what| -> Result<()> {
-            let obu = encode_metadata_obu(metadata_type, payload, passthrough);
+            let obu = encode_metadata_obu(metadata_type, payload, passthrough, 0);
             obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
             Ok(())
         };
@@ -327,5 +337,151 @@ impl KeyFrameMetadata {
             )?;
         }
         Ok(obus)
+    }
+}
+
+/// Metadata that the encoder writes in front of every output frame, in a
+/// prefix metadata OBU with `NO_PERSISTENCE` (§ 6.16.3, § 7.3.3). None by
+/// default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FrameMetadata {
+    /// A full timecode (§ 6.16.7, `counting_type` 0) counted from 00:00:00
+    /// frame 0 at the configured frame rate.
+    pub timecode: bool,
+    /// `frame_presentation_time` (§ 6.16.11): the frames since the last key
+    /// frame, in the one-tick-per-picture units of the timing info.
+    pub temporal_point_info: bool,
+    /// A progressive frame that is not a duplicate (§ 6.16.10); it makes
+    /// the key frames write a content interpretation OBU.
+    pub scan_type: bool,
+    /// The bytes of `metadata_banding_hints()` (§ 5.17.8), written as given;
+    /// the encoder does not detect banding.
+    pub banding_hints: Option<Vec<u8>>,
+}
+
+impl FrameMetadata {
+    /// The most `maxPicPerSecond` that the 9-bit `n_frames` counts (§ 5.17.7).
+    const MAX_TIMECODE_RATE: u32 = 512;
+
+    /// Checks the metadata against the configured `frame_rate` and timing.
+    pub(crate) fn validate(&self, frame_rate: (u32, u32), timing_info: bool) -> Result<()> {
+        let invalid = |what| Err(Error::InvalidMetadata { what });
+        if self.timecode && frame_rate.0.div_ceil(frame_rate.1) > Self::MAX_TIMECODE_RATE {
+            return invalid("a timecode counts at most 512 frames per second (§ 6.16.7)");
+        }
+        if self.temporal_point_info && !timing_info {
+            return invalid("temporal point info counts the ticks of the timing info (§ 6.16.11)");
+        }
+        if let Some(bytes) = &self.banding_hints {
+            banding_hints(bytes)?;
+        }
+        Ok(())
+    }
+
+    /// The Annex B metadata OBUs of the output frame `display_index`, timed
+    /// by `presentation`, at
+    /// `frame_rate`: timecode, temporal point info, scan type, then banding
+    /// hints.
+    pub(crate) fn obus(
+        &self,
+        display_index: u64,
+        presentation: PresentationClock,
+        frame_rate: (u32, u32),
+    ) -> Result<Vec<u8>> {
+        let mut obus = Vec::new();
+        let mut push = |metadata_type, payload, what| -> Result<()> {
+            let obu = encode_metadata_obu(metadata_type, payload, &[], 2);
+            obus.extend(obu.map_err(crate::intra_frame::coding(what))?);
+            Ok(())
+        };
+        if self.timecode {
+            let rate = u64::from(frame_rate.0.div_ceil(frame_rate.1).max(1));
+            let seconds = display_index / rate;
+            let field = |value: u64, modulus: u64| Some((value % modulus) as u8);
+            let timecode = MetadataTimecode {
+                counting_type: 0,
+                full_timestamp_flag: true,
+                discontinuity_flag: false,
+                cnt_dropped_flag: false,
+                n_frames: (display_index % rate) as u16,
+                seconds_value: field(seconds, 60),
+                minutes_value: field(seconds / 60, 60),
+                hours_value: field(seconds / 3600, 24),
+                time_offset_length: 0,
+                time_offset_value: None,
+            };
+            push(
+                MetadataType::Timecode,
+                MetadataPayload::Timecode(timecode),
+                "timecode",
+            )?;
+        }
+        if self.temporal_point_info {
+            let payload = MetadataPayload::TemporalPointInfo(MetadataTemporalPointInfo {
+                frame_presentation_time: presentation.time(display_index)?,
+            });
+            push(
+                MetadataType::TemporalPointInfo,
+                payload,
+                "temporal point info",
+            )?;
+        }
+        if self.scan_type {
+            let payload = MetadataPayload::ScanType(MetadataScanType {
+                mps_pic_struct_type: 0,
+                mps_source_scan_type_idc: 1,
+                mps_duplicate_flag: false,
+            });
+            push(MetadataType::ScanType, payload, "scan type")?;
+        }
+        if let Some(bytes) = &self.banding_hints {
+            let payload = MetadataPayload::BandingHints(banding_hints(bytes)?);
+            push(MetadataType::BandingHints, payload, "banding hints")?;
+        }
+        Ok(obus)
+    }
+}
+
+/// The display indices of the two last committed random access points (key
+/// frames), from which `frame_presentation_time` counts (§ 6.16.11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PresentationClock {
+    current_key: u64,
+    previous_key: u64,
+}
+
+impl PresentationClock {
+    /// Records the key frame `display_index` once it is committed.
+    pub(crate) fn key(&mut self, display_index: u64) {
+        self.previous_key = core::mem::replace(&mut self.current_key, display_index);
+    }
+
+    /// The `frame_presentation_time` of `display_index`, one tick per frame:
+    /// from the previous random access point for a key frame (coded before
+    /// its commit) or a leading frame, else from the most recent one.
+    pub(crate) fn time(self, display_index: u64) -> Result<u32> {
+        let from = if display_index > self.current_key {
+            self.current_key
+        } else {
+            self.previous_key
+        };
+        display_index
+            .checked_sub(from)
+            .and_then(|ticks| u32::try_from(ticks).ok())
+            .ok_or(Error::Unsupported {
+                what: "a frame presentation time outside 32 bits or before its random access point",
+            })
+    }
+}
+
+/// `bytes` parsed as `metadata_banding_hints()`, padded to whole bytes.
+fn banding_hints(bytes: &[u8]) -> Result<splot_core::headers::metadata::MetadataBandingHints> {
+    let mut reader = BitReader::new(bytes, ByteOffset::new(0));
+    match parse_metadata_banding_hints(&mut reader) {
+        Ok(hints) if reader.remaining_bits() < 8 => Ok(hints),
+        _ => Err(Error::InvalidMetadata {
+            what: "banding hints are one metadata_banding_hints() padded to a byte (§ 5.17.8)",
+        }),
     }
 }

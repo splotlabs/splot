@@ -748,3 +748,54 @@ fn metadata_files_write_metadata_obus() {
         let _ = std::fs::remove_file(path);
     }
 }
+
+/// `--timecode`, `--temporal-point-info`, `--scan-type-info` and
+/// `--banding-hints` put one metadata OBU of each kind in front of every
+/// output frame, `splot validate --strict` accepts the stream, and a
+/// stream without timing info or a bad banding hints file is refused.
+#[test]
+fn frame_metadata_flags_write_metadata_obus() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let banding = temp_input("banding", &[0xA8, 0xA6]);
+    let bad_banding = temp_input("banding", &[0xA8]);
+    let ivf = temp_output("ivf");
+    let encode = |extra: &[&str]| {
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.extend([ivf.to_str().unwrap(), "--keyint", "4"]);
+        args.extend(extra);
+        splot(&args).status.success()
+    };
+    let flags = [
+        "--timing-info",
+        "--timecode",
+        "--temporal-point-info",
+        "--scan-type-info",
+        "--banding-hints",
+        banding.to_str().unwrap(),
+    ];
+    assert!(encode(&flags));
+    for args in [vec!["inspect", "--json"], vec!["validate", "--strict"]] {
+        let mut args = args;
+        args.push(ivf.to_str().unwrap());
+        let output = splot(&args);
+        assert!(output.status.success(), "{output:?}");
+        if args[0] == "inspect" {
+            let json = String::from_utf8(output.stdout).unwrap();
+            for name in [
+                "METADATA_TYPE_TIMECODE",
+                "METADATA_TYPE_TEMPORAL_POINT_INFO",
+                "METADATA_TYPE_SCAN_TYPE",
+                "METADATA_TYPE_BANDING_HINTS",
+            ] {
+                let named = json.matches(name).count();
+                assert!(named >= FRAMES && named % FRAMES == 0, "{name}: {named}");
+            }
+        }
+    }
+    assert!(!encode(&flags[1..]));
+    assert!(!encode(&["--banding-hints", bad_banding.to_str().unwrap()]));
+    for path in [input, banding, bad_banding, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
