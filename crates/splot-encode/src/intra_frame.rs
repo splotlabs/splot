@@ -1346,6 +1346,13 @@ impl PaddedSource {
         (&self.planes[tx.plane][tx.y * stride + tx.x..], stride)
     }
 
+    /// The visible luma width and height.
+    pub(crate) fn visible_luma(&self) -> (usize, usize) {
+        self.visible
+            .first()
+            .map_or((0, 0), |size| (size.width(), size.height()))
+    }
+
     /// SATD between the source and the row-major `prediction` of `tx`.
     pub(crate) fn satd(
         &self,

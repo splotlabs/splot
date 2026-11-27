@@ -189,3 +189,65 @@ fn avm_decodes_refine_all_streams_like_splot() {
     );
     assert!(avm == expected, "AVM output differs");
 }
+
+/// `opfl_refine_all` (`on`) or the switchable default with compound types 2.
+fn with_typed(on: bool) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        opfl_refine_all: on,
+        compound_types: 2,
+        ..fast_p6()
+    }))
+}
+
+/// Codes a 72x40 panning stream with `preset` on one thread and returns the
+/// refined references and the dropped types that the typed search counted.
+fn typed_counts(preset: &'static PresetParams) -> [usize; 2] {
+    use crate::mode_decision::{TYPED_DROPPED, TYPED_REFINED};
+    let mut config = config(72, 40, BitDepth::Eight, 6, 200);
+    config.threads = splot_parallel::ThreadCount::from(1);
+    TYPED_REFINED.set(0);
+    TYPED_DROPPED.set(0);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    super::carry::planned_stream_of(&config, coder, panning_frame, 200);
+    [TYPED_REFINED.get(), TYPED_DROPPED.get()]
+}
+
+/// With `opfl_refine_all` a refined candidate keeps only the compound types
+/// that beat the decoder's refined average, so types that beat only the
+/// unrefined average are dropped; without it every candidate keeps the
+/// closed-form average as its reference.
+#[test]
+fn refined_candidates_keep_types_that_beat_the_refined_average() {
+    let [refined, dropped] = typed_counts(with_typed(true));
+    assert!(refined > 0 && dropped > 0, "{refined} {dropped}");
+    assert_eq!(typed_counts(with_typed(false)), [0, 0]);
+}
+
+/// The closed-form average cost of the search predictions and the cost of
+/// the decoder's plain average prediction are in the same units: in 8-bit
+/// and 10-bit streams no candidate differs by more than 1% and their sums by
+/// more than 0.5%, leaves past the frame edge included.
+#[test]
+fn closed_form_average_matches_the_decoder_average() {
+    use crate::mode_decision::TYPED_UNITS;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let mut config = config(72, 40, bit_depth, 6, 200);
+        config.threads = splot_parallel::ThreadCount::from(1);
+        TYPED_UNITS.set(Some(Vec::new()));
+        let coder = IntraFrameCoder::with_preset(&config, with_typed(true)).unwrap();
+        super::carry::planned_stream_of(&config, coder, panning_frame, 200);
+        let units = TYPED_UNITS.take().unwrap();
+        assert!(!units.is_empty(), "{bit_depth:?}");
+        let (closed, decoded) = units.iter().fold((0, 0), |(c, d), &(x, y)| (c + x, d + y));
+        assert!(
+            (closed - decoded).abs() * 200 <= closed,
+            "{bit_depth:?} {closed} {decoded}"
+        );
+        for &(closed, decoded) in &units {
+            assert!(
+                (closed - decoded).abs() * 100 <= closed,
+                "{bit_depth:?} {closed} {decoded}"
+            );
+        }
+    }
+}
