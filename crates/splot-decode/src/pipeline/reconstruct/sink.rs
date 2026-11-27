@@ -583,6 +583,8 @@ pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
         luma_context,
         dpcm,
         bit_depth,
+        #[cfg(feature = "block-evidence")]
+        Some((x, y)),
     )
     .and_then(|()| {
         workspace

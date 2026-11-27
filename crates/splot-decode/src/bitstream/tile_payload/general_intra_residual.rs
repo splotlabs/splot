@@ -1863,6 +1863,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<
     secondary: Option<&SecondaryInverseTransform>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")] capture_origin: Option<(usize, usize)>,
 ) -> Result<(), GeneralIntraResidualError> {
     let setup = reconstruct_block_setup(
         prediction.len(),
@@ -1886,6 +1887,11 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let residual = reconstruct::intra_residual(backend, block, &setup, secondary, scratch)?;
+        #[cfg(feature = "block-evidence")]
+        if let Some((x, y)) = capture_origin {
+            let size = splot_recon::IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;
+            reconstruct::record_residual(plane_id, x, y, size, residual, false);
+        }
         splot_recon::reconstruct_add_residual_with(backend, prediction, residual, bit_depth, out)
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;

@@ -174,6 +174,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_wi
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
+    #[cfg(feature = "block-evidence")] capture_origin: Option<(usize, usize)>,
 ) -> Result<(), GeneralIntraResidualError> {
     let (plane_id, dpcm, secondary) = if let Some(luma_context) = luma_context {
         (
@@ -206,6 +207,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_wi
         secondary.as_ref(),
         dpcm,
         bit_depth,
+        #[cfg(feature = "block-evidence")]
+        capture_origin,
     )
 }
 
@@ -834,7 +837,12 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
 }
 
 #[inline]
-fn capture_residual(plane: PlaneId, x: usize, y: usize, size: IntraRectBlockSize) -> bool {
+pub(super) fn capture_residual(
+    plane: PlaneId,
+    x: usize,
+    y: usize,
+    size: IntraRectBlockSize,
+) -> bool {
     #[cfg(feature = "block-evidence")]
     {
         stages::captures_block(plane, stages::block_rect(x, y, size))
@@ -847,7 +855,7 @@ fn capture_residual(plane: PlaneId, x: usize, y: usize, size: IntraRectBlockSize
 }
 
 #[cfg(feature = "block-evidence")]
-fn record_residual(
+pub(super) fn record_residual(
     plane: PlaneId,
     x: usize,
     y: usize,

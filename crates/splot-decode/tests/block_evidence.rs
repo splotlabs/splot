@@ -630,8 +630,11 @@ fn stage_samples_match_avm_and_preserve_output() {
     const TEN: &[u8] = include_bytes!(
         "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
     );
+    const GDF: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-gdf-xtile-lr-512x256-q190.ivf"
+    );
     use DecodeStage::{
-        Ccso, Cdef, Deblock, Prediction, Reconstruction, Reference, Residual, Restoration,
+        Ccso, Cdef, Deblock, Gdf, Prediction, Reconstruction, Reference, Residual, Restoration,
     };
     let eight: &[(DecodeStage, i32)] = &[
         (Prediction, 128),
@@ -651,9 +654,24 @@ fn stage_samples_match_avm_and_preserve_output() {
         (Reference, 901),
     ];
 
+    let eight_clip: &[(DecodeStage, i32)] =
+        &[(Prediction, 225), (Residual, 33), (Reconstruction, 255)];
+    let ten_clip: &[(DecodeStage, i32)] =
+        &[(Prediction, 882), (Residual, 156), (Reconstruction, 1023)];
+    let gdf: &[(DecodeStage, i32)] = &[
+        (Deblock, 248),
+        (Cdef, 248),
+        (Ccso, 248),
+        (Gdf, 249),
+        (Reference, 249),
+    ];
+
     for (fixture, index, region, golden) in [
         (EIGHT, 0, rect(4, 31, 1, 1), eight),
         (TEN, 1, rect(127, 50, 1, 1), ten),
+        (GDF, 0, rect(145, 42, 1, 1), eight_clip),
+        (GDF, 0, rect(503, 42, 1, 1), gdf),
+        (TEN, 1, rect(31, 20, 1, 1), ten_clip),
     ] {
         for threads in [1, 4] {
             let mut normal = Decoder::new(settings(threads)).unwrap();
@@ -683,4 +701,64 @@ fn stage_samples_match_avm_and_preserve_output() {
             }
         }
     }
+}
+
+#[test]
+fn stage_budget_and_cancellation_preserve_normal_output() {
+    use splot_decode::block_evidence::StageEvidenceStatus;
+    use splot_recon::PlaneId;
+
+    let mut normal = Decoder::new(settings(4)).unwrap();
+    let base = picture_hashes(&decode(&mut normal, TILES).unwrap());
+    for status in [
+        BlockEvidenceStatus::Truncated,
+        BlockEvidenceStatus::Cancelled,
+    ] {
+        let request = BlockEvidenceRequest::new(|_| true, None, 0, 0)
+            .with_stage_samples(PlaneId::Y, rect(0, 0, 12, 12))
+            .with_cancellation(move || status == BlockEvidenceStatus::Cancelled);
+        let (report, pictures) = capture(TILES, 4, request);
+        assert_eq!(report.status, status);
+        assert_eq!(base, picture_hashes(&pictures));
+        assert!(report.stages.iter().all(|stage| {
+            stage.status == StageEvidenceStatus::Uncaptured
+                && stage.samples.is_empty()
+                && stage.region.is_none()
+        }));
+    }
+}
+
+#[test]
+fn film_grain_presentation_keeps_the_reference_values() {
+    use splot_decode::PictureSamples;
+    use splot_decode::block_evidence::DecodeStage;
+    use splot_recon::PlaneId;
+
+    const GRAIN: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-filmgrain-inter-64x64-10bit.ivf"
+    );
+    let request = BlockEvidenceRequest::new(|_| true, None, 0, 4096)
+        .with_stage_samples(PlaneId::U, rect(17, 0, 1, 1));
+    let (mut decoder, capture) =
+        Decoder::new_with_block_evidence(settings(4).with_skip_film_grain(true), request).unwrap();
+    let decoded = decode(&mut decoder, GRAIN).unwrap();
+    let reference = &decoded[0];
+    assert!(reference.has_film_grain());
+    let report = capture.take().unwrap();
+    assert_eq!(report.frame.unwrap().provenance, reference.provenance());
+    let actual = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == DecodeStage::Reference)
+        .unwrap();
+    assert_eq!(actual.samples, [961]);
+
+    let sample = |picture: &Picture| match picture.plane(PlaneId::U).unwrap() {
+        PictureSamples::Ten(plane) => plane.visible_rows().next().unwrap()[17],
+        PictureSamples::Eight(_) => panic!("expected 10-bit film-grain fixture"),
+    };
+    let presentation = reference.apply_film_grain().unwrap();
+    assert_eq!(reference.provenance(), presentation.provenance());
+    assert_eq!(sample(&presentation), 940);
+    assert_eq!(sample(reference), 961);
 }

@@ -164,7 +164,7 @@ pub enum BlockEvidenceStatus {
     Cancelled,
     /// The decode session ended before it admitted a matching coded frame.
     FrameNotFound,
-    /// The matching frame does not use the coding block walk.
+    /// The matching frame has no requested block walk or visible plane region.
     Unavailable,
     /// Decode failed. Records, if present, may be incomplete.
     DecodeFailed,
@@ -432,13 +432,17 @@ impl BlockEvidenceState {
         }
         let stopped = state.stopped.take();
         let walking = core::mem::take(&mut state.walking);
-        let status = if !decoded {
+        let mut status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
         } else if let Some(stopped) = stopped {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
-        } else if walking {
+        } else if if self.captures_stages() {
+            state.stages.is_some() && state.stage_depth.is_some()
+        } else {
+            walking
+        } {
             BlockEvidenceStatus::Complete
         } else if frame.is_some() {
             BlockEvidenceStatus::Unavailable
@@ -451,7 +455,13 @@ impl BlockEvidenceState {
         let stages =
             if let (Some(stages), Some(depth)) = (state.stages.take(), state.stage_depth.take()) {
                 state.remaining_bytes -= stages.bytes();
-                stages.finish(depth)
+                match stages.finish(depth, walking, status != BlockEvidenceStatus::Complete) {
+                    Ok(stages) => stages,
+                    Err(error) => {
+                        status = error;
+                        Vec::new()
+                    }
+                }
             } else {
                 Vec::new()
             };

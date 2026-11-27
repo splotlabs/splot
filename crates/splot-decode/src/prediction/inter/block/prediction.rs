@@ -269,12 +269,7 @@ pub(super) fn capture_inter_prediction<T: ReconSample>(
     if chroma && !placed.predict_chroma {
         return;
     }
-    let mut mc = placed.motion_compensation_rect();
-    mc.chroma_luma_x = placed.chroma_luma_x();
-    mc.chroma_luma_y = placed.chroma_luma_y();
-    mc.chroma_luma_w = placed.chroma_luma_w();
-    mc.chroma_luma_h = placed.chroma_luma_h();
-    let (x, y, width, height) = mc.plane_rect(
+    let (x, y, width, height) = placed.motion_compensation_rect().plane_rect(
         plane,
         u32::from(u8::from(chroma) * format.subsampling_x()),
         u32::from(u8::from(chroma) * format.subsampling_y()),

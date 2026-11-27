@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::{BitDepth, PlaneId, PlaneRect, ReconSample};
+use std::cell::RefCell;
+use std::sync::Arc;
 
-use super::BlockEvidenceStatus;
+use splot_recon::{
+    BitDepth, CurrentFrameSurface, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample,
+};
+
+use super::{BlockEvidenceState, BlockEvidenceStatus};
 
 /// Sample boundaries in the AV2 decoder.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,37 +158,44 @@ impl StageSamples {
         Ok(())
     }
 
-    pub(super) fn finish(self, bit_depth: BitDepth) -> Vec<StageEvidence> {
-        STAGES
-            .into_iter()
-            .zip(self.buffers)
-            .map(|(stage, buf)| {
-                let status =
-                    if buf.applied && !buf.samples.is_empty() && buf.covered == buf.samples.len() {
-                        StageEvidenceStatus::Applied
-                    } else if buf.skipped && !buf.applied {
-                        StageEvidenceStatus::Skipped
-                    } else if matches!(stage, DecodeStage::Prediction | DecodeStage::Residual) {
-                        if buf.applied {
-                            StageEvidenceStatus::Uncaptured
-                        } else {
-                            StageEvidenceStatus::Unsupported
-                        }
-                    } else {
-                        StageEvidenceStatus::Uncaptured
-                    };
-                let captured = !buf.samples.is_empty() && buf.covered == buf.samples.len();
-                StageEvidence {
-                    stage,
-                    status,
-                    plane: self.plane,
-                    plane_extent: self.extent,
-                    region: captured.then_some(self.region),
-                    bit_depth,
-                    samples: if captured { buf.samples } else { Vec::new() },
+    pub(super) fn finish(
+        self,
+        bit_depth: BitDepth,
+        walked: bool,
+        interrupted: bool,
+    ) -> Result<Vec<StageEvidence>, BlockEvidenceStatus> {
+        let mut reports = Vec::new();
+        reports
+            .try_reserve_exact(STAGES.len())
+            .map_err(|_| BlockEvidenceStatus::AllocationFailed)?;
+        for (stage, buf) in STAGES.into_iter().zip(self.buffers) {
+            let captured = !buf.samples.is_empty() && buf.covered == buf.samples.len();
+            let status = if captured {
+                if buf.applied {
+                    StageEvidenceStatus::Applied
+                } else {
+                    StageEvidenceStatus::Skipped
                 }
-            })
-            .collect()
+            } else if !interrupted
+                && !buf.applied
+                && !buf.skipped
+                && (!walked || matches!(stage, DecodeStage::Prediction | DecodeStage::Residual))
+            {
+                StageEvidenceStatus::Unsupported
+            } else {
+                StageEvidenceStatus::Uncaptured
+            };
+            reports.push(StageEvidence {
+                stage,
+                status,
+                plane: self.plane,
+                plane_extent: self.extent,
+                region: captured.then_some(self.region),
+                bit_depth,
+                samples: if captured { buf.samples } else { Vec::new() },
+            });
+        }
+        Ok(reports)
     }
 }
 
@@ -224,13 +236,6 @@ pub(super) fn reference<T: ReconSample>(
             .map(|value| i32::from(value.to_u16()))
     });
 }
-
-use std::cell::RefCell;
-use std::sync::Arc;
-
-use splot_recon::{CurrentFrameSurface, IntraRectBlockSize};
-
-use super::BlockEvidenceState;
 
 thread_local! {
     static RECON_CAPTURE: RefCell<Option<Arc<BlockEvidenceState>>> = const { RefCell::new(None) };

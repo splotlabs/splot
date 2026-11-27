@@ -660,7 +660,9 @@ impl InterReconCommand {
             )?;
         }
         #[cfg(feature = "block-evidence")]
-        super::prediction::capture_inter_prediction(sink, &self.placed);
+        if !self.is_tip() {
+            super::prediction::capture_inter_prediction(sink, &self.placed);
+        }
         let Some(block_residual) = self.placed.block.residual.as_ref() else {
             return Ok(());
         };
