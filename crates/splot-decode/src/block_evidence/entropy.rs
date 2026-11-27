@@ -23,7 +23,8 @@ pub enum BlockEntropyScope {
     /// Arithmetic reads during one coding block's parse. Excludes its parent partition.
     Block(BlockEvidenceId),
     /// Arithmetic reads during one transform's coefficient parse, from `all_zero`
-    /// through the last coefficient read. Excludes shared transform partition syntax.
+    /// through the last coefficient read. Excludes transform partition syntax.
+    /// Shared cross-chroma reads in this interval have no single transform owner.
     Transform(BlockTransformId),
 }
 
@@ -104,9 +105,9 @@ impl BlockEvidenceTile<'_> {
         self,
         scope: BlockEntropyScope,
         tile_payload_bytes: u64,
-        observer: &EntropyObserver,
+        observer: EntropyObserver,
     ) {
-        let capture = observer.take();
+        let capture = observer.into_capture();
         if matches!(scope, BlockEntropyScope::Transform(_)) && capture.end_ordinal == 0 {
             return;
         }

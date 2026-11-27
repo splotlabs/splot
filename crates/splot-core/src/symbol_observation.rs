@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard};
 
 use super::{CDF_COUNT_SHIFT, CdfStorage};
 
@@ -143,15 +143,12 @@ pub struct EntropyCapture {
     scope_tag: Option<[u32; 4]>,
 }
 
-struct Observation {
+/// Record sink shared by an observing decoder and its temporary state copies.
+pub struct EntropyObserver {
     capture: Mutex<EntropyCapture>,
     limit: usize,
     cancelled: Box<dyn Fn() -> bool + Send + Sync>,
 }
-
-/// Record sink shared by a decoder and its temporary state copies.
-#[derive(Clone)]
-pub struct EntropyObserver(Arc<Observation>);
 
 impl std::fmt::Debug for EntropyObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -167,32 +164,33 @@ impl EntropyObserver {
         max_bytes: usize,
         cancelled: impl Fn() -> bool + Send + Sync + 'static,
     ) -> Self {
-        Self(Arc::new(Observation {
+        Self {
             capture: Mutex::default(),
             limit: max_events.min(max_bytes / size_of::<EntropySymbol>()),
             cancelled: Box::new(cancelled),
-        }))
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, EntropyCapture> {
-        self.0
-            .capture
+        self.capture
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Takes the observations. Detach all decoder copies before calling this.
+    /// Returns the observations after all decoder copies release this observer.
     #[must_use]
-    pub fn take(&self) -> EntropyCapture {
-        core::mem::take(&mut *self.lock())
+    pub fn into_capture(self) -> EntropyCapture {
+        self.capture
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(super) fn annotate(&self, syntax: EntropySyntax) {
         self.lock().next_syntax = Some(syntax);
     }
 
-    pub(super) fn set_scope_tag(&self, tag: Option<[u32; 4]>) {
-        self.lock().scope_tag = tag;
+    pub(super) fn replace_scope_tag(&self, tag: Option<[u32; 4]>) -> Option<[u32; 4]> {
+        core::mem::replace(&mut self.lock().scope_tag, tag)
     }
 
     pub(super) fn push(&self, mut event: EntropySymbol) {
@@ -204,13 +202,13 @@ impl EntropyObserver {
         if capture.stopped.is_some() {
             return;
         }
-        capture.stopped = if (self.0.cancelled)() {
+        capture.stopped = if (self.cancelled)() {
             Some(EntropyCaptureStop::Cancelled)
-        } else if capture.symbols.len() == self.0.limit {
+        } else if capture.symbols.len() == self.limit {
             Some(EntropyCaptureStop::Limit)
         } else {
             let current = capture.symbols.capacity();
-            let next = current.saturating_mul(2).max(16).min(self.0.limit);
+            let next = current.saturating_mul(2).max(16).min(self.limit);
             if capture.symbols.len() != current
                 || capture.symbols.try_reserve_exact(next - current).is_ok()
             {
@@ -233,14 +231,29 @@ mod tests {
 
         let mut decoder = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
         let observer = EntropyObserver::new(2, usize::MAX, || false);
-        decoder.set_entropy_observer(Some(observer.clone()));
         let mut row = [16384, 0, 0];
-        assert_eq!(decoder.read_trusted(&mut row), 0);
-        assert_eq!(row, [17408, 1 << CDF_COUNT_SHIFT, 0]);
-        assert_eq!(decoder.read_trusted(&mut row), 0);
-        decoder.set_entropy_observer(None);
+        decoder.with_entropy_observer(&observer, |scoped| {
+            assert_eq!(scoped.read_trusted(&mut row), 0);
+            assert_eq!(row, [17408, 1 << CDF_COUNT_SHIFT, 0]);
+            let mut copied = scoped.clone();
+            assert_eq!(copied.read_trusted(&mut row), 0);
+            *scoped = copied;
+        });
 
-        let capture = observer.take();
+        let mut ordinary = SymbolDecoder::new(&[0x00, 0x80]).unwrap();
+        let mut ordinary_row = [16384, 0, 0];
+        for _ in 0..2 {
+            assert_eq!(ordinary.read_trusted(&mut ordinary_row), 0);
+        }
+        assert_eq!(decoder.checkpoint(), ordinary.checkpoint());
+        assert_eq!(row, ordinary_row);
+        assert_eq!(
+            decoder.read_trusted(&mut row),
+            ordinary.read_trusted(&mut ordinary_row)
+        );
+        assert_eq!(decoder.checkpoint(), ordinary.checkpoint());
+
+        let capture = observer.into_capture();
         assert_eq!(capture.stopped, None);
         assert_eq!(capture.end_ordinal, 2);
         let first = capture.symbols[0].cdf.unwrap();

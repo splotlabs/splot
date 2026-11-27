@@ -1002,7 +1002,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let record_transform = symbols.observes_entropy();
     #[cfg(feature = "block-evidence")]
     if record_transform {
-        symbols.set_entropy_scope_tag(Some([
+        let _ = symbols.replace_entropy_scope_tag(Some([
             block.plane as u32,
             block.x as u32,
             block.y as u32,
@@ -1014,7 +1014,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     );
     #[cfg(feature = "block-evidence")]
     if record_transform {
-        symbols.set_entropy_scope_tag(None);
+        let _ = symbols.replace_entropy_scope_tag(None);
     }
     #[cfg(feature = "block-evidence")]
     if scoped {
@@ -1384,7 +1384,22 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
+        #[cfg(feature = "block-evidence")]
+        let transform = if symbols.observes_entropy() {
+            symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                "cctx_type",
+                "",
+                [0; 3],
+            ));
+            symbols.replace_entropy_scope_tag(None)
+        } else {
+            None
+        };
         metadata.cctx_type = Some(read_row(symbols, cdfs.block_rows_mut().cctx_type()));
+        #[cfg(feature = "block-evidence")]
+        if transform.is_some() {
+            let _ = symbols.replace_entropy_scope_tag(transform);
+        }
     }
     if lossless {
         if !is_inter && input.fsc_mode {

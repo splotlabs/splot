@@ -751,7 +751,7 @@ pub struct SymbolDecoder<'a> {
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
     #[cfg(feature = "entropy-observation")]
-    observer: Option<EntropyObserver>,
+    observer: Option<&'a EntropyObserver>,
     #[cfg(feature = "entropy-observation")]
     observe_entropy: bool,
 }
@@ -810,11 +810,28 @@ impl<'a> SymbolDecoder<'a> {
         })
     }
 
-    /// Replaces the observer for subsequent arithmetic reads.
+    /// Records reads from a scoped copy of the current decoder.
+    /// Read from that copy without replacing its payload or configuration.
+    /// This method advances the original decoder to the final arithmetic state.
     #[cfg(feature = "entropy-observation")]
-    pub fn set_entropy_observer(&mut self, observer: Option<EntropyObserver>) {
-        self.observe_entropy = observer.is_some();
-        self.observer = observer;
+    pub fn with_entropy_observer<'scope, T>(
+        &mut self,
+        observer: &'scope EntropyObserver,
+        read: impl FnOnce(&mut SymbolDecoder<'scope>) -> T,
+    ) -> T
+    where
+        'a: 'scope,
+    {
+        let mut decoder = self.clone();
+        decoder.observer = Some(observer);
+        decoder.observe_entropy = true;
+        let result = read(&mut decoder);
+        self.dif = decoder.dif;
+        self.buffered = decoder.buffered;
+        self.fed_bits = decoder.fed_bits;
+        self.range_hi = decoder.range_hi;
+        self.frame_symbol_count = decoder.frame_symbol_count;
+        result
     }
 
     /// Enables or pauses recording to the attached observer.
@@ -830,19 +847,19 @@ impl<'a> SymbolDecoder<'a> {
         self.observe_entropy
     }
 
-    /// Sets the caller's scope tag for subsequent captured reads.
+    /// Replaces the caller's scope tag for subsequent captured reads.
     #[cfg(feature = "entropy-observation")]
-    pub fn set_entropy_scope_tag(&self, tag: Option<[u32; 4]>) {
-        if let Some(observer) = &self.observer {
-            observer.set_scope_tag(tag);
-        }
+    pub fn replace_entropy_scope_tag(&self, tag: Option<[u32; 4]>) -> Option<[u32; 4]> {
+        self.observer
+            .as_ref()
+            .and_then(|observer| observer.replace_scope_tag(tag))
     }
 
     /// Adds syntax context to the next arithmetic read.
     #[cfg(feature = "entropy-observation")]
     pub fn annotate_entropy(&self, syntax: EntropySyntax) {
         if self.observe_entropy
-            && let Some(observer) = &self.observer
+            && let Some(observer) = self.observer
         {
             observer.annotate(syntax);
         }
@@ -858,7 +875,7 @@ impl<'a> SymbolDecoder<'a> {
         prev: u32,
         updates: bool,
     ) {
-        if let Some(observer) = &self.observer {
+        if let Some(observer) = self.observer {
             observer.push(EntropySymbol {
                 ordinal: 0,
                 syntax: None,
@@ -877,7 +894,7 @@ impl<'a> SymbolDecoder<'a> {
     #[cold]
     fn observe_bypass(&self, value: u32, bits: u32, coding: EntropyCoding) {
         if bits != 0
-            && let Some(observer) = &self.observer
+            && let Some(observer) = self.observer
         {
             observer.push(EntropySymbol {
                 ordinal: 0,
@@ -1375,7 +1392,7 @@ impl<'a> SymbolDecoder<'a> {
         }
         #[cfg(feature = "entropy-observation")]
         if self.observe_entropy {
-            self.observe_cdf::<u16, N>(cdf, symbol as u32, cur, prev, update);
+            self.observe_cdf::<u16, N>(cdf, symbol, cur, prev, update);
         }
         self.consume(cur, prev);
         if update {
