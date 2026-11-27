@@ -306,12 +306,11 @@ fn templates_match_the_scalar_process_on_128_bit_vectors() {
 
 #[test]
 fn syntax_the_model_cannot_code_is_an_error() {
-    let mut rng = TestRng(1);
     let valid = || model(&mut TestRng(2), 2, [true; 3], false, Coefficients::Random);
-    let mut reject = |model: FilmGrainModel, field: &'static str| {
+    let reject = |model: FilmGrainModel, field: &'static str| {
         let grain = ActiveFilmGrain {
             model: &model,
-            grain_seed: rng.next() as u16,
+            grain_seed: 0,
         };
         let result = baseline_simd!(simd => generate_grain(simd, &grain, 1, 1, 8, (-128, 127)));
         assert_eq!(
@@ -322,7 +321,6 @@ fn syntax_the_model_cannot_code_is_an_error() {
 
     let mut lag = valid();
     lag.ar_coeff_lag = 4;
-    lag.ar_coeffs_y = vec![0; 40];
     reject(lag, "ar_coeff_lag");
 
     let mut count = valid();
