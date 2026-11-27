@@ -261,9 +261,109 @@ fn lossless_palette_streams_decode_to_the_source_on_any_thread_count() {
     });
 }
 
+/// The local area (§ 5.18.3.4 `allow_local_intrabc`) gives the IntraBC
+/// search vectors in one superblock row of these small frames.
+const INTRABC: [&[(&str, &str)]; 3] = [
+    &[("lossless_intrabc", "1"), ("intrabc_local", "1")],
+    &[
+        ("lossless_intrabc", "1"),
+        ("intrabc_local", "1"),
+        ("lossless_inter_tx", "1"),
+    ],
+    &[
+        ("lossless_intrabc", "1"),
+        ("intrabc_local", "1"),
+        ("lossless_inter_tx", "2"),
+        ("lossless_fsc", "2"),
+    ],
+];
+
+/// With `lossless_intrabc`, key and intra-only frames of drawn text code
+/// IntraBC leaves, alone, with the 4x4 type choice of `lossless_inter_tx`
+/// and with its `lossless_tx_size = 1` trial next to FSC; the streams decode
+/// to the source samples with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn lossless_intrabc_streams_decode_to_the_source_on_any_thread_count() {
+    each_case(CASES, |case| {
+        for overrides in INTRABC {
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::CODED_INTRABC.set(0);
+            let (units, source) = lossless_stream_of(TEXT, case, 1, 8, overrides);
+            let coded = crate::tile_writer::CODED_INTRABC.get();
+            assert!(coded > 0, "{name}: no IntraBC leaf");
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+            for threads in [2, 8] {
+                let other = lossless_stream_of(TEXT, case, threads, 8, overrides).0;
+                assert_eq!(other, units, "{name} {threads}");
+            }
+        }
+    });
+}
+
+/// One repeated 8x8 tile whose 16x16 blocks carry, outside their top-left
+/// 8x8, sparse marks right of and below it and a flat step in the bottom
+/// right quarter that depend on the block: an IntraBC copy of another block
+/// (whose top-left 8x8 hash matches) leaves a residual that IDTX codes
+/// cheaper in the marked 4x4 units and `DCT_DCT` in the flat ones.
+fn marked_tiles(config: &Config, index: u32) -> SourceFrame {
+    let max = u32::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
+        let mut samples = Vec::with_capacity(size.width() * size.height());
+        for y in 0..size.height() as u32 {
+            for x in 0..size.width() as u32 {
+                let block = x / 16 + 3 * (y / 16);
+                let mark = match (x % 16 / 4, y % 16 / 4) {
+                    (2, 0) | (0, 2) if (x + y + block) % 7 == 0 => max / 4,
+                    (2..=3, 2..=3) => block % 5 * max / 32,
+                    _ => 0,
+                };
+                samples.push(((x % 8 * 5 + y % 8 * 3) % 11 * max / 16 + mark) as u16);
+            }
+        }
+        samples
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// Key frames of lossless IntraBC leaves without SDP trees (an SDP luma
+/// leaf codes no chroma): with `lossless_inter_tx`, U and V of a leaf of
+/// 4x4 units take the type of the leaf's first luma unit, not of the
+/// collocated one (`FrameIsIntra`, § 5.20.7.29), and with 2 a leaf codes
+/// `lossless_tx_size = 1` (one IDTX per 32x32, § 5.20.6.1); both decode to
+/// the source samples.
+#[test]
+fn lossless_intrabc_chroma_follows_the_leaf_start() {
+    for case in [CASES[0], CASES[1]] {
+        for (overrides, large) in [(INTRABC[1], false), (INTRABC[2], true)] {
+            let overrides = &[overrides, &[("sdp", "0")]].concat();
+            let name = format!("{case:?} {overrides:?}");
+            crate::tile_writer::LOSSLESS_INTRABC_CHROMA.set(0);
+            crate::tile_writer::LOSSLESS_IDTX_CODED.set([0; 5]);
+            crate::mode_decision::FORCE_INTRABC.set(true);
+            let (units, source) = lossless_stream_of(marked_tiles, case, 1, 1, overrides);
+            crate::mode_decision::FORCE_INTRABC.set(false);
+            let chroma = crate::tile_writer::LOSSLESS_INTRABC_CHROMA.get();
+            let idtx = crate::tile_writer::LOSSLESS_IDTX_CODED.get();
+            if large {
+                assert!(
+                    idtx[1] > 0,
+                    "{name}: no lossless_tx_size = 1 leaf: {idtx:?}"
+                );
+            } else {
+                assert!(chroma > 0, "{name}: no chroma of the leaf start");
+            }
+            assert_same_samples(&decode(&units.concat()), &source, &name);
+        }
+    }
+}
+
 /// AVM decodes the lossless streams, with and without DPCM,
-/// `lossless_inter_tx` and `lossless_fsc`, and the palette streams of drawn
-/// text, to the source samples.
+/// `lossless_inter_tx` and `lossless_fsc`, and the palette and IntraBC
+/// streams of drawn text, to the source samples.
 #[test]
 #[ignore = "needs SPLOT_AVM_DECODER"]
 fn avm_decodes_lossless_streams_to_the_source() {
@@ -284,7 +384,7 @@ fn avm_decodes_lossless_streams_to_the_source() {
             let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
             assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));
         }
-        for overrides in PALETTE {
+        for overrides in PALETTE.into_iter().chain(INTRABC) {
             let (units, source) = lossless_stream_of(TEXT, case, 1, 8, overrides);
             let avm = avm_decode(&avmdec, &units, (96, 72), case.1, "lossless");
             assert_same_samples(&avm, &source, &format!("{case:?} {overrides:?}"));

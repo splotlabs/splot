@@ -924,7 +924,7 @@ impl TrialCoder<'_, '_> {
         self.best(leaf, candidates, ALL, start)
     }
 
-    /// The cheaper of the inter `choice` and `choice` with
+    /// The cheaper of the inter or IntraBC `choice` and `choice` with
     /// `lossless_tx_size = 1` when `leaf` of a lossless frame may code it.
     #[cold]
     #[inline(never)]
@@ -934,7 +934,9 @@ impl TrialCoder<'_, '_> {
         choice: LeafChoice,
         start: &SyntaxSnapshot,
     ) -> Result<LeafChoice> {
-        if choice.inter.is_none() || !self.syntax.lossless_tx_size_allowed(leaf) {
+        if choice.inter.is_none() && choice.intrabc.is_none()
+            || !self.syntax.lossless_tx_size_allowed(leaf)
+        {
             return Ok(choice);
         }
         let large = LeafChoice {
