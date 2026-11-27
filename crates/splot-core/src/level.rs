@@ -33,11 +33,14 @@ pub fn level_limits(level_idx: u8) -> Option<FrameLevelLimits> {
     Some(group_limits(level_group(level_idx)?))
 }
 
-/// Display-rate and bitrate maxima for a table-mapped level (Annex A.4).
+/// Display-rate, decode-rate and bitrate maxima for a table-mapped level
+/// (Annex A.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LevelRateLimits {
     /// `MaxDisplayRate` in luma samples per second (Table A.8).
     pub max_display_rate: u64,
+    /// `MaxDecodeRate` in luma samples per second (Table A.8).
+    pub max_decode_rate: u64,
     /// `MainMbps` in kbit/s (Table A.9).
     pub main_kbps: u32,
     /// `HighMbps` in kbit/s (Table A.9); `None` below level 4.0, where
@@ -49,34 +52,36 @@ pub struct LevelRateLimits {
 /// `None` for a reserved level and for maximum parameters (31).
 #[must_use]
 pub fn level_rate_limits(level_idx: u8) -> Option<LevelRateLimits> {
-    /// `(MaxDisplayRate, MainMbps * 10, HighMbps * 10)` of Tables A.8 and A.9.
-    const RATES: [(u64, u16, u16); 22] = [
-        (4_423_680, 15, 0),
-        (8_363_520, 30, 0),
-        (19_975_680, 60, 0),
-        (31_950_720, 100, 0),
-        (70_778_880, 120, 300),
-        (141_557_760, 200, 500),
-        (267_386_880, 300, 1000),
-        (534_773_760, 400, 1600),
-        (1_069_547_520, 600, 2400),
-        (1_069_547_520, 600, 2400),
-        (1_069_547_520, 600, 2400),
-        (2_139_095_040, 1000, 4800),
-        (4_278_190_080, 1600, 8000),
-        (4_278_190_080, 1600, 8000),
-        (4_278_190_080, 1600, 8000),
-        (8_556_380_160, 2000, 9600),
-        (17_112_760_320, 3200, 16000),
-        (17_112_760_320, 3200, 16000),
-        (17_112_760_320, 3200, 16000),
-        (34_225_520_640, 4000, 19200),
-        (68_451_041_280, 6400, 32000),
-        (68_451_041_280, 6400, 32000),
+    /// `(MaxDisplayRate, MaxDecodeRate, MainMbps * 10, HighMbps * 10)` of
+    /// Tables A.8 and A.9.
+    const RATES: [(u64, u64, u16, u16); 22] = [
+        (4_423_680, 5_529_600, 15, 0),
+        (8_363_520, 10_454_400, 30, 0),
+        (19_975_680, 24_969_600, 60, 0),
+        (31_950_720, 39_938_400, 100, 0),
+        (70_778_880, 77_856_768, 120, 300),
+        (141_557_760, 155_713_536, 200, 500),
+        (267_386_880, 273_715_200, 300, 1000),
+        (534_773_760, 547_430_400, 400, 1600),
+        (1_069_547_520, 1_094_860_800, 600, 2400),
+        (1_069_547_520, 1_176_502_272, 600, 2400),
+        (1_069_547_520, 1_176_502_272, 600, 2400),
+        (2_139_095_040, 2_189_721_600, 1000, 4800),
+        (4_278_190_080, 4_379_443_200, 1600, 8000),
+        (4_278_190_080, 4_706_009_088, 1600, 8000),
+        (4_278_190_080, 4_706_009_088, 1600, 8000),
+        (8_556_380_160, 8_758_886_400, 2000, 9600),
+        (17_112_760_320, 17_517_772_800, 3200, 16000),
+        (17_112_760_320, 18_824_036_352, 3200, 16000),
+        (17_112_760_320, 18_824_036_352, 3200, 16000),
+        (34_225_520_640, 34_910_031_052, 4000, 19200),
+        (68_451_041_280, 69_820_062_105, 6400, 32000),
+        (68_451_041_280, 75_296_145_408, 6400, 32000),
     ];
-    let &(max_display_rate, main, high) = RATES.get(usize::from(level_idx))?;
+    let &(max_display_rate, max_decode_rate, main, high) = RATES.get(usize::from(level_idx))?;
     Some(LevelRateLimits {
         max_display_rate,
+        max_decode_rate,
         main_kbps: u32::from(main) * 100,
         high_kbps: (high > 0).then_some(u32::from(high) * 100),
     })
@@ -319,6 +324,9 @@ mod tests {
             (400_000, Some(1_920_000))
         );
         assert_eq!(row(21).max_display_rate, 68_451_041_280);
+        assert_eq!(row(0).max_decode_rate, 5_529_600);
+        assert_eq!(row(9).max_decode_rate, 1_176_502_272);
+        assert_eq!(row(21).max_decode_rate, 75_296_145_408);
         assert_eq!(
             (row(21).main_kbps, row(21).high_kbps),
             (640_000, Some(3_200_000))

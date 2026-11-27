@@ -46,6 +46,8 @@ Options:
           Multi-frame header: each key frame codes a multi-frame header OBU, and every frame header refers to it instead of the sequence header; off by default
       --still
           Single picture: codes the first input frame as a still picture (`single_picture_header_flag = 1`) and reads no other frame
+      --decoder-model
+          Decoder model: signals the Annex E decoder model with a removal time per decoded frame. Needs `--level` other than `max`, `--timing-info`, and `--rc cbr` or `--max-bitrate` with an initial buffer of 1 to 1000 ms
       --threads <THREADS>
           Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>

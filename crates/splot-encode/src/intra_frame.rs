@@ -39,6 +39,7 @@ use crate::intrabc::BvSearch;
 use crate::kernels::rdoq::{CoeffRates, RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
+use crate::level::removal_timing_obu;
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::two_pass_partition;
 use crate::motion_search::MotionSearch;
@@ -106,6 +107,11 @@ pub(crate) struct IntraFrameCoder {
     grain_active: bool,
     /// Key frames committed so far; their long-term ids cycle over it.
     key_frames: u32,
+    /// Frames committed so far: the coding index of the next one.
+    decoded_frames: u64,
+    /// The coding index of the last committed random access point, from
+    /// which `br_time` counts (§ 6.11).
+    random_access: u64,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
     /// The intra superblocks of the frame in each reference slot.
@@ -452,6 +458,8 @@ impl IntraFrameCoder {
             shown_existing: 0,
             grain_active: false,
             key_frames: 0,
+            decoded_frames: 0,
+            random_access: 0,
             warp_gate: crate::warp::WarpGate::default(),
             slot_intra: Default::default(),
             slot_hash: Default::default(),
@@ -498,6 +506,8 @@ impl FrameCoder for IntraFrameCoder {
         if let Some(used) = frame.warp {
             self.warp_gate.record(used);
         }
+        let index = self.decoded_frames;
+        self.decoded_frames += 1;
         if let Some(core) = frame.tip_output.take() {
             return self
                 .references
@@ -509,6 +519,14 @@ impl FrameCoder for IntraFrameCoder {
                 what: "a frame committed twice",
             })?;
         let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
+        if matches!(
+            core.obu_type,
+            splot_core::types::ObuType::ClosedLoopKey
+                | splot_core::types::ObuType::OpenLoopKey
+                | splot_core::types::ObuType::RasFrame
+        ) {
+            self.random_access = index;
+        }
         let hash = self.frame_hash_obu(&frame.recon, tlayer)?;
         let slots = self.slot_intra.iter_mut().zip(&mut self.slot_hash);
         for (slot, (intra, slot_hash)) in slots.enumerate() {
@@ -932,16 +950,13 @@ impl IntraFrameCoder {
         let segments = segments.map_or(Vec::new(), |(map, _)| map);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         let grain_obu_empty = grain_obu.is_empty();
-        let key_obus = if plan.frame_type == FrameType::Key {
-            [
-                self.content_obus.as_slice(),
-                &grain_obu,
-                &self.frame_obus(plan)?,
-            ]
-            .concat()
+        let removal = removal_timing_obu(&self.params.tools, plan, self.random_access)?;
+        let content: &[u8] = if plan.frame_type == FrameType::Key {
+            &self.content_obus
         } else {
-            [grain_obu, self.frame_obus(plan)?].concat()
+            &[]
         };
+        let key_obus = [content, &removal, &grain_obu, &self.frame_obus(plan)?].concat();
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
@@ -1264,7 +1279,14 @@ impl IntraFrameCoder {
                 &self.references,
                 ref_frame_idx,
                 (weight, grain_seed, self.preset.plane_delta_q()),
-                (self.multi_frame_header, &self.frame_obus(plan)?),
+                (
+                    self.multi_frame_header,
+                    &[
+                        removal_timing_obu(&self.params.tools, plan, self.random_access)?,
+                        self.frame_obus(plan)?,
+                    ]
+                    .concat(),
+                ),
                 (qindex, mv, filter, deblocking),
             )?;
             let (core, frame) = self

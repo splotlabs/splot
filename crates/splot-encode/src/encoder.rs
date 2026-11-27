@@ -20,7 +20,7 @@ use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
-use crate::preset::{FrameKind, PresetContext, ResolutionClass};
+use crate::preset::{FrameKind, PresetContext, PresetParams, ResolutionClass};
 use crate::progress::Progress;
 use crate::rate_control::{
     Cbr, ConstantQp, Crf, DecoderBuffer, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
@@ -257,24 +257,7 @@ impl Encoder {
         let params = config.override_preset(config.preset.params())?;
         let mut lookahead = Lookahead::new(&config.coded(), &params, coder.pool());
         lookahead.cancel = cancel.clone();
-        let mini_gop_size = match config.rate_control {
-            RateControlMode::Vbr { .. } | RateControlMode::Cbr { .. } => {
-                params.bitrate_mini_gop_size
-            }
-            _ => params.mini_gop_size,
-        };
-        let slots = match params.num_ref_frames {
-            0 => 8,
-            slots => slots,
-        };
-        let planner = GopPlanner::new(config.keyint, mini_gop_size)
-            .with_ref_slots(slots)
-            .with_intra_only(params.intra_only)
-            .with_open_loop_key(params.open_loop_key)
-            .with_switch_frames(params.switch_frames, params.switch_type)
-            .with_implicit_output(params.implicit_output)
-            .with_sef_repeat(params.sef_repeat)
-            .with_max_tlayer_id(params.max_tlayer_id);
+        let planner = gop_planner(&config, &params);
         Ok(Self {
             rate_control,
             stats_sink: None,
@@ -826,6 +809,26 @@ impl Encoder {
         }
         Ok(stats)
     }
+}
+
+/// The coding-order planner of `config` with the preset `params`.
+pub(crate) fn gop_planner(config: &Config, params: &PresetParams) -> GopPlanner {
+    let mini_gop_size = match config.rate_control {
+        RateControlMode::Vbr { .. } | RateControlMode::Cbr { .. } => params.bitrate_mini_gop_size,
+        _ => params.mini_gop_size,
+    };
+    let slots = match params.num_ref_frames {
+        0 => 8,
+        slots => slots,
+    };
+    GopPlanner::new(config.keyint, mini_gop_size)
+        .with_ref_slots(slots)
+        .with_intra_only(params.intra_only)
+        .with_open_loop_key(params.open_loop_key)
+        .with_switch_frames(params.switch_frames, params.switch_type)
+        .with_implicit_output(params.implicit_output)
+        .with_sef_repeat(params.sef_repeat)
+        .with_max_tlayer_id(params.max_tlayer_id)
 }
 
 fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {

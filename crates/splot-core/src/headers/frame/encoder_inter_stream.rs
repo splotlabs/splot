@@ -11,6 +11,7 @@
 
 use super::RESTRICTED_ORDER_HINT;
 use crate::bitio::BitReader;
+use crate::headers::buffer_removal_timing::BufferRemovalTiming;
 use crate::headers::content_interpretation::ContentInterpretation;
 use crate::headers::film_grain::{
     FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
@@ -1345,6 +1346,23 @@ pub fn encode_film_grain_obu(
     annexb_obu(
         (ObuType::FilmGrain, TemporalLayerId::BASE),
         &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
+        &[],
+    )
+}
+
+/// Serializes the `OBU_BUFFER_REMOVAL_TIMING` (§ 5.12) of the frame unit
+/// in temporal layer `tlayer` with `br_ops_dependent_flag = 0` and `br_time`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a `br_time` above 511, which `rg(4)`
+/// cannot code (§ 4.11.10).
+pub fn encode_buffer_removal_timing_obu(
+    br_time: u32,
+    tlayer: TemporalLayerId,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    annexb_obu(
+        (ObuType::BufferRemovalTiming, tlayer),
+        &crate::obu::ParsedObu::BufferRemovalTiming(BufferRemovalTiming::ExtendedLayer { br_time }),
         &[],
     )
 }

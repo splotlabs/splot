@@ -217,6 +217,50 @@ fn requested_levels_validate_and_decode() {
     }
 }
 
+/// `--decoder-model` streams in CBR validate with no finding and decode to
+/// the encoder recon; the encoder refuses the decoder model without a
+/// decoder buffer and at level `max`.
+#[test]
+fn decoder_model_streams_validate_and_decode() {
+    let model = [
+        "--rc",
+        "cbr",
+        "--bitrate",
+        "300",
+        "--timing-info",
+        "--decoder-model",
+    ];
+    round_trip(8, YUV420, &[&model[..], &["--level", "auto"]].concat());
+    round_trip(
+        10,
+        YUV444,
+        &[&model[..], &["--level", "4.0", "--tier", "high"]].concat(),
+    );
+    let (y4m, _) = synthetic_y4m(8, YUV420, 1);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let (input_s, ivf_s) = (input.to_str().unwrap(), ivf.to_str().unwrap());
+    for bad in [
+        &[
+            "--qp",
+            "90",
+            "--level",
+            "2.0",
+            "--timing-info",
+            "--decoder-model",
+        ][..],
+        &[&model[..], &["--level", "max"]].concat(),
+    ] {
+        let mut args = vec!["encode", input_s, "-o", ivf_s];
+        args.extend(bad);
+        let bad = splot(&args);
+        assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    }
+    for path in [input, ivf] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// `--still` codes the first input frame as a single picture: it validates
 /// with no finding and decodes to that one frame.
 #[test]
