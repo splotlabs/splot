@@ -130,23 +130,30 @@ pub struct GdfFlags<'a> {
 }
 
 impl GdfFlags<'_> {
-    /// The decoder's GDF block grid and reference context of the frame `core`.
+    /// The decoder's GDF block grid and reference context of the frame `core`;
+    /// no `gdf`, or no `blocks`, codes every `use_gdf` of the grid as `0`.
     pub(super) fn decoder_inputs(
-        self,
+        gdf: Option<Self>,
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
     ) -> Result<(Option<GdfBlockGrid>, Option<GdfReferenceContext>)> {
+        let blocks = gdf.map_or(&[][..], |gdf| gdf.blocks);
         let grid = match GdfGrid::new(seq, core)? {
-            Some(grid) => Some(
-                GdfBlockGrid::new(grid.block_size, grid.rows, grid.cols, self.blocks.to_vec())
-                    .ok_or(EncoderSyntaxError::Unsupported(
-                        "use_gdf grid of another size",
-                    ))?,
-            ),
+            Some(grid) => {
+                let values = match blocks {
+                    [] => vec![0; grid.rows * grid.cols],
+                    blocks => blocks.to_vec(),
+                };
+                Some(
+                    GdfBlockGrid::new(grid.block_size, grid.rows, grid.cols, values).ok_or(
+                        EncoderSyntaxError::Unsupported("use_gdf grid of another size"),
+                    )?,
+                )
+            }
             None => None,
         };
-        let reference = core.inter.as_ref().map(|inter| {
-            let view = self.refs.header_view();
+        let reference = gdf.zip(core.inter.as_ref()).map(|(gdf, inter)| {
+            let view = gdf.refs.header_view();
             GdfReferenceContext::from_reference_list(
                 core.display_order_hint().unwrap_or(0),
                 inter.ref_frame_idx.as_slice(),
@@ -185,7 +192,7 @@ pub fn gdf_errors(
             "GDF errors of a frame with a lossless segment",
         ));
     }
-    let (grid, reference) = gdf.decoder_inputs(seq, core)?;
+    let (grid, reference) = GdfFlags::decoder_inputs(Some(gdf), seq, core)?;
     let size = cdef.y().storage_size();
     let (width, height) = (size.width(), size.height());
     let packed = |frame: &DecodedFrame<u16>| -> Result<Vec<u16>> {

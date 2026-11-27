@@ -293,6 +293,10 @@ impl IntraFrameCoder {
         Ok(coder)
     }
 
+    /// The stream of `config` and `preset`. A single picture codes no
+    /// temporal layers, implicit output or extended SDP, and no GDF in a frame
+    /// inside one GDF block (`GDF_MIN_SIZE` 128): § 5.18.7.9 infers
+    /// `gdf_frame_enable = 1` and codes no `gdf_per_block` there.
     fn stream_params(config: &Config, preset: &PresetParams) -> Result<EncoderStreamParams> {
         let mut params = EncoderStreamParams {
             width: config.width,
@@ -402,6 +406,14 @@ impl IntraFrameCoder {
                 ..EncoderToolFlags::default()
             },
         };
+        if config.single_picture {
+            let tools = &mut params.tools;
+            tools.single_picture = true;
+            tools.max_tlayer_id = splot_core::types::TemporalLayerId::from_bits(0);
+            tools.implicit_output = false;
+            tools.extended_sdp = false;
+            tools.gdf &= config.width > 128 || config.height > 128;
+        }
         crate::level::choose_level(config, preset, &mut params)?;
         Ok(params)
     }
@@ -558,6 +570,9 @@ impl FrameCoder for IntraFrameCoder {
         Ok(unit)
     }
 
+    /// Fixes the sequence tools for the `first` frame. A single picture
+    /// infers `apply_grain = 1` (§ 5.18.10.1), so a frame without noise
+    /// takes a sequence without film grain.
     fn start_sequence(&mut self, first: &SourceFrame) -> Result<()> {
         let mut tools = self.params.tools;
         if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
@@ -567,6 +582,10 @@ impl FrameCoder for IntraFrameCoder {
         }
         if self.preset.cfl_filter {
             tools.cfl_ds_filter = cfl_ds_filter(first);
+        }
+        if tools.single_picture && tools.film_grain {
+            let scalings = grain::estimate(first, self.chroma)?;
+            tools.film_grain = !scalings.iter().all(GrainScaling::is_empty);
         }
         self.set_tools(tools)
     }
@@ -867,12 +886,13 @@ impl IntraFrameCoder {
         if plan.switch.is_some() {
             (tools.2.1, tools.2.3, tools.2.9) = (false, None, None);
         }
-        tools.0.allow_tcq = self.preset.tcq.at(context);
+        let single = self.params.tools.single_picture;
+        tools.0.allow_tcq = self.preset.tcq.at(context) && !single;
         if plan.frame_type == FrameType::Inter && !plan.intra_only {
             tools.0.allow_intrabc = self.preset.intrabc_inter;
         }
         let ids = (1u32 << self.preset.long_term_id_bits) - 1;
-        if plan.frame_type == FrameType::Key && ids > 0 {
+        if plan.frame_type == FrameType::Key && ids > 0 && !single {
             tools.0.long_term_id_plus_1 = 1 + self.key_frames % ids;
         }
         tools.0.disable_cdf_update = self.preset.disable_cdf_update;

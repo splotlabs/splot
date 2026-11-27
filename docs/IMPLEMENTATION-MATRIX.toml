@@ -22618,6 +22618,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-SINGLE-PICTURE"
+name = "Encoder single-picture stream"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "5.4.6", "5.4.8", "5.4.10", "5.18.2", "5.18.7.9", "5.18.7.10", "5.18.7.12", "5.18.10.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-single-picture"
+owner = "encoder"
+risk = "medium"
+notes = "Config::single_picture and CLI --still (2026-11-27, off by default): the sequence header codes single_picture_header_flag = 1 with the reduced § 5.4.1 header (seq_tier only through LevelIdx::codes_tier(true)), the single-picture inter config and none of the elements that § 5.4.8 and § 5.4.10 infer; the key frame codes the § 5.18.2 header that infers KEY_FRAME. A second frame is Error::SecondSinglePicture, and the CLI reads one frame. § 5.18.7.9, .10 and .12 infer the GDF, CDEF and CCSO frame enables, so an off filter codes gdf_per_block = 1 with every use_gdf = 0, one zero CDEF strength set, or every ccso_planes = 0. A frame inside one GDF block (both sides at most 128) codes no gdf_per_block, so its sequence enables no GDF. A frame without noise takes a sequence without film grain, because apply_grain is inferred. allow_screen_content_tools is coded as 1 under the inferred SELECT."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::single_picture_header_parses_with_its_inferred_values", "crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::single_picture_refuses_forms_the_reduced_header_cannot_carry", "crates/splot-core/src/headers/frame/encoder_single_picture_tests.rs::truncated_single_picture_header_does_not_parse", "crates/splot-encode/src/intra_frame_still_tests.rs::still_pictures_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_still_tests.rs::single_picture_encoder_refuses_a_second_frame", "crates/splot-cli/tests/encode_decode_roundtrip.rs::still_pictures_validate_and_decode"]
+commands = ["cargo test -p splot-core single_picture --locked", "cargo test -p splot-encode --lib still --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test -p splot-encode --lib avm_decodes_still_pictures -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip still_pictures --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CROP-WINDOW"
 name = "Encoder sequence cropping window"
 category = "encoder"

@@ -109,6 +109,14 @@ pub enum Error {
         what: String,
     },
 
+    /// A [`crate::Config::single_picture`] configuration asks for a form that
+    /// the single-picture header cannot code.
+    #[error("a single picture cannot use {what}")]
+    SinglePictureWith {
+        /// The refused preset field.
+        what: String,
+    },
+
     /// The rate factor is outside `1..=63`.
     #[error("crf {crf} is outside 1..={max}", max = crate::rate_control::Crf::MAX)]
     InvalidCrf {
@@ -245,6 +253,10 @@ pub enum Error {
     /// A frame was built for a different configuration than the encoder's.
     #[error("frame plane sizes or bit depth do not match the encoder configuration")]
     FrameConfigMismatch,
+
+    /// A second frame was sent to a [`crate::Config::single_picture`] encoder.
+    #[error("a single-picture stream codes one frame")]
+    SecondSinglePicture,
 
     /// A frame was sent after `flush`.
     #[error("send_frame was called after flush")]

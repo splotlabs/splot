@@ -215,6 +215,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         profile: Some(ProfileIdc::Configurable),
         level: None,
         tier: Tier::Main,
+        single_picture: false,
         seq_tiles: None,
         disable_loopfilters_across_tiles: false,
         plane_delta_q: [0; 3],

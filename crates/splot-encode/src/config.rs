@@ -236,6 +236,10 @@ pub struct Config {
     /// OBU (§ 5.7) after the sequence header, and every frame header refers
     /// to it with `cur_mfh_id = 1` (§ 5.18.2). Off by default.
     pub multi_frame_header: bool,
+    /// Single picture: the stream is one key frame under a sequence header
+    /// with `single_picture_header_flag = 1` (§ 5.4.1, § 5.18.2); a second
+    /// frame is refused. Off by default.
+    pub single_picture: bool,
     /// The coded bits of each input frame in a first pass, in input order
     /// ([`Self::first_pass_config`]); [`RateControlMode::Vbr`] splits its
     /// budget over the frames in proportion to them. Empty (the default) is
@@ -304,6 +308,7 @@ impl Config {
             first_pass: Vec::new(),
             fast_decode: false,
             multi_frame_header: false,
+            single_picture: false,
         }
     }
 
@@ -317,6 +322,7 @@ impl Config {
     /// `field` names the failed record, `key_frame_metadata` first),
     /// [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`], [`Error::LosslessWith`],
+    /// [`Error::SinglePictureWith`],
     /// [`Error::PaddingWithoutCbr`], [`Error::KeyintWithTemporalLayers`] or
     /// [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
@@ -343,6 +349,12 @@ impl Config {
             self.apply_preset(self.preset.params(), record)?,
             self.override_preset(self.preset.screen_params())?,
         ];
+        if self.single_picture && rows.iter().any(|row| row.cdef_on_skip_mode != 0) {
+            return Err(Error::SinglePictureWith {
+                what: "cdef_on_skip_mode (CdefOnSkipTxfm is inferred adaptive, § 5.4.10)"
+                    .to_owned(),
+            });
+        }
         if self.keyint.get() > MAX_TEMPORAL_LAYER_KEYINT
             && rows.iter().any(|row| row.max_tlayer_id > 0)
         {
@@ -466,13 +478,22 @@ impl Config {
     }
 
     /// Why a requested [`Self::level`] is not codable with [`Self::tier`]
-    /// and [`Self::profile`].
+    /// and [`Self::profile`]; a single picture refuses the high tier at
+    /// every level, the automatic one (reported as 31) included.
     fn level_refusal(&self) -> Option<(LevelIdx, &'static str)> {
+        let high = self.tier == Some(Tier::High);
+        if high && self.single_picture {
+            let level = self.level.unwrap_or(LevelIdx::from_bits(31));
+            return Some((
+                level,
+                "a single picture codes no seq_tier, so only the main tier (§ 5.4.1)",
+            ));
+        }
         let level = self.level?;
         let reason = match level.get() {
             22..=30 | 32.. => "the level is reserved (Annex A.4 Table A.7)",
             31 => return None,
-            _ if self.tier == Some(Tier::High) && !level.codes_tier(false) => {
+            _ if high && !level.codes_tier(false) => {
                 "the high tier needs level 4.0 or above (§ 5.4.1)"
             }
             _ if self.profile == Some(ProfileIdc::Configurable) => {

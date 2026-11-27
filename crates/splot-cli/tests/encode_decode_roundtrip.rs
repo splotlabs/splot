@@ -217,6 +217,38 @@ fn requested_levels_validate_and_decode() {
     }
 }
 
+/// `--still` codes the first input frame as a single picture: it validates
+/// with no finding and decodes to that one frame.
+#[test]
+fn still_pictures_validate_and_decode() {
+    for (bits, subsampling) in [(8, YUV420), (10, YUV444)] {
+        let (y4m, _) = synthetic_y4m(bits, subsampling, FRAMES);
+        let input = temp_input("y4m", &y4m);
+        let ivf = temp_output("ivf");
+        let raw = temp_output("yuv");
+        let (input_s, ivf_s, raw_s) = (
+            input.to_str().unwrap(),
+            ivf.to_str().unwrap(),
+            raw.to_str().unwrap(),
+        );
+        let encode = splot(&["encode", input_s, "-o", ivf_s, "--qp", "90", "--still"]);
+        assert!(encode.status.success(), "{encode:?}");
+        let validate = splot(&["validate", "--strict", ivf_s]);
+        assert!(validate.status.success(), "{validate:?}");
+        let decode = splot(&["decode", ivf_s, "--output", raw_s, "--output-format", "raw"]);
+        assert!(decode.status.success(), "{decode:?}");
+        let samples: usize = plane_sizes(subsampling).iter().map(|(w, h)| w * h).sum();
+        let bytes_per_sample = if bits == 8 { 1 } else { 2 };
+        assert_eq!(
+            std::fs::read(&raw).unwrap().len(),
+            samples * bytes_per_sample
+        );
+        for path in [input, ivf, raw] {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// `--low-delay` is the `mini_gop_size=1`, `bitrate_mini_gop_size=1` and
 /// `lookahead_frames=1` overrides: every frame is coded and shown in input order.
 /// With `implicit_output` the IVF holds one frame per input frame, in coding
