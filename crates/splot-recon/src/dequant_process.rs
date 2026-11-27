@@ -174,8 +174,8 @@ pub fn dequantize_block(
     quant: &[i32],
     out: &mut [i32],
 ) -> Result<usize> {
-    let (written, out) = prepare_dequant_block(params, quant, out)?;
-    baseline_simd!(simd => dequantize_groups(simd, params, quant, out))?;
+    let written = dequant_block_prefix(params, quant.len(), out.len())?;
+    baseline_simd!(simd => dequantize_groups(simd, params, quant, &mut out[..written]))?;
     Ok(written)
 }
 
@@ -189,21 +189,10 @@ pub fn dequantize_block_with<B: SimdBackend>(
     quant: &[i32],
     out: &mut [i32],
 ) -> Result<usize> {
-    let (written, out) = prepare_dequant_block(params, quant, out)?;
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => dequantize_groups(simd, params, quant, out))?;
-    Ok(written)
-}
-
-fn prepare_dequant_block<'a>(
-    params: &DequantBlockParams,
-    quant: &[i32],
-    out: &'a mut [i32],
-) -> Result<(usize, &'a mut [i32])> {
     let written = dequant_block_prefix(params, quant.len(), out.len())?;
-    let (out, tail) = out[..written].split_at_mut(quant.len());
-    tail.fill(0);
-    Ok((written, out))
+    let narrow = backend.narrow();
+    splot_core::with_simd!(narrow, simd => dequantize_groups(simd, params, quant, &mut out[..written]))?;
+    Ok(written)
 }
 
 /// Validates a § 7.14.4 block of `quant_len` coded coefficients and returns
@@ -237,15 +226,17 @@ fn dequant_block_prefix(
     Ok(quant_len.next_multiple_of(tx_width))
 }
 
-/// Dequantizes `quant` into the as long `out` with the § 7.14.4 quantizer
-/// carried in registers, eight coefficients a group, for a power-of-two
-/// `dq_denom`.
+/// Dequantizes `quant` into `out`, the whole rows it reaches, with the
+/// § 7.14.4 quantizer carried in registers, eight coefficients a group, for a
+/// power-of-two `dq_denom`.
 ///
 /// Every coefficient but `(0, 0)` takes `ac_quant`, so the first lane group
 /// takes `dc_quant` in lane 0 and the rest `ac_quant` throughout, each
 /// weighted by its quantization-matrix row under `useQm` — the values the
-/// per-coefficient [`dequant_coefficient`] writes, in the same slots. A last
-/// group shorter than eight loads zero-padded and stores only its own lanes.
+/// per-coefficient [`dequant_coefficient`] writes, in the same slots. The
+/// group that `quant` ends in loads zero-padded. Whole rows of 4, 8, 16 or 32
+/// end on a group or on half of one, which stores its low four lanes; the
+/// groups of the row past `quant` are zero.
 #[expect(
     clippy::inline_always,
     reason = "measured § 7.14.4 dequantization hot path"
@@ -259,21 +250,61 @@ fn dequantize_groups<S: Simd>(
 ) -> Result<()> {
     let denom_shift = params.dq_denom.max(1).trailing_zeros();
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
-    let (out_groups, out_tail) = out.as_chunks_mut::<8>();
     let (groups, tail) = quant.as_chunks::<8>();
-    for (group, (out, &quant)) in out_groups.iter_mut().zip(groups).enumerate() {
+    let (out_groups, out_half) = out.as_chunks_mut::<8>();
+    let (coded, rest) = out_groups.split_at_mut(groups.len());
+    for (group, (out, &quant)) in coded.iter_mut().zip(groups).enumerate() {
         let v = i32x8::load_array(simd, quant);
         let q2 = group_quantizers(simd, params, group, 8)?;
         *out = dequant_lanes(simd, v, q2, denom_shift, bound).into();
     }
-    if !tail.is_empty() {
-        let mut lanes = [0i32; 8];
-        lanes[..tail.len()].copy_from_slice(tail); // splot-copy-ok: zero-padded lane group
+    let last = if tail.is_empty() {
+        i32x8::splat(simd, 0)
+    } else {
+        let v = i32x8::load_array(simd, zero_padded_group(tail));
         let q2 = group_quantizers(simd, params, groups.len(), tail.len())?;
-        let v = dequant_lanes(simd, i32x8::load_array(simd, lanes), q2, denom_shift, bound);
-        out_tail.copy_from_slice(&v.as_array()[..out_tail.len()]); // splot-copy-ok: the group's own lanes
+        dequant_lanes(simd, v, q2, denom_shift, bound)
+    };
+    if let Some((first, zeros)) = rest.split_first_mut() {
+        *first = last.into();
+        // A row holds at most `MAX_DEQUANT_DIM / 8` groups. The counted loop
+        // keeps the zero stores inline: an open one compiles to `memset`.
+        let mut zeros = zeros.iter_mut();
+        for _ in 1..MAX_DEQUANT_DIM / 8 {
+            if let Some(out) = zeros.next() {
+                *out = [0; 8];
+            }
+        }
+        debug_assert!(zeros.next().is_none() && out_half.is_empty());
+    } else if let Ok(half) = <&mut [i32; 4]>::try_from(out_half) {
+        *half = simd.split_i32x8(last).0.into();
     }
     Ok(())
+}
+
+/// The one to seven values of `tail` in the low lanes of a group, zero above
+/// them. Moves of a fixed size that overlap cover every length, so the length
+/// never reaches a library copy.
+#[expect(
+    clippy::inline_always,
+    reason = "measured § 7.14.4 dequantization hot path"
+)]
+#[inline(always)]
+pub(crate) fn zero_padded_group<T: Copy + Default>(tail: &[T]) -> [T; 8] {
+    debug_assert!(tail.len() < 8);
+    let mut lanes = [T::default(); 8];
+    let len = tail.len();
+    if let (Some(head), Some(last)) = (tail.first_chunk::<4>(), tail.last_chunk::<4>()) {
+        lanes[len - 4..len].copy_from_slice(last); // splot-copy-ok: four lanes of the padded group
+        lanes[..4].copy_from_slice(head); // splot-copy-ok: four lanes of the padded group
+    } else if let (Some(&first), Some(&middle), Some(&last)) =
+        (tail.first(), tail.get(len / 2), tail.last())
+    {
+        lanes[len - 1] = last;
+        lanes[len / 2] = middle;
+        lanes[0] = first;
+    }
+    lanes
 }
 
 /// The § 7.14.4 quantizers of the `len <= 8` coefficients of lane group
@@ -319,11 +350,10 @@ fn qm_weights<S: Simd>(
         .built_in_weights(start + len)
         .and_then(|row| row.get(start..))
     {
-        let bytes = row.first_chunk().copied().unwrap_or_else(|| {
-            let mut bytes = [0u8; 8];
-            bytes[..len].copy_from_slice(row); // splot-copy-ok: the short last group
-            bytes
-        });
+        let bytes = row
+            .first_chunk()
+            .copied()
+            .unwrap_or_else(|| zero_padded_group(row));
         let bytes: u8x16<S> = u64x2::load_array(simd, [u64::from_le_bytes(bytes), 0]).bitcast();
         let (low, high) = simd.widen_u16x8(simd.widen_u8x16(bytes).0);
         return Ok(simd.combine_u32x4(low, high).bitcast());
@@ -677,9 +707,9 @@ mod tests {
     /// The lane groups must reproduce the per-coefficient oracle exactly for
     /// every block shape, bit depth and `dq_denom` shift, flat and under a
     /// built-in or user quantization matrix, over randomized coefficients
-    /// including the `i32` extremes and huge quantizers, for every prefix
-    /// length a lane group can end in; a matrix lookup past the table
-    /// reports the oracle's first error.
+    /// including the `i32` extremes and huge quantizers, for every length of
+    /// the last group and the zero rest of its row; a matrix lookup past the
+    /// table reports the oracle's first error.
     #[test]
     fn lane_groups_match_the_per_coefficient_reference() {
         let mut state = 0x2545_f491_4f6c_dd1du64;
@@ -742,9 +772,14 @@ mod tests {
                                 _ => (next() as i32) >> (next() % 24) as i32,
                             };
                         }
-                        for len in [samples, 1, 3, 7, 9, samples - 5] {
-                            let expected = reference_dequantize(&params, &quant[..len]);
-                            let mut actual = vec![0i32; len];
+                        for len in (1..=9).chain([samples - 5, samples]) {
+                            let rows = len.next_multiple_of(tx_width);
+                            let expected =
+                                reference_dequantize(&params, &quant[..len]).map(|mut expected| {
+                                    expected.resize(rows, 0);
+                                    expected
+                                });
+                            let mut actual = vec![i32::MIN; rows];
                             let got = baseline_simd!(simd => dequantize_groups(simd, &params, &quant[..len], &mut actual));
                             let label = format!(
                                 "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift} matrix {matrix} len {len}"
