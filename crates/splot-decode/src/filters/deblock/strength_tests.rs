@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use super::super::{adaptive_strength, deblock_level};
 use super::*;
 
 type Sides = [[u16; GROUP]; 2];
 
 /// The `qThr` and `side` words of each lane of `sides`, looked up lane by
-/// lane through `strength`.
-fn oracle(strength: impl Fn(u16) -> (i32, i32), sides: Sides) -> [[u16; GROUP]; 4] {
+/// lane in `cache`.
+fn oracle(cache: &StrengthCache, sides: Sides) -> [[u16; GROUP]; 4] {
     let mut words = [[0; GROUP]; 4];
     for (index, qindexes) in sides.iter().enumerate() {
         for (lane, &qindex) in qindexes.iter().enumerate() {
-            let (q_thr, side) = strength(qindex);
+            let (q_thr, side) = cache.get(u32::from(qindex));
             words[2 * index][lane] = q_thr.clamp(0, 0x7fff) as u16;
             words[2 * index + 1][lane] = side.clamp(0, 0x7fff) as u16;
         }
@@ -22,17 +21,12 @@ fn oracle(strength: impl Fn(u16) -> (i32, i32), sides: Sides) -> [[u16; GROUP]; 
 
 /// Asserts that one [`Strengths`] over `cache` gives every group of `groups`,
 /// in order, the words of [`oracle`].
-fn assert_groups_match<S: Simd>(
-    simd: S,
-    cache: &StrengthCache,
-    strength: impl Fn(u16) -> (i32, i32),
-    groups: &[Sides],
-) {
+fn assert_groups_match<S: Simd>(simd: S, cache: &StrengthCache, groups: &[Sides]) {
     let mut strengths = Strengths::new(cache);
     for &sides in groups {
         let [curr, prev] = sides.map(|side| u16x16::from_slice(simd, &side));
         let words = strengths.of(simd, curr, prev).map(SimdBase::to_array);
-        assert_eq!(words, oracle(&strength, sides), "qindex lanes {sides:?}");
+        assert_eq!(words, oracle(cache, sides), "qindex lanes {sides:?}");
     }
 }
 
@@ -72,6 +66,7 @@ fn groups() -> Vec<Sides> {
         uniform(303, 303),
         uniform(40, 200),
         uniform(200, 40),
+        uniform(40, 40),
         distinct(0, 1),
         distinct(272, 1),
         distinct(3, 9),
@@ -95,28 +90,20 @@ fn groups() -> Vec<Sides> {
 fn lane_strengths_match_the_lane_by_lane_lookup() {
     let groups = groups();
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for (quant_delta, df_delta_q) in [(0, 0), (-6, 3), (12, -2)] {
-            let cache = StrengthCache::new(quant_delta, df_delta_q, bit_depth);
-            let strength = |qindex: u16| {
-                let level = deblock_level(qindex.into(), quant_delta, df_delta_q, bit_depth);
-                adaptive_strength(level, bit_depth)
-            };
-            baseline_simd!(simd => assert_groups_match(simd, &cache, strength, &groups));
-        }
+        let cache = StrengthCache::new(-6, 3, bit_depth);
+        baseline_simd!(simd => assert_groups_match(simd, &cache, &groups));
     }
 }
 
 #[test]
 fn lane_strengths_keep_to_15_bits() {
     let cache = StrengthCache::new(0, 0, BitDepth::Ten);
-    let huge = |qindex: u16| match qindex {
-        7 => (i32::MAX - 1, i32::MAX),
-        9 => (0x8000, 3),
-        _ => (3, 0x8000),
-    };
-    for qindex in 0..cache.values.len() as u16 {
-        let (q_thr, side) = huge(qindex);
-        cache.values[usize::from(qindex)].set((q_thr + 1, side));
+    for (qindex, strengths) in [
+        (7, (i32::MAX, i32::MAX)),
+        (9, (0x8001, 3)),
+        (11, (4, 0x8000)),
+    ] {
+        cache.values[qindex].set(strengths);
     }
     let lane = |index: usize| [7, 9, 11][index % 3];
     let groups = [
@@ -127,5 +114,5 @@ fn lane_strengths_keep_to_15_bits() {
             core::array::from_fn(|index| lane(index + 1)),
         ],
     ];
-    baseline_simd!(simd => assert_groups_match(simd, &cache, huge, &groups));
+    baseline_simd!(simd => assert_groups_match(simd, &cache, &groups));
 }
