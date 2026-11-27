@@ -208,8 +208,13 @@ fn planned_switch_stream(
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     units.extend(coded.temporal_unit);
                 }
-                GopStep::ShowExisting { slot, .. } => {
-                    units.extend(coder.show_existing_frame(slot, None, false).unwrap());
+                GopStep::ShowExisting {
+                    slot,
+                    display_index,
+                    ..
+                } => {
+                    let unit = coder.show_existing_frame(slot, None, false, display_index);
+                    units.extend(unit.unwrap());
                 }
             }
         }
