@@ -45,6 +45,15 @@ jobs:
         run: |
           cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
             film_grain::tests::wide_
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            cdef_filter::segment::wide_luma::tests::wide_
+
+      - name: Measure AVX2 and AVX-512 luma CDEF blocks on the same core
+        if: ${{ inputs.timing }}
+        run: |
+          core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+            cdef_filter::segment::wide_luma::tests::measure_wide_luma_blocks -- --ignored --exact --nocapture
 
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"

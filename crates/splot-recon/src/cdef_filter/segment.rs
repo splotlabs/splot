@@ -12,6 +12,7 @@
 mod byte_filter;
 mod luma_bytes;
 mod pair_bytes;
+mod wide_luma;
 
 use super::*;
 #[cfg(target_arch = "x86_64")]
@@ -22,6 +23,7 @@ use fearless_simd::Avx2;
 use fearless_simd::{i8x16, i8x32, u8x32, u64x2, u64x4};
 use luma_bytes::*;
 use pair_bytes::*;
+use wide_luma::WideLuma;
 
 const TAP_REACH: usize = 2;
 const LUMA_SEGMENT_AREA: usize = 8 * (CDEF_SEGMENT_BLOCKS - 1) + CDEF_SEGMENT_BLOCK_AREA;
@@ -1117,9 +1119,9 @@ fn luma_segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
 /// The 32-lane kernel of [`luma_segment_with`] alone, for a block of a
 /// bytes-only segment; `false` when the filter does not fit it.
 #[inline(always)]
-fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
+fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, W: WideLuma, T: crate::ReconSample>(
     simd: S,
-    quads: Q,
+    (quads, wide): (Q, W),
     bytes: Option<&[u8; LUMA_PADDED_BYTES]>,
     range: i32,
     plan: &CdefFilterPlan,
@@ -1131,6 +1133,9 @@ fn luma_wide8_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
     let (Some(bytes), true) = (bytes, plan.wide8) else {
         return false;
     };
+    if let Some(written) = wide.filter((bytes, plan), plan.mode(range), (&mut *out.0, out.1)) {
+        return written;
+    }
     let filter = &plan.filter;
     let inputs = (bytes, plan, &LUMA_BYTE_STARTS);
     macro_rules! run {
@@ -1359,10 +1364,12 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        let lanes = (InLane, BaselineSegment);
+        return segment_with(avx2, lanes, segment, unit, blocks, fill_flat, output);
     }
+    let lanes = (Ordered, BaselineSegment);
     baseline_simd!(simd => segment_with(
-        simd, Ordered, segment, unit, blocks, fill_flat, output,
+        simd, lanes, segment, unit, blocks, fill_flat, output,
     ))
 }
 
@@ -1378,18 +1385,20 @@ pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        let lanes = (InLane, TypedSegment(backend));
+        return segment_with(avx2, lanes, segment, unit, blocks, fill_flat, output);
     }
+    let lanes = (Ordered, BaselineSegment);
     let narrow = backend.narrow();
     splot_core::with_simd!(narrow, simd => segment_with(
-        simd, Ordered, segment, unit, blocks, fill_flat, output,
+        simd, lanes, segment, unit, blocks, fill_flat, output,
     ))
 }
 
 #[inline(always)]
-fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
+fn segment_with<S: SimdToken, Q: QuadLanes<S>, W: WideLuma, T: crate::ReconSample>(
     simd: S,
-    quads: Q,
+    (quads, wide): (Q, W),
     segment: &CdefLumaSegment,
     unit: &CdefUnitFilters,
     blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
@@ -1456,7 +1465,14 @@ fn segment_with<S: SimdToken, Q: QuadLanes<S>, T: crate::ReconSample>(
                 )
             } else {
                 let range = i32::from(greatest) - i32::from(least);
-                luma_wide8_with(simd, quads, packed, range, &y_plan, (out, luma_stride))
+                luma_wide8_with(
+                    simd,
+                    (quads, wide),
+                    packed,
+                    range,
+                    &y_plan,
+                    (out, luma_stride),
+                )
             };
             if !written {
                 return false;
