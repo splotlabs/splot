@@ -323,20 +323,7 @@ impl GopFrame {
         let switch = match self.switch {
             None => None,
             Some(SwitchKind::Switch) => Some(SwitchFrameParams::default()),
-            Some(SwitchKind::Ras) => {
-                let slot = self.ref_slots.trailing_zeros() as usize;
-                let id = refs
-                    .header_view()
-                    .ref_long_term_id
-                    .and_then(|ids| ids.get(slot).copied().flatten())
-                    .ok_or(Error::Unsupported {
-                        what: "a RAS frame whose key frame has no long-term id",
-                    })?;
-                Some(SwitchFrameParams {
-                    restricted_prediction_switch: false,
-                    ras_long_term_id: Some(id),
-                })
-            }
+            Some(SwitchKind::Ras) => Some(ras_params(refs, self.ref_slots)?),
         };
         Ok(InterFrameParams {
             base_q_idx: qindex,
@@ -422,6 +409,25 @@ fn choose_inter_header(
         chosen
     } else {
         header
+    })
+}
+
+/// The switch fields of a RAS frame that references `ref_slots`, the key
+/// frame's slot: the long-term id that `refs` holds there.
+#[cold]
+#[inline(never)]
+fn ras_params(refs: &EncoderReferences, ref_slots: u32) -> Result<SwitchFrameParams> {
+    let slot = ref_slots.trailing_zeros() as usize;
+    let id = refs
+        .header_view()
+        .ref_long_term_id
+        .and_then(|ids| ids.get(slot).copied().flatten())
+        .ok_or(Error::Unsupported {
+            what: "a RAS frame whose key frame has no long-term id",
+        })?;
+    Ok(SwitchFrameParams {
+        restricted_prediction_switch: false,
+        ras_long_term_id: Some(id),
     })
 }
 

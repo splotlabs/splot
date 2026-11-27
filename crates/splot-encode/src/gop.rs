@@ -591,6 +591,8 @@ impl GopPlanner {
     /// Codes `display_index` as a RAS frame (§ 7.4.5) that references the
     /// key frame alone: it refreshes every other slot, and only the first one
     /// it refreshes stays valid (§ 7.23).
+    #[cold]
+    #[inline(never)]
     fn code_ras(&mut self, display_index: u64, show_frame: bool) -> Result<GopStep> {
         let key_slot = self.key_slot().ok_or(Error::Unsupported {
             what: "a RAS frame without its key frame",
@@ -664,9 +666,9 @@ impl GopPlanner {
             .filter(|held| held.shown)
             .map(|held| held.display_index)
             .max();
-        let pinned = self
-            .key_slot()
-            .filter(|_| self.switch_ras && self.switch_frames > 0);
+        let pinned = (self.switch_ras && self.switch_frames > 0)
+            .then(|| self.key_slot())
+            .flatten();
         (0..self.ref_slots)
             .filter(|&slot| Some(slot) != pinned)
             .filter_map(|slot| {
