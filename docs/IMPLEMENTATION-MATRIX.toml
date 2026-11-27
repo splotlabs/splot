@@ -22393,6 +22393,20 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-PROFILE-SELECTION"
+name = "Encoder profile selection"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.1", "Annex A.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-profile-selection"
+owner = "encoder"
+risk = "low"
+notes = "Config::profile (2026-11-27; CLI --profile): None, the default, codes the lowest Annex A.2 Table A.1 profile that allows the chroma format (0 for 4:0:0 and 4:2:0, 3 for 4:2:2, 4 for 4:4:4). A requested profile 0-4 or 31 is coded as seq_profile_idc; Error::InvalidProfile refuses a reserved value (5-30) or a profile whose chroma set does not hold the input format. The encoder codes one embedded layer, so every profile fits Table A.3 and needs no LCR (Table A.4, Annex A.3). splot decode and AVM decode profiles 1, 2, 3 and 31 to the encoder recon."
+
+[[feature]]
 id = "ENC-CROP-WINDOW"
 name = "Encoder sequence cropping window"
 category = "encoder"

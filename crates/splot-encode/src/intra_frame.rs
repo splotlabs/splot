@@ -358,6 +358,7 @@ impl IntraFrameCoder {
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
+                profile: config.profile,
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: match config.tiles {

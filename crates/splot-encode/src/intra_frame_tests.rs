@@ -2259,6 +2259,8 @@ mod mds;
 mod mfh;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_profile_tests.rs"]
+mod profile;
 #[path = "intra_frame_qm_tests.rs"]
 mod qm;
 #[path = "intra_frame_refine_tests.rs"]
