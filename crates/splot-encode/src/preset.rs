@@ -345,6 +345,12 @@ pub struct PresetParams {
     /// encoder does not write the copy. Needs `switch_frames > 0`. `0` in
     /// every row.
     pub switch_type: u8,
+    /// `max_tlayer_id` (§ 5.4.1), `0..=3`: a frame at mini-GOP depth `d`
+    /// codes `obu_tlayer_id = min(d, max_tlayer_id)` (§ 5.2.2), so dropping
+    /// the higher temporal layers leaves a decodable stream. Needs
+    /// `implicit_output`, so each hidden frame has a temporal unit of its own
+    /// (§ 7.3.6), and `keyint` at most 255. `0` in every row (not measured).
+    pub max_tlayer_id: u8,
     /// Explicit reference maps (§ 5.4.6, § 5.18.2), `0..=8`: `0` off; `1` the
     /// sequence sets `explicit_ref_frame_map` and frames keep the default map;
     /// `n` above `1` makes inter frames code their map with at most `n - 1`
@@ -1170,6 +1176,21 @@ impl PresetParams {
         check!(tip)?;
         check!(cdf_update_tile)?;
         check!(long_term_id_bits)?;
+        check(
+            "max_tlayer_id",
+            self.max_tlayer_id,
+            PresetIntegerRange::new(
+                0,
+                if self.implicit_output {
+                    ranges::max_tlayer_id.max
+                } else {
+                    0
+                },
+            ),
+            " (above 0 needs implicit_output: a temporal unit that holds a hidden frame \
+             and a higher-layer output loses its output in the lower operating points, \
+             which § 7.3.6 forbids)",
+        )?;
         check!(num_ref_frames)?;
         check!(switch_frames)?;
         check(
@@ -1197,19 +1218,34 @@ impl PresetParams {
              for the key frame's id, so open_loop_key > 0 refuses it)",
         )?;
         for mini_gop in [self.mini_gop_size, self.bitrate_mini_gop_size] {
-            let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
-                .with_ref_slots(self.num_ref_frames)
-                .with_switch_frames(self.switch_frames, self.switch_type);
-            let fits = self.num_ref_frames == 0
-                || (0..3).all(|_| {
+            let slots = match self.num_ref_frames {
+                0 => 8,
+                slots => slots,
+            };
+            let fits = |max_tlayer_id, plans| {
+                let mut probe = crate::gop::GopPlanner::new(core::num::NonZeroU32::MAX, mini_gop)
+                    .with_ref_slots(slots)
+                    .with_max_tlayer_id(max_tlayer_id)
+                    .with_switch_frames(self.switch_frames, self.switch_type);
+                (0..plans).all(|_| {
                     let len = probe.next_len(usize::MAX, true).unwrap_or(1);
                     probe.plan(len).is_ok()
-                });
-            if !fits {
+                })
+            };
+            if self.num_ref_frames > 0 && !fits(0, 3) {
                 return Err(PresetError::OutOfRange {
                     field: "num_ref_frames",
                     value: self.num_ref_frames.into(),
                     allowed: format!("the slots a mini-GOP of {mini_gop} needs"),
+                });
+            }
+            if self.max_tlayer_id > 0 && !fits(self.max_tlayer_id, 24) {
+                return Err(PresetError::OutOfRange {
+                    field: "max_tlayer_id",
+                    value: self.max_tlayer_id.into(),
+                    allowed: format!(
+                        "0, or the temporal layers {slots} slots give a mini-GOP of {mini_gop}"
+                    ),
                 });
             }
         }
@@ -1676,6 +1712,8 @@ preset_table! {
         switch_frames:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the switch frame type: 0 codes OBU_SWITCH, 1 codes OBU_RAS_FRAME. Requires switch_frames above zero; 1 requires long_term_id_bits above zero and a keyint of at most 256. Random access at a RAS frame needs the key frame from external means; the encoder does not write that copy." [0, 1]
         switch_type:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        "Highest temporal layer: mini-GOP depths above it share it. Zero codes one layer. Requires implicit_output and keyint of at most 255." [0, 3]
+        max_tlayer_id:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select the explicit frame reference signaling mode." [0, 8]
         explicit_refs:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Select which tile information the sequence header signals." [0, 3]

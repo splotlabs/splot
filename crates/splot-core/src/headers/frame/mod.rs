@@ -73,7 +73,7 @@ pub use info::{
     FrameReferenceStateView, FrameType, MfhFrameView, SefTrailingBits, parse_frame_header_core,
     parse_frame_header_core_observed,
 };
-pub(crate) use info::{init_core_from_prefix, parse_core_body};
+pub(crate) use info::{init_core_from_prefix, parse_core_body, parse_core_body_in_tlayer};
 pub use inter::{
     DELTAWARP, EXTENDWARP, INTERINTRA, InterControl, InterStop, LOCALWARP, MOTION_MODES,
     MvPrecision, TipFrameMode, TipGlobalMv,

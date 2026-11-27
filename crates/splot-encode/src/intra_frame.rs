@@ -362,6 +362,7 @@ impl IntraFrameCoder {
                 parity_hiding: preset.parity_hiding,
                 long_term_frame_id_bits: preset.long_term_id_bits,
                 implicit_output: preset.implicit_output,
+                max_tlayer_id: splot_core::types::TemporalLayerId::from_bits(preset.max_tlayer_id),
                 num_ref_frames: (preset.num_ref_frames > 0).then_some(preset.num_ref_frames),
                 explicit_ref_frame_map: preset.explicit_refs > 0,
                 seq_tiles: match config.tiles {
@@ -375,6 +376,7 @@ impl IntraFrameCoder {
                     }),
                     _ => None,
                 },
+                disable_loopfilters_across_tiles: config.disable_loopfilters_across_tiles,
                 short_refresh: preset.short_refresh,
                 plane_delta_q: preset.plane_delta_q(),
                 tcq: preset.tcq.values().contains(&true),
@@ -463,7 +465,7 @@ impl FrameCoder for IntraFrameCoder {
                 .update_tip_output(&core)
                 .map_err(coding("TIP output update"));
         }
-        let (core, recon, initial, cdfs, ccso_blocks) =
+        let (core, recon, initial, cdfs, ccso_blocks, tlayer) =
             frame.reference.take().ok_or(Error::Unsupported {
                 what: "a frame committed twice",
             })?;
@@ -479,7 +481,7 @@ impl FrameCoder for IntraFrameCoder {
             self.grain_active = frame.film_grain_model;
         }
         self.references
-            .update(&core, recon, &initial, &cdfs, &ccso_blocks)
+            .update(&core, recon, &initial, &cdfs, &ccso_blocks, tlayer)
             .map_err(coding("reference update"))
     }
 
@@ -496,16 +498,23 @@ impl FrameCoder for IntraFrameCoder {
         leading: bool,
         display_index: u64,
     ) -> Result<Vec<u8>> {
-        let metadata = self.output_frame_obus(display_index)?;
         let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
             gop::shown_grain_seed(self.shown_existing)
         });
+        let tlayer = self
+            .references
+            .slot_tlayer_id(slot)
+            .ok_or(Error::Unsupported {
+                what: "a show-existing frame of a slot outside the sequence",
+            })?;
+        let metadata = self.output_frame_obus(display_index, tlayer)?;
         let unit = gop::show_existing_unit(
             &self.view,
             slot,
             order_hint,
             (seed, self.multi_frame_header, leading, &metadata),
+            tlayer,
         )?;
         let obu_type = if leading {
             splot_core::types::ObuType::LeadingSef
@@ -740,13 +749,18 @@ impl IntraFrameCoder {
         if !(plan.show_frame || plan.implicit_output) {
             return Ok(Vec::new());
         }
-        self.output_frame_obus(plan.display_index)
+        self.output_frame_obus(plan.display_index, plan.tlayer)
     }
 
-    /// The per-frame metadata OBUs of the output frame `display_index`.
-    fn output_frame_obus(&self, display_index: u64) -> Result<Vec<u8>> {
+    /// The per-frame metadata OBUs of the output frame `display_index` in
+    /// temporal layer `tlayer`.
+    fn output_frame_obus(
+        &self,
+        display_index: u64,
+        tlayer: splot_core::types::TemporalLayerId,
+    ) -> Result<Vec<u8>> {
         let (metadata, frame_rate) = &self.frame_metadata;
-        metadata.obus(display_index, self.presentation, *frame_rate)
+        metadata.obus(display_index, self.presentation, (*frame_rate, tlayer))
     }
 
     /// The `grain_seed` of `plan` and, for a key frame whose `source` has
@@ -1116,7 +1130,7 @@ impl IntraFrameCoder {
             frame_type: plan.frame_type,
             display_index: plan.display_index,
             film_grain_model: !grain_obu_empty,
-            reference: Some((core, recon, initial, cdfs, ccso_blocks)),
+            reference: Some((core, recon, initial, cdfs, ccso_blocks, plan.tlayer)),
             tip_output: None,
             intra_cells,
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(

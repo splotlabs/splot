@@ -54,6 +54,8 @@ Options:
           Tile row heights in superblocks of the sequence, as `--tile-widths`
       --tile-groups <N>
           Tile groups per frame: the tiles split in raster order into N tile group OBUs; N above the tile count codes one tile per group [default: 1]
+      --disable-loopfilters-across-tiles
+          The in-loop filters stop at tile edges (`disable_loopfilters_across_tiles`)
       --limit <LIMIT>
           Stop after this many input frames
       --resize-denominator <D>

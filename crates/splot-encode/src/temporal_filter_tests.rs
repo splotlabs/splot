@@ -66,6 +66,7 @@ fn plan(display: u64, frame_type: FrameType) -> GopFrame {
         open_loop: false,
         leading: false,
         switch: None,
+        tlayer: splot_core::types::TemporalLayerId::BASE,
     }
 }
 
