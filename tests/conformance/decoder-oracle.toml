@@ -2988,3 +2988,9 @@ id = "syn-3frame-restricted-switch-bawp-gate-176x144"
 features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.switch", "inter.mv_prediction_temporal", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
 ivf_sha256 = "3e0f70b49cc2ee8fe0626f2d61ee3f54fd8ec24e72965c1ce7affff40c368aa5"
 avm_raw_sha256 = "514ec036f065ed93e246d07ac604bf6cc1e642b7b8c3b2722676a61b90e2eaf2"
+
+[[fixture]]
+id = "syn-5frame-restricted-switch-temporal-mv-176x144"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "frame.show_existing", "frame.switch", "inter.compound", "inter.mv_prediction_temporal", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "9be29cb895dd226d2559e6874ff283ff5b7899f359dce96033beeb19e0359c9f"
+avm_raw_sha256 = "9cd8cda74ac34e6aa4ad7e38e5f129e1ca7a493f93c49e115ea6e4ab533eec04"
