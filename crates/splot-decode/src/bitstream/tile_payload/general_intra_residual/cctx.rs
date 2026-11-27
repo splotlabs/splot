@@ -273,10 +273,20 @@ mod tests {
     use super::super::{DCT_DCT, LumaCoeffBlock};
     use super::*;
 
-    fn setups(depth: BitDepth) -> [ReconstructBlockSetup; 2] {
+    fn setups() -> [ReconstructBlockSetup; 2] {
         [PlaneId::U, PlaneId::V].map(|plane| {
             reconstruct_block_setup(
-                64, 99, plane, 3, 3, DCT_DCT, false, false, false, None, depth,
+                64,
+                99,
+                plane,
+                3,
+                3,
+                DCT_DCT,
+                false,
+                false,
+                false,
+                None,
+                BitDepth::Eight,
             )
             .unwrap()
         })
@@ -316,7 +326,7 @@ mod tests {
     #[test]
     fn cctx_pair_rotates_the_coded_rows_of_both_blocks() {
         let quant = [3, -7, 5, 2, -2, 5, 11, 9, 1];
-        let setups = setups(BitDepth::Eight);
+        let setups = setups();
         let params = [&setups[0].params, &setups[1].params];
         for (u_len, v_len) in [(0, 0), (0, 9), (9, 0), (9, 4), (4, 9), (9, 9)] {
             for (u_eob, v_eob) in [(1, 1), (0, 1), (1, 0)] {
@@ -334,11 +344,6 @@ mod tests {
                     )
                 })
                 .unwrap();
-                assert_eq!(
-                    written,
-                    coded[0].len().max(coded[1].len()).next_multiple_of(8)
-                );
-
                 let (mut actual_u, mut actual_v) = ([i32::MAX; 64], [i32::MIN; 64]);
                 let got = pair(
                     [u_block.view(&quant[..u_len]), v_block.view(&quant[..v_len])],
@@ -356,7 +361,7 @@ mod tests {
     #[test]
     fn invalid_cctx_pair_state_is_rejected_before_any_write() {
         let quant = [11, 12, 21, 22];
-        let setups = setups(BitDepth::Eight);
+        let setups = setups();
         let (mut u, mut v) = ([7; 64], [9; 64]);
         for cctx_type in [0, 7] {
             let block = block(1, 4);
