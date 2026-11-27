@@ -60,8 +60,9 @@ fn segmentation_params(alt_q: Option<[i16; 4]>) -> SegmentationParams {
     }
 }
 
-/// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
-const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
+/// `seq_level_idx == 31`: the maximum parameters level, without level
+/// constraints (Annex A.4) or tile-size limits (§ 5.18.7.3).
+const MAX_PARAMETERS_LEVEL: LevelIdx = LevelIdx::from_bits(31);
 /// `order_hint_bits_minus_1` written by [`build_encoder_sequence_header`].
 const ORDER_HINT_BITS_MINUS_1: u32 = 7;
 /// `base_*_delta_q` value that gives a zero `Base*DeltaQ` (`-DELTA_DCQUANT_MIN`, § 3).
@@ -86,6 +87,14 @@ pub struct EncoderToolFlags {
     pub ccso: bool,
     /// `enable_gdf`.
     pub gdf: bool,
+    /// With `gdf` and 64x64 superblocks, `gdf_unit_matches_sb_size` (§ 5.4.10).
+    pub gdf_unit_matches_sb_size: bool,
+    /// With `ccso`, `ccso_unit_matches_sb_size` (§ 5.4.10).
+    pub ccso_unit_matches_sb_size: bool,
+    /// `enable_chroma_dctonly` (§ 5.4.8), not coded for monochrome.
+    pub chroma_dct_only: bool,
+    /// `reduced_tx_part_set` (§ 5.4.8).
+    pub reduced_tx_part_set: bool,
     /// `enable_sdp`.
     pub sdp: bool,
     /// `enable_extended_sdp` (needs `sdp`).
@@ -94,6 +103,9 @@ pub struct EncoderToolFlags {
     pub ext_partitions: bool,
     /// `enable_uneven_4way_partitions` (needs `ext_partitions`).
     pub uneven_4way_partitions: bool,
+    /// `reduce_pb_aspect_ratio` (§ 5.4.3): `Some(false)` codes
+    /// `MaxPbAspectRatio = 2`, `Some(true)` 4; `None` keeps 8.
+    pub reduce_pb_aspect_ratio: Option<bool>,
     /// `enable_cfl_intra`.
     pub cfl: bool,
     /// `enable_mhccp`.
@@ -195,6 +207,12 @@ pub struct EncoderToolFlags {
     /// `seq_profile_idc` (§ 5.4.1); `None` codes the lowest Annex A.2 Table A.1
     /// profile that allows the chroma format.
     pub profile: Option<ProfileIdc>,
+    /// `seq_level_idx` (§ 5.4.1, Annex A.4 Table A.7); `None` codes 31, the
+    /// maximum parameters level.
+    pub level: Option<LevelIdx>,
+    /// `seq_tier` (§ 5.4.1); a level up to 3 codes no `seq_tier` and takes
+    /// only the main tier.
+    pub tier: Tier,
     /// `explicit_num_ref_frames` with `NumRefFrames`, `1..=16` (§ 5.4.6);
     /// `None` keeps the default 8 slots.
     pub num_ref_frames: Option<u8>,
@@ -530,6 +548,15 @@ pub enum EncoderHeaderError {
         /// The chroma format of the sequence.
         chroma: ChromaFormatIdc,
     },
+    /// The level is reserved (Annex A.4 Table A.7), or the tier is high and
+    /// the level codes no `seq_tier` (§ 5.4.1).
+    #[error("seq_level_idx {} with {tier:?} tier is not codable (Annex A.4 Table A.7, § 5.4.1)", level.get())]
+    InvalidLevel {
+        /// The rejected level.
+        level: LevelIdx,
+        /// The requested tier.
+        tier: Tier,
+    },
     /// `base_q_idx` does not fit the § 5.18.6.1 field.
     #[error("base_q_idx {base_q_idx} is outside 0..{limit}")]
     InvalidBaseQIdx {
@@ -577,13 +604,13 @@ pub enum EncoderHeaderError {
 
 /// Builds a non-single-picture, non-still sequence header for `params`.
 ///
-/// Every tool outside `params.tools` is off, the level is `31`, the frame size is
-/// the maximum frame size, and quantizer offsets are zero.
+/// Every tool outside `params.tools` is off, the frame size is the maximum
+/// frame size, and quantizer offsets are zero.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for an out-of-range dimension, a profile
-/// that does not allow the chroma format, or if the canonical bits do not
-/// parse completely.
+/// that does not allow the chroma format, a level and tier that are not
+/// codable, or if the canonical bits do not parse completely.
 pub fn build_encoder_sequence_header(
     params: &EncoderStreamParams,
 ) -> Result<SequenceHeader, EncoderHeaderError> {
@@ -615,12 +642,22 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
             chroma: params.chroma,
         });
     }
+    let level = tools.level.unwrap_or(MAX_PARAMETERS_LEVEL);
+    let tier_codable = tools.tier == Tier::Main || level.codes_tier(false);
+    if matches!(level.get(), 22..=30 | 32..) || !tier_codable {
+        return Err(EncoderHeaderError::InvalidLevel {
+            level,
+            tier: tools.tier,
+        });
+    }
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // seq_header_id
     w.write_bits(u32::from(profile.get()), 5)?;
     w.write_flag(false)?; // single_picture_header_flag
-    w.write_bits(UNCONSTRAINED_LEVEL_IDX, 5)?;
-    w.write_flag(false)?; // seq_tier
+    w.write_bits(u32::from(level.get()), 5)?;
+    if level.codes_tier(false) {
+        w.write_flag(tools.tier == Tier::High)?;
+    }
     w.write_uvlc(u32::from(params.chroma.get()))?;
     w.write_uvlc(u32::from(params.bit_depth.get()))?;
     w.write_bits(0, 3)?; // seq_lcr_id
@@ -665,7 +702,10 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     if tools.ext_partitions {
         w.write_flag(tools.uneven_4way_partitions)?;
     }
-    w.write_flag(false)?; // reduce_pb_aspect_ratio
+    w.write_flag(tools.reduce_pb_aspect_ratio.is_some())?;
+    if let Some(four) = tools.reduce_pb_aspect_ratio {
+        w.write_flag(four)?; // max_pb_aspect_ratio_log2_minus_1
+    }
 
     w.write_flag(false)?; // enable_ext_seg
     w.write_flag(false)?; // seq_seg_info_present_flag
@@ -695,7 +735,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(tools.cdef)?;
     w.write_flag(tools.gdf)?;
     if tools.gdf && params.sb_size == SuperblockSize::Block64x64 {
-        w.write_flag(false)?; // gdf_unit_matches_sb_size
+        w.write_flag(tools.gdf_unit_matches_sb_size)?;
     }
     w.write_flag(tools.loop_restoration)?;
     if tools.loop_restoration {
@@ -705,7 +745,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(tools.ccso)?;
     if tools.ccso {
-        w.write_flag(false)?; // ccso_unit_matches_sb_size
+        w.write_flag(tools.ccso_unit_matches_sb_size)?;
     }
     w.write_flag(false)?; // cdef_on_skip_txfm_always_on
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
@@ -720,8 +760,8 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
             uniform_sb_size: params.sb_size,
             sb_size: params.sb_size,
             is_bridge: false,
-            seq_tier: Tier::Main,
-            seq_level_idx: LevelIdx::from_bits(UNCONSTRAINED_LEVEL_IDX as u8),
+            seq_tier: tools.tier,
+            seq_level_idx: level,
         };
         let layout = uniform_tile_layout(&input, tiles.cols_log2, tiles.rows_log2)?;
         write_tile_params(
@@ -832,10 +872,10 @@ fn write_transform_quant_entropy_config(
     w.write_flag(tools.intra_ist)?;
     w.write_flag(tools.inter_ist)?;
     if !monochrome {
-        w.write_flag(false)?; // enable_chroma_dctonly
+        w.write_flag(tools.chroma_dct_only)?;
     }
     w.write_flag(tools.inter_ddt)?;
-    w.write_flag(false)?; // reduced_tx_part_set
+    w.write_flag(tools.reduced_tx_part_set)?;
     if !monochrome {
         w.write_flag(tools.cctx)?;
     }

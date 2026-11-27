@@ -3,7 +3,7 @@
 
 //! Error and result types for the splot encoder API.
 
-use splot_core::headers::sequence::{CroppingWindow, ProfileIdc};
+use splot_core::headers::sequence::{CroppingWindow, LevelIdx, ProfileIdc, Tier};
 use splot_recon::{BitDepth, PixelFormat};
 
 /// An error from the splot encoder API.
@@ -53,6 +53,34 @@ pub enum Error {
         profile: ProfileIdc,
         /// Chroma format of the input.
         chroma: PixelFormat,
+    },
+
+    /// The requested level and tier are not codable or do not fit the
+    /// profile (Annex A.4 Table A.7, § 5.4.1, Annex A.2 Table A.2).
+    #[error("seq_level_idx {} with {tier:?} tier: {reason}", level.get())]
+    InvalidLevel {
+        /// Requested level.
+        level: LevelIdx,
+        /// Requested tier; the main tier when the tier is automatic.
+        tier: Tier,
+        /// Why the request is refused.
+        reason: &'static str,
+    },
+
+    /// The stream breaks a limit of the requested level and tier that the
+    /// encoder checks before the first frame (Annex A.4).
+    #[error("seq_level_idx {} with {tier:?} tier: {limit} {value} exceeds {max} (Annex A.4)", level.get())]
+    LevelExceeded {
+        /// Requested level.
+        level: LevelIdx,
+        /// Requested tier.
+        tier: Tier,
+        /// The Annex A.4 quantity.
+        limit: &'static str,
+        /// The value of the stream.
+        value: u64,
+        /// The largest value of the level.
+        max: u64,
     },
 
     /// A frame-rate term is zero.
