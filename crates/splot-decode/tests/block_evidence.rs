@@ -14,26 +14,29 @@
 //! For clipped residuals, record the signed input to `highbd_clip_pixel_add`
 //! in the C inverse transform. Compare the resulting output with ordinary AVM.
 //!
+//! For entropy checks, record the value and descending Q15 cutoffs from
+//! `avm_read_symbol` before adaptation in `av2_read_coeffs_txb`. Omit the terminal zero.
+//!
 //! [AVM]: https://github.com/AOMediaCodec/avm/tree/a1ec4594d97028ebc34083ec8346616d697c2fc9
 
 #![expect(clippy::unwrap_used)]
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use splot_core::stream_reader::TemporalUnitReader;
 use splot_decode::block_evidence::{
     BlockEvidenceData, BlockEvidenceKind, BlockEvidenceRecord, BlockEvidenceReport,
     BlockEvidenceRequest, BlockEvidenceStatus, BlockEvidenceTree, BlockInterMode,
     BlockLumaPrediction, BlockMotion, BlockMotionPrecision, BlockPartition, BlockPrediction,
-    BlockReference, CompoundMode, InterMode, IntraMode, MotionVector,
+    BlockReference, BlockTransformId, CompoundMode, InterMode, IntraMode, MotionVector,
 };
 use splot_decode::{
     DataProps, DecodeError, Decoder, DecoderSettings, FrameDelay, Picture, PictureFrame,
     SendStatus, ThreadCount,
 };
-use splot_recon::{DecodedFrameHashInput, PixelFormat, PlaneRect};
+use splot_recon::{DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect};
 
 const TILES: &[u8] =
     include_bytes!("../../../tests/conformance/vectors/valid/syn-2tile-zone1-edge-128x64-q192.ivf");
@@ -786,4 +789,281 @@ fn monochrome_frame_cannot_supply_chroma_stages() {
     assert_eq!(report.status, BlockEvidenceStatus::Unavailable);
     assert!(report.frame.is_some());
     assert!(report.stages.is_empty());
+}
+
+fn selected_transform(
+    fixture: &[u8],
+    tile: usize,
+    plane: PlaneId,
+    coded: PlaneRect,
+) -> BlockTransformId {
+    let (geometry, _) = capture(
+        fixture,
+        1,
+        BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX)
+            .with_kind(BlockEvidenceKind::Transforms),
+    );
+    geometry
+        .records
+        .iter()
+        .find_map(|record| {
+            let BlockEvidenceData::Transform(transform) = record.data else {
+                return None;
+            };
+            (transform.id.block.tile == tile
+                && transform.id.plane == plane
+                && transform.id.coded == coded)
+                .then_some(transform.id)
+        })
+        .unwrap()
+}
+
+#[test]
+fn entropy_transform_prefix_matches_avm_cdf_rows_and_bypass_values() {
+    use splot_decode::block_evidence::{BlockEntropyScope, EntropyCoding};
+
+    const FILTERS: &[u8] = include_bytes!(
+        "../../../tests/conformance/vectors/valid/syn-3frame-padded-filters-422-134x69-10bit-q150.ivf"
+    );
+    struct Case {
+        fixture: &'static [u8],
+        tile: usize,
+        coded: PlaneRect,
+        skip_context: u16,
+        cdf: &'static [(usize, u32, &'static [u16])],
+        bypass: &'static [(usize, u32, u8)],
+    }
+    let cases = [
+        Case {
+            fixture: TILES,
+            tile: 0,
+            coded: rect(0, 0, 64, 64),
+            skip_context: 0,
+            cdf: &[
+                (0, 0, &[85]),
+                (1, 0, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
+                (2, 4, &[4545, 1120, 457, 241]),
+                (3, 3, &[18803, 11789, 6250]),
+                (4, 0, &[12660]),
+            ],
+            bypass: &[],
+        },
+        Case {
+            fixture: TILES,
+            tile: 1,
+            coded: rect(64, 0, 64, 32),
+            skip_context: 0,
+            cdf: &[
+                (0, 0, &[85]),
+                (1, 4, &[26930, 23847, 18314, 11606, 4880, 493, 344]),
+                (2, 0, &[12404]),
+                (4, 0, &[584, 73, 24, 20]),
+            ],
+            bypass: &[(3, 1, 2)],
+        },
+        Case {
+            fixture: FILTERS,
+            tile: 0,
+            coded: rect(0, 0, 32, 32),
+            skip_context: 1,
+            cdf: &[
+                (0, 0, &[32164]),
+                (1, 7, &[32134, 30991, 28895, 26475, 20115, 8943, 8056]),
+                (3, 1, &[14442]),
+                (5, 0, &[477, 20]),
+                (9, 1, &[4677, 126, 20]),
+            ],
+            bypass: &[(2, 3, 2), (4, 255, 8)],
+        },
+    ];
+    for case in cases {
+        let transform = selected_transform(case.fixture, case.tile, PlaneId::Y, case.coded);
+        let scope = BlockEntropyScope::Transform(transform);
+        let (report, pictures) = capture(
+            case.fixture,
+            4,
+            BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX).with_entropy(scope),
+        );
+        let mut ordinary = Decoder::new(settings(1)).unwrap();
+        assert_eq!(
+            picture_hashes(&pictures),
+            picture_hashes(&decode(&mut ordinary, case.fixture).unwrap())
+        );
+        assert_eq!(report.status, BlockEvidenceStatus::Complete, "{scope:?}");
+        assert!(report.records.is_empty());
+        let evidence = report.entropy.unwrap();
+        assert_eq!(evidence.scope, scope);
+        assert!(evidence.tile_payload_bytes > 0);
+        let mut ordinal = 0;
+        for (index, symbol) in evidence.symbols.iter().enumerate() {
+            assert_eq!(evidence.transform_for(index), Some(transform));
+            assert_eq!(symbol.ordinal, ordinal);
+            assert!(symbol.estimated_bits().unwrap().is_finite());
+            ordinal += u64::from(symbol.bypass_bits.max(1));
+        }
+        assert_eq!(ordinal, evidence.end_ordinal);
+        let skip = evidence.symbols[0].syntax.unwrap();
+        assert_eq!(skip.key, "all_zero");
+        assert_eq!(skip.context, "plane_type,tx_size_ctx,txb_skip_ctx");
+        assert_eq!(skip.values[2], case.skip_context);
+        let eob = evidence.symbols[1].syntax.unwrap();
+        assert_eq!(eob.key, "eob_pt");
+        assert_eq!(eob.context, "eob_multi_size,eob_ctx");
+        assert_eq!(eob.values[..2], [6, 0]);
+        for &(index, value, cutoffs) in case.cdf {
+            let symbol = evidence.symbols[index];
+            assert_eq!(symbol.coding, EntropyCoding::Cdf);
+            assert_eq!(symbol.value, value);
+            let cdf = symbol.cdf.unwrap();
+            assert_eq!(usize::from(cdf.arity), cutoffs.len() + 1);
+            assert_eq!(cdf.adaptation_count, 0);
+            for (&actual, &expected) in cdf.cutoffs.iter().zip(cutoffs) {
+                assert_eq!(actual, 32768 - expected);
+            }
+        }
+        for &(index, value, bits) in case.bypass {
+            let symbol = evidence.symbols[index];
+            assert_eq!(symbol.coding, EntropyCoding::Bypass);
+            assert_eq!(symbol.value, value);
+            assert_eq!(symbol.bypass_bits, bits);
+            assert_eq!(symbol.estimated_bits(), Some(f64::from(bits)));
+        }
+    }
+}
+
+#[test]
+fn block_entropy_attributes_only_transform_reads_to_the_native_plane() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId};
+
+    let block = BlockEvidenceId::new(1, BlockEvidenceTree::Shared, rect(64, 0, 64, 32));
+    let (report, _) = capture(
+        TILES,
+        4,
+        BlockEvidenceRequest::new(|_| true, None, 1000, usize::MAX)
+            .with_entropy(BlockEntropyScope::Block(block)),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Complete);
+    let entropy = report.entropy.unwrap();
+    assert_eq!(entropy.transform_for(0), None);
+    assert_eq!(entropy.transform_for(entropy.symbols.len()), None);
+    let owners: std::collections::HashSet<_> = (0..entropy.symbols.len())
+        .filter_map(|index| entropy.transform_for(index))
+        .collect();
+    assert_eq!(
+        owners,
+        std::collections::HashSet::from([
+            BlockTransformId::new(block, PlaneId::Y, rect(64, 0, 64, 32)),
+            BlockTransformId::new(block, PlaneId::U, rect(32, 0, 32, 16)),
+            BlockTransformId::new(block, PlaneId::V, rect(32, 0, 32, 16)),
+        ])
+    );
+    for (index, symbol) in entropy.symbols.iter().enumerate() {
+        if symbol.syntax.is_some_and(|syntax| syntax.key == "all_zero") {
+            assert!(entropy.transform_for(index).is_some());
+        }
+    }
+}
+
+#[test]
+fn entropy_capture_respects_record_byte_and_cancellation_limits() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId, EntropySymbol};
+
+    let block = BlockEvidenceId::new(0, BlockEvidenceTree::Shared, rect(0, 0, 64, 64));
+    let scope = BlockEntropyScope::Block(block);
+    let mut ordinary = Decoder::new(settings(1)).unwrap();
+    let expected = picture_hashes(&decode(&mut ordinary, TILES).unwrap());
+
+    for (max_events, max_bytes) in [
+        (2, usize::MAX),
+        (usize::MAX, 3 * size_of::<EntropySymbol>() - 1),
+    ] {
+        let (report, pictures) = capture(
+            TILES,
+            1,
+            BlockEvidenceRequest::new(|_| true, None, max_events, max_bytes).with_entropy(scope),
+        );
+        assert_eq!(report.status, BlockEvidenceStatus::Truncated);
+        let evidence = report.entropy.unwrap();
+        assert_eq!(evidence.symbols.len(), 2);
+        assert!(evidence.symbols.capacity() <= 2);
+        assert!(evidence.end_ordinal > evidence.symbols[1].ordinal);
+        assert_eq!(picture_hashes(&pictures), expected);
+    }
+
+    let polls = AtomicUsize::new(0);
+    let (report, pictures) = capture(
+        TILES,
+        1,
+        BlockEvidenceRequest::new(|_| true, None, 100, usize::MAX)
+            .with_entropy(scope)
+            .with_cancellation(move || polls.fetch_add(1, Ordering::Relaxed) >= 2),
+    );
+    assert_eq!(report.status, BlockEvidenceStatus::Cancelled);
+    let evidence = report.entropy.unwrap();
+    assert_eq!(evidence.symbols.len(), 2);
+    assert!(evidence.end_ordinal > evidence.symbols[1].ordinal);
+    assert_eq!(picture_hashes(&pictures), expected);
+}
+
+#[test]
+fn entropy_range_keeps_reports_bound_to_their_coded_frames() {
+    use splot_decode::block_evidence::{BlockEntropyScope, BlockEvidenceId};
+
+    let scope = BlockEntropyScope::Block(BlockEvidenceId::new(
+        0,
+        BlockEvidenceTree::Shared,
+        rect(0, 0, 64, 64),
+    ));
+    let request = BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX)
+        .with_entropy(scope)
+        .with_frame_limit(NonZeroUsize::new(2).unwrap());
+    let (mut decoder, capture) = Decoder::new_with_block_evidence(settings(4), request).unwrap();
+    let pictures = decode(&mut decoder, SUBPEL).unwrap();
+
+    let first = capture.take().unwrap();
+    assert_eq!(first.frame.unwrap().provenance, pictures[0].provenance());
+    assert_eq!(first.status, BlockEvidenceStatus::Complete);
+    let first_entropy = first.entropy.unwrap();
+    assert_eq!(first_entropy.scope, scope);
+    let second = capture.take().unwrap();
+    assert_eq!(second.frame.unwrap().provenance, pictures[1].provenance());
+    assert_eq!(second.status, BlockEvidenceStatus::Complete);
+    let second_entropy = second.entropy.unwrap();
+    assert_eq!(second_entropy.scope, scope);
+    assert_eq!(first_entropy.symbols[0].ordinal, 0);
+    assert_eq!(second_entropy.symbols[0].ordinal, 0);
+    assert_ne!(first_entropy.symbols, second_entropy.symbols);
+    assert!(capture.is_finished());
+}
+
+#[test]
+fn entropy_keeps_the_chroma_pair_type_unassigned_to_either_transform() {
+    use splot_decode::block_evidence::BlockEntropyScope;
+
+    const CCTX: &[u8] =
+        include_bytes!("../../../tests/conformance/vectors/valid/syn-cctx-444-intra-128x128.ivf");
+    let transform = selected_transform(CCTX, 0, PlaneId::U, rect(12, 4, 4, 4));
+    for scope in [
+        BlockEntropyScope::Block(transform.block),
+        BlockEntropyScope::Transform(transform),
+    ] {
+        let (report, _) = capture(
+            CCTX,
+            1,
+            BlockEvidenceRequest::new(|_| true, None, 100_000, usize::MAX).with_entropy(scope),
+        );
+        assert_eq!(report.status, BlockEvidenceStatus::Complete);
+        let evidence = report.entropy.unwrap();
+        assert!(evidence.symbols.iter().enumerate().any(|(index, symbol)| {
+            symbol.value == 5
+                && symbol
+                    .syntax
+                    .is_some_and(|syntax| syntax.key == "cctx_type")
+                && evidence.transform_for(index).is_none()
+        }));
+        assert!(
+            (0..evidence.symbols.len())
+                .any(|index| evidence.transform_for(index) == Some(transform))
+        );
+    }
 }

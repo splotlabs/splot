@@ -189,6 +189,14 @@ pub(crate) fn read_nonzero_coeff_eob(
 ) -> Result<usize, CoeffLoopContextError> {
     let rows = cdfs.block_rows_mut();
     let ctx = input.eob_ctx;
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+            "eob_pt",
+            "eob_multi_size,eob_ctx",
+            [input.size as u16, ctx as u16, 0],
+        ));
+    }
     let eob_pt_symbol = match input.size {
         EobPtSize::Pt16 => read_row(symbols, row_at(rows.eob_pt_16(), ctx)),
         EobPtSize::Pt32 => read_row(symbols, row_at(rows.eob_pt_32(), ctx)),
@@ -205,6 +213,14 @@ pub(crate) fn read_nonzero_coeff_eob(
 
     if eob_pt < 3 {
         return Ok(eob_pt);
+    }
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+            "eob_extra",
+            "",
+            [0; 3],
+        ));
     }
     let eob_extra = read_row(symbols, cdfs.block_rows_mut().eob_extra()) != 0;
     if eob_pt > MAX_NONZERO_EOB_PT {
@@ -275,6 +291,10 @@ fn read_eob_literal(
 ) -> Result<u32, CoeffLoopContextError> {
     if width == 0 {
         return Ok(0);
+    }
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(syntax, "", [0; 3]));
     }
     let value = symbols
         .read_literal(width)

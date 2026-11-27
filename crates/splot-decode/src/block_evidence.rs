@@ -5,9 +5,11 @@
 //!
 //! Feature tracking: `DECODE-STREAMING-API`.
 
+mod entropy;
 mod prediction;
 pub(crate) mod stages;
 mod transform;
+pub use entropy::*;
 pub use prediction::*;
 pub use stages::{DecodeStage, StageEvidence, StageEvidenceStatus};
 pub use transform::{
@@ -77,6 +79,7 @@ pub struct BlockEvidenceRequest {
     transform_details: Option<BlockTransformId>,
     transform_coefficients: bool,
     stage_samples: Option<(PlaneId, PlaneRect)>,
+    entropy: Option<BlockEntropyScope>,
     cancelled: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
@@ -103,6 +106,7 @@ impl BlockEvidenceRequest {
             transform_details: None,
             transform_coefficients: false,
             stage_samples: None,
+            entropy: None,
             cancelled: None,
         }
     }
@@ -123,6 +127,7 @@ impl BlockEvidenceRequest {
         self.transform_details = None;
         self.transform_coefficients = false;
         self.stage_samples = None;
+        self.entropy = None;
         self
     }
 
@@ -132,6 +137,7 @@ impl BlockEvidenceRequest {
         self.transform_details = Some(transform);
         self.transform_coefficients = false;
         self.stage_samples = None;
+        self.entropy = None;
         self.kind = BlockEvidenceKind::Transforms;
         self
     }
@@ -143,6 +149,7 @@ impl BlockEvidenceRequest {
     #[must_use]
     pub fn with_stage_samples(mut self, plane: PlaneId, region: PlaneRect) -> Self {
         self.stage_samples = Some((plane, region));
+        self.entropy = None;
         self.transform_details = None;
         self.transform_coefficients = false;
         self.kind = BlockEvidenceKind::Stages;
@@ -158,6 +165,19 @@ impl BlockEvidenceRequest {
         let mut request = self.with_transform_details(transform);
         request.transform_coefficients = true;
         request
+    }
+
+    /// Collects symbols from one exact block or transform within each selected frame.
+    /// The exact selection replaces the region filter. The event and byte
+    /// budgets apply to the symbol records.
+    #[must_use]
+    pub fn with_entropy(mut self, scope: BlockEntropyScope) -> Self {
+        self.entropy = Some(scope);
+        self.stage_samples = None;
+        self.region = None;
+        self.transform_details = None;
+        self.transform_coefficients = false;
+        self
     }
 
     /// Cancels capture when the predicate returns true.
@@ -307,6 +327,8 @@ pub struct BlockEvidenceReport {
     pub coefficients: Option<BlockTransformCoefficients>,
     /// Sample stages during a region capture.
     pub stages: Vec<StageEvidence>,
+    /// Symbol observations when the decoder found the requested scope.
+    pub entropy: Option<BlockEntropyEvidence>,
 }
 
 /// The receive end of an evidence capture.
@@ -338,6 +360,7 @@ struct CaptureState {
     remaining_events: usize,
     remaining_bytes: usize,
     walking: bool,
+    entropy: Option<BlockEntropyEvidence>,
     stopped: Option<BlockEvidenceStatus>,
     finished: bool,
     records: Vec<BlockEvidenceRecord>,
@@ -456,14 +479,18 @@ impl BlockEvidenceState {
         }
         let stopped = state.stopped.take();
         let walking = core::mem::take(&mut state.walking);
-        let available = if self.captures_stages() {
+        let entropy = state.entropy.take();
+        let entropy_stop = entropy.as_ref().and_then(BlockEntropyEvidence::status);
+        let available = if self.request.entropy.is_some() {
+            entropy.is_some()
+        } else if self.captures_stages() {
             state.stages.is_some() && state.stage_depth.is_some()
         } else {
             walking
         };
         let mut status = if !decoded {
             BlockEvidenceStatus::DecodeFailed
-        } else if let Some(stopped) = stopped {
+        } else if let Some(stopped) = stopped.or(entropy_stop) {
             stopped
         } else if cancelled {
             BlockEvidenceStatus::Cancelled
@@ -477,6 +504,10 @@ impl BlockEvidenceState {
         let records = core::mem::take(&mut state.records);
         state.remaining_events -= records.len();
         state.remaining_bytes -= records.capacity() * size_of::<BlockEvidenceRecord>();
+        if let Some(entropy) = &entropy {
+            state.remaining_events -= entropy.symbols.len();
+            state.remaining_bytes -= entropy.symbols.capacity() * size_of::<EntropySymbol>();
+        }
         let coefficients = state.coefficients.take();
         if let Some(coefficients) = &coefficients {
             state.remaining_bytes -= (coefficients.quantized.capacity()
@@ -502,6 +533,7 @@ impl BlockEvidenceState {
             records,
             coefficients,
             stages,
+            entropy,
         };
         state.finished = session_ended
             || state.frames_selected == self.request.frame_limit.get()
@@ -712,7 +744,8 @@ impl BlockEvidenceTile<'_> {
         parent: Option<TilePartitionCall>,
         partition: BlockPartition,
     ) {
-        if self.recorder.state.request.kind.partitions()
+        if self.recorder.state.request.entropy.is_none()
+            && self.recorder.state.request.kind.partitions()
             && let Some(id) = self.node_id(call)
         {
             self.record(
@@ -760,11 +793,12 @@ impl BlockEvidenceTile<'_> {
     }
 
     pub(crate) fn wants_blocks(self) -> bool {
-        self.recorder.state.request.kind.blocks()
+        self.recorder.state.request.entropy.is_none() && self.recorder.state.request.kind.blocks()
     }
 
     pub(crate) fn wants_transforms(self) -> bool {
-        self.recorder.state.request.kind.transforms()
+        self.recorder.state.request.entropy.is_none()
+            && self.recorder.state.request.kind.transforms()
     }
 
     fn block_id(self, frontier: &DecodeBlockFrontier) -> Option<BlockEvidenceId> {

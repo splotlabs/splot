@@ -1016,6 +1016,60 @@ pub(crate) struct PlaneCoeffBlock {
 }
 
 /// Reads `all_zero` and, for a nonzero block, its coefficients into `arena`.
+#[cfg(feature = "block-evidence")]
+#[expect(
+    clippy::inline_always,
+    reason = "measured: the caller's descriptor stays in its frame"
+)]
+#[inline(always)]
+pub(crate) fn decode_general_intra_plane_coeffs_observed(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    context: &mut TileCoeffContextState,
+    arena: &mut Vec<i32>,
+    block: &PlaneCoeffBlock,
+) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
+    let scoped = work_unit.entropy_transform.is_some_and(|transform| {
+        let tx_size = plane_coeff_tx_size(block, block.segment_lossless.unwrap_or(false));
+        transform.plane.index() == block.plane
+            && transform.coded.x() == block.x
+            && transform.coded.y() == block.y
+            && Some(transform.coded.width()) == TX_WIDTH.get(tx_size).map(|width| *width as usize)
+            && Some(transform.coded.height())
+                == TX_HEIGHT.get(tx_size).map(|height| *height as usize)
+    });
+    if scoped {
+        symbols.set_entropy_observation_active(true);
+    }
+    let record_transform = symbols.observes_entropy();
+    if record_transform {
+        let _ = symbols.replace_entropy_scope_tag(Some([
+            block.plane as u32,
+            block.x as u32,
+            block.y as u32,
+            plane_coeff_tx_size(block, block.segment_lossless.unwrap_or(false)) as u32,
+        ]));
+    }
+    let result = decode_general_intra_plane_coeffs(work_unit, symbols, context, arena, block);
+    if record_transform {
+        let _ = symbols.replace_entropy_scope_tag(None);
+    }
+    if scoped {
+        symbols.set_entropy_observation_active(false);
+    }
+    result
+}
+
+#[inline]
+fn plane_coeff_tx_size(block: &PlaneCoeffBlock, lossless: bool) -> usize {
+    if lossless && !block.is_inter && !block.fsc_mode {
+        TX_4X4
+    } else {
+        block.tx_size
+    }
+}
+
+/// Reads one plane's coefficients into the arena.
 #[expect(
     clippy::inline_always,
     reason = "measured: the caller's descriptor stays in its frame"
@@ -1029,11 +1083,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     block: &PlaneCoeffBlock,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let lossless = block.segment_lossless.unwrap_or(false);
-    let tx_size = if lossless && !block.is_inter && !block.fsc_mode {
-        TX_4X4
-    } else {
-        block.tx_size
-    };
+    let tx_size = plane_coeff_tx_size(block, lossless);
     let Some(tx) = TX_GEOMETRY.get(tx_size) else {
         return Err(invalid_reconstruction_state_error("transform size"));
     };
@@ -1054,6 +1104,22 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     );
     let cdfs = work_unit.cdf.tile_cdfs_mut();
     let rows = cdfs.block_rows_mut();
+    #[cfg(feature = "block-evidence")]
+    if symbols.observes_entropy() {
+        use splot_core::symbol::EntropySyntax;
+
+        let syntax = if block.plane == 2 {
+            EntropySyntax::new("all_zero", "v_txb_skip_ctx", [ctx as u16, 0, 0])
+        } else {
+            let plane_type = usize::from(block.is_inter || block.txb_skip_fsc_mode);
+            EntropySyntax::new(
+                "all_zero",
+                "plane_type,tx_size_ctx,txb_skip_ctx",
+                [plane_type as u16, u16::from(tx.size_ctx), ctx as u16],
+            )
+        };
+        symbols.annotate_entropy(syntax);
+    }
     let row = if block.plane == 2 {
         row_at(rows.v_txb_skip(), ctx)
     } else {
@@ -1389,7 +1455,22 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
+        #[cfg(feature = "block-evidence")]
+        let transform = if symbols.observes_entropy() {
+            symbols.annotate_entropy(splot_core::symbol::EntropySyntax::new(
+                "cctx_type",
+                "",
+                [0; 3],
+            ));
+            symbols.replace_entropy_scope_tag(None)
+        } else {
+            None
+        };
         metadata.cctx_type = Some(read_row(symbols, cdfs.block_rows_mut().cctx_type()));
+        #[cfg(feature = "block-evidence")]
+        if transform.is_some() {
+            let _ = symbols.replace_entropy_scope_tag(transform);
+        }
     }
     if lossless {
         if !is_inter && input.fsc_mode {
