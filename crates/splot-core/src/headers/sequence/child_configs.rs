@@ -833,9 +833,10 @@ pub(crate) fn parse_sequence_transform_quant_entropy_config_with_reader<O: Synta
 }
 
 /// `CdefOnSkipTxfm` mode derived in `sequence_filter_config()` (AV2 § 5.4.10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum CdefOnSkipTxfm {
     /// `CDEF_ON_SKIP_TXFM_ADAPTIVE`.
+    #[default]
     Adaptive,
     /// `CDEF_ON_SKIP_TXFM_ALWAYS_ON`.
     AlwaysOn,

@@ -228,6 +228,10 @@ pub fn build_inter_frame_header(
         use_ref_frame_mvs: false,
         global_motion: [None; REFS_PER_FRAME],
         filters: FrameFilterParams {
+            lr_luma_unit_size: params
+                .filters
+                .lr_luma_unit_size
+                .filter(|_| !seq.restoration.lr_pc_wiener_disabled), // bankless: PC-Wiener
             lr_luma_wiener_ns: None,
             lr_chroma_wiener_ns: [None; 2],
             ccso: params.filters.ccso.map(|plane| CcsoPlaneParams {

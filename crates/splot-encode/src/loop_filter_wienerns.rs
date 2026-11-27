@@ -279,6 +279,19 @@ impl Search<'_> {
         syntax: &FilterSyntax,
         (preset, pre_cdef): (&PresetParams, Option<&DecodedFrame<u16>>),
     ) -> Result<(FrameFilterParams, BTreeMap<LrUnit, LrUnitType>, i128)> {
+        let filter = self.seq.filter.ok_or(Error::Unsupported {
+            what: "a sequence header without filter config",
+        })?;
+        let luma_size = pc.lr_luma_unit_size.unwrap_or(64);
+        let luma_off = &FrameFilterParams {
+            lr_luma_unit_size: None,
+            ..*pc
+        };
+        let pc = if filter.lr_pc_wiener_disabled && filter.lr_wiener_nonsep_disabled {
+            luma_off
+        } else {
+            pc
+        };
         let core = self.header(pc)?;
         let units = Units::new(self.seq, &core)?;
         let off = apply_loop_filters(
@@ -306,7 +319,12 @@ impl Search<'_> {
                 .map(|(&a, &b)| a as i64 - b as i64)
                 .collect())
         };
-        let pc_delta = deltas(pc, &units, 0, LrUnitType::PcWiener)?;
+        let pc_off = filter.lr_pc_wiener_disabled;
+        let pc_delta = if pc_off {
+            Vec::new()
+        } else {
+            deltas(pc, &units, 0, LrUnitType::PcWiener)?
+        };
         let luma_options = |kinds: &[(LrUnitType, &[i64])]| -> Options {
             (0..units.coded.len())
                 .map(|index| {
@@ -330,17 +348,19 @@ impl Search<'_> {
                 best = choice;
             }
         };
-        let (cost, lr_on) = self.decide(
-            &core,
-            &units,
-            &luma_options(&[(LrUnitType::PcWiener, &pc_delta)]),
-            off_bits,
-        )?;
-        consider(Choice {
-            cost,
-            params: *pc,
-            lr_on,
-        });
+        if !pc_off {
+            let (cost, lr_on) = self.decide(
+                &core,
+                &units,
+                &luma_options(&[(LrUnitType::PcWiener, &pc_delta)]),
+                off_bits,
+            )?;
+            consider(Choice {
+                cost,
+                params: *pc,
+                lr_on,
+            });
+        }
         let wiener = |rst_ref_pic_idx, bank, switchable| FrameFilterParams {
             lr_luma_wiener_ns: Some(FrameWienerNs {
                 switchable,
@@ -350,26 +370,34 @@ impl Search<'_> {
             ..*pc
         };
         let mut try_bank = |rst_ref_pic_idx, bank: WienerNsFrameFilterBank| -> Result<Vec<bool>> {
-            let params = wiener(rst_ref_pic_idx, bank, true);
+            let params = wiener(rst_ref_pic_idx, bank, !pc_off);
             let wns_delta = deltas(&params, &units, 0, LrUnitType::WienerNs)?;
-            let options = luma_options(&[
-                (LrUnitType::PcWiener, &pc_delta),
-                (LrUnitType::WienerNs, &wns_delta),
-            ]);
-            let (cost, lr_on) = self.decide(&self.header(&params)?, &units, &options, off_bits)?;
-            let taken = units
-                .coded
-                .iter()
-                .map(|(_, unit)| lr_on.get(unit) == Some(&LrUnitType::WienerNs))
-                .collect();
-            consider(Choice {
-                cost,
-                params,
-                lr_on,
-            });
+            let taken_by = |lr_on: &BTreeMap<LrUnit, LrUnitType>| -> Vec<bool> {
+                units
+                    .coded
+                    .iter()
+                    .map(|(_, unit)| lr_on.get(unit) == Some(&LrUnitType::WienerNs))
+                    .collect()
+            };
+            let mut taken = None;
+            if !pc_off {
+                let options = luma_options(&[
+                    (LrUnitType::PcWiener, &pc_delta),
+                    (LrUnitType::WienerNs, &wns_delta),
+                ]);
+                let (cost, lr_on) =
+                    self.decide(&self.header(&params)?, &units, &options, off_bits)?;
+                taken = Some(taken_by(&lr_on));
+                consider(Choice {
+                    cost,
+                    params,
+                    lr_on,
+                });
+            }
             let params = wiener(rst_ref_pic_idx, bank, false);
             let options = luma_options(&[(LrUnitType::WienerNs, &wns_delta)]);
             let (cost, lr_on) = self.decide(&self.header(&params)?, &units, &options, off_bits)?;
+            let taken = taken.unwrap_or_else(|| taken_by(&lr_on));
             consider(Choice {
                 cost,
                 params,
@@ -377,60 +405,65 @@ impl Search<'_> {
             });
             Ok(taken)
         };
-        if let Some(index) = self.temporal_bank(&core, 0) {
-            try_bank(Some(index), empty_bank())?;
-        }
-        let counts: Vec<u8> = DECODE_NUM_FILTER_CLASSES
-            .iter()
-            .copied()
-            .filter(|&count| count > 1 && count <= preset.wiener_ns_classes)
-            .collect();
-        let map = if counts.is_empty() || preset.wiener_ns == 0 {
-            None
-        } else {
-            Some(
-                pc_wiener_cell_classes(
-                    self.seq,
-                    &core,
-                    self.recorder,
-                    (pre_cdef.unwrap_or(&off), &off),
+        if !filter.lr_wiener_nonsep_disabled {
+            if let Some(index) = self.temporal_bank(&core, 0) {
+                try_bank(Some(index), empty_bank())?;
+            }
+            let counts: Vec<u8> = DECODE_NUM_FILTER_CLASSES
+                .iter()
+                .copied()
+                .filter(|&count| count > 1 && count <= preset.wiener_ns_classes)
+                .collect();
+            let map = if counts.is_empty() || preset.wiener_ns == 0 {
+                None
+            } else {
+                Some(
+                    pc_wiener_cell_classes(
+                        self.seq,
+                        &core,
+                        self.recorder,
+                        (pre_cdef.unwrap_or(&off), &off),
+                    )
+                    .map_err(coding("PC-Wiener classes"))?,
                 )
-                .map_err(coding("PC-Wiener classes"))?,
-            )
-        };
-        let (stats, mut classes) = match &map {
-            Some(map) => {
-                let (singles, classes) = self.luma_class_stats(&off, &units, map, None)?;
-                (singles, Some(classes))
-            }
-            None => (self.plane_stats(&off, &units, 0)?, None),
-        };
-        let mut taken = vec![true; stats.len()];
-        for pass in 0..preset.wiener_ns {
-            let mut pick = self.fit(&sum_taken(&stats, &taken), 0)?;
-            if let Some(map) = &map
-                && pass > 0
-            {
-                classes = Some(self.luma_class_stats(&off, &units, map, Some(&taken))?.1);
-            }
-            if let Some(classes) = &classes
-                && let Some((cost, bank)) = self.fit_classes(classes, &counts)?
-                && pick.as_ref().is_none_or(|(single, _)| cost < *single)
-            {
-                pick = Some((cost, bank));
-            }
-            let Some((_, bank)) = pick else {
-                break;
             };
-            taken = try_bank(None, bank)?;
-            if !taken.contains(&true) {
-                break;
+            let (stats, mut classes) = match &map {
+                Some(map) => {
+                    let (singles, classes) = self.luma_class_stats(&off, &units, map, None)?;
+                    (singles, Some(classes))
+                }
+                None => (self.plane_stats(&off, &units, 0)?, None),
+            };
+            let mut taken = vec![true; stats.len()];
+            for pass in 0..preset.wiener_ns {
+                let mut pick = self.fit(&sum_taken(&stats, &taken), 0)?;
+                if let Some(map) = &map
+                    && pass > 0
+                {
+                    classes = Some(self.luma_class_stats(&off, &units, map, Some(&taken))?.1);
+                }
+                if let Some(classes) = &classes
+                    && let Some((cost, bank)) = self.fit_classes(classes, &counts)?
+                    && pick.as_ref().is_none_or(|(single, _)| cost < *single)
+                {
+                    pick = Some((cost, bank));
+                }
+                let Some((_, bank)) = pick else {
+                    break;
+                };
+                taken = try_bank(None, bank)?;
+                if !taken.contains(&true) {
+                    break;
+                }
             }
         }
-        if preset.wiener_ns_chroma > 0 && off.plane(PlaneId::U).is_some() {
+        if preset.wiener_ns_chroma > 0
+            && !filter.lr_uv_wiener_nonsep_disabled
+            && off.plane(PlaneId::U).is_some()
+        {
             let format = off.info().pixel_format();
             let shift = format.subsampling_x().max(format.subsampling_y());
-            let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
+            let luma_size = best.params.lr_luma_unit_size.unwrap_or(luma_size);
             let size = (luma_size >> shift).max(64 >> format.subsampling_y());
             let base = best;
             best = self.chroma(base.clone(), &off, (preset, off_bits), size)?;
@@ -912,6 +945,12 @@ const fn choice(rst_ref_pic_idx: Option<u8>, bank: &WienerNsFrameFilterBank) -> 
 }
 
 /// A bank of one class with every coefficient `0`, coded with subset `0`.
+/// A zero luma Wiener-NS filter: with `RESTORE_PC_WIENER` disabled it gives
+/// the luma unit layout a codable frame type before any bank is fitted.
+pub(super) fn luma_probe() -> Result<FrameWienerNs> {
+    Ok(choice(None, &one_class_bank(0, false, &[0; LUMA_COEFFS])?))
+}
+
 fn empty_bank() -> WienerNsFrameFilterBank {
     WienerNsFrameFilterBank {
         classes: splot_core::tile::InlineVec::default(),

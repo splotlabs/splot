@@ -21,8 +21,8 @@ use crate::headers::frame::{
     init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
-    BitDepthIdc, ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc, SequenceHeader,
-    SuperblockSize, Tier, parse_sequence_header,
+    BitDepthIdc, CdefOnSkipTxfm, ChromaFormatIdc, CroppingWindow, LevelIdx, ProfileIdc,
+    SequenceHeader, SuperblockSize, Tier, parse_sequence_header,
 };
 use crate::headers::tile_group::TileGroupFraming;
 use crate::obu::{ObuHeader, ParsedObu};
@@ -83,6 +83,13 @@ pub struct EncoderToolFlags {
     pub cdef: bool,
     /// `enable_restoration`.
     pub loop_restoration: bool,
+    /// With `loop_restoration`, `lr_tools_disable` (§ 5.4.10) of luma
+    /// `RESTORE_PC_WIENER`, luma `RESTORE_WIENER_NONSEP` and chroma
+    /// `RESTORE_WIENER_NONSEP`; chroma `RESTORE_PC_WIENER` is always disabled.
+    pub lr_tools_disable: [bool; 3],
+    /// `CdefOnSkipTxfm` (§ 5.4.10): frames code `cdef_on_skip_txfm_frame_enable`
+    /// only when `Adaptive`.
+    pub cdef_on_skip_txfm: CdefOnSkipTxfm,
     /// `enable_ccso`.
     pub ccso: bool,
     /// `enable_gdf`.
@@ -294,7 +301,7 @@ pub struct FrameFilterParams {
     /// The CDEF strength sets (§ 5.18.7.10); empty turns CDEF off.
     pub cdef_strengths: CdefStrengthSets,
     /// `cdef_on_skip_txfm_frame_enable` (§ 5.18.7.10) of a frame with CDEF
-    /// on; the encoder sequence codes `CDEF_ON_SKIP_TXFM_ADAPTIVE`.
+    /// on: coded under `CDEF_ON_SKIP_TXFM_ADAPTIVE`, else the inferred value.
     pub cdef_on_skip: bool,
     /// `allow_df_sub_pu` (§ 5.18.5.2) of an inter frame of a sequence with
     /// `enable_df_sub_pu`: deblocking also filters prediction sub-unit edges.
@@ -739,16 +746,22 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(tools.loop_restoration)?;
     if tools.loop_restoration {
-        w.write_flag(false)?; // lr_tools_disable[0][RESTORE_PC_WIENER]
-        w.write_flag(false)?; // lr_tools_disable[0][RESTORE_WIENER_NONSEP]
-        w.write_flag(false)?; // lr_tools_uv_present
+        let [pc_wiener, wiener_nonsep, uv_wiener_nonsep] = tools.lr_tools_disable;
+        w.write_flag(pc_wiener)?;
+        w.write_flag(wiener_nonsep)?;
+        w.write_flag(uv_wiener_nonsep != wiener_nonsep)?; // lr_tools_uv_present
+        if uv_wiener_nonsep != wiener_nonsep {
+            w.write_flag(uv_wiener_nonsep)?;
+        }
     }
     w.write_flag(tools.ccso)?;
     if tools.ccso {
         w.write_flag(tools.ccso_unit_matches_sb_size)?;
     }
-    w.write_flag(false)?; // cdef_on_skip_txfm_always_on
-    w.write_flag(false)?; // cdef_on_skip_txfm_disabled
+    w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::AlwaysOn)?;
+    if tools.cdef_on_skip_txfm != CdefOnSkipTxfm::AlwaysOn {
+        w.write_flag(tools.cdef_on_skip_txfm == CdefOnSkipTxfm::Disabled)?;
+    }
     w.write_bits(DF_PAR_BITS_MINUS_2 + u32::from(tools.df_par_bits_extra), 2)?;
 
     w.write_flag(tools.seq_tiles.is_some())?; // seq_tile_info_present_flag
