@@ -176,40 +176,55 @@ impl ResidualPlanePlan {
             if identity_row_flag == PALETTE_ROW_COPY_PREVIOUS && ax2 == 0 {
                 return Err(GeneralIntraResidualError::PaletteInvalidIdentityRow);
             }
-            for ax1 in 0..axis1_limit {
-                let y = if direction { ax1 } else { ax2 };
-                let x = if direction { ax2 } else { ax1 };
-                let offset = y * plane_width + x;
-                color_map[offset] = if identity_row_flag == PALETTE_ROW_COPY_PREVIOUS {
-                    if direction {
-                        color_map[y * plane_width + x - 1]
-                    } else {
-                        color_map[(y - 1) * plane_width + x]
+            let line = ax2 * plane_width;
+            if identity_row_flag == PALETTE_ROW_COPY_PREVIOUS {
+                if direction {
+                    for at in (ax2..).step_by(plane_width).take(rows) {
+                        color_map[at] = color_map[at - 1];
                     }
-                } else if identity_row_flag == PALETTE_ROW_COPY_LAST && ax1 > 0 {
-                    if direction {
-                        color_map[(y - 1) * plane_width + x]
-                    } else {
-                        color_map[y * plane_width + x - 1]
-                    }
-                } else if ax2 == 0 && ax1 == 0 {
-                    read_palette_uniform(symbols, palette.size())? as u8
                 } else {
-                    let (color_ctx, color_order) =
-                        palette_color_index_context(&color_map, plane_width, y, x);
-                    let color_idx = work_unit
-                        .cdf_mut()
-                        .tile_cdfs_mut()
-                        .read_palette_y_color(palette.size(), color_ctx, symbols)
-                        .map_err(|source| GeneralIntraResidualError::PaletteSymbolRead { source })?
-                        as usize;
-                    *color_order.get(color_idx).ok_or_else(|| {
-                        GeneralIntraResidualError::PaletteColorIndex {
-                            color_index: color_idx,
-                            palette_size: palette.size(),
-                        }
-                    })?
+                    color_map.copy_within(line - plane_width..line - plane_width + cols, line);
+                }
+            } else {
+                let one_color = identity_row_flag == PALETTE_ROW_COPY_LAST;
+                let coded = if one_color {
+                    axis1_limit.min(1)
+                } else {
+                    axis1_limit
                 };
+                for ax1 in 0..coded {
+                    let (y, x) = if direction { (ax1, ax2) } else { (ax2, ax1) };
+                    color_map[y * plane_width + x] = if ax2 == 0 && ax1 == 0 {
+                        read_palette_uniform(symbols, palette.size())? as u8
+                    } else {
+                        let (color_ctx, color_order) =
+                            palette_color_index_context(&color_map, plane_width, y, x);
+                        let color_idx = work_unit
+                            .cdf_mut()
+                            .tile_cdfs_mut()
+                            .read_palette_y_color(palette.size(), color_ctx, symbols)
+                            .map_err(|source| GeneralIntraResidualError::PaletteSymbolRead {
+                                source,
+                            })? as usize;
+                        *color_order.get(color_idx).ok_or_else(|| {
+                            GeneralIntraResidualError::PaletteColorIndex {
+                                color_index: color_idx,
+                                palette_size: palette.size(),
+                            }
+                        })?
+                    };
+                }
+                if coded < axis1_limit {
+                    if direction {
+                        let first = color_map[ax2];
+                        for at in (ax2..).step_by(plane_width).take(rows).skip(1) {
+                            color_map[at] = first;
+                        }
+                    } else {
+                        let first = color_map[line];
+                        color_map[line + 1..line + cols].fill(first);
+                    }
+                }
             }
             prev_identity_row_flag = usize::from(identity_row_flag);
         }
