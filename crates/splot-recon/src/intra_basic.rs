@@ -6,7 +6,7 @@
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16, i16x32, u16x32};
-use splot_core::simd::{SelectedBackend, SimdBackend};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -134,11 +134,12 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         output: &mut [O],
         stride_samples: usize,
     ) {
-        if B::KIND == SelectedBackend::Avx512 && size.width() >= 32 {
-            let (backend, args) = (self.0, (left, above, top_left));
-            return backend.vectorize(
+        #[cfg(target_arch = "x86_64")]
+        if let (Some(wide), true) = (self.0.avx512_token(), size.width() >= 32) {
+            let args = (left, above, top_left);
+            return wide.vectorize(
                 #[inline(always)]
-                || paeth_rows_wide(backend.token(), size, args, output, stride_samples),
+                || paeth_rows_wide(wide, size, args, output, stride_samples),
             );
         }
         let narrow = self.0.narrow();

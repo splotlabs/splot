@@ -262,6 +262,14 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
         None
     }
 
+    /// Returns the `Avx512` token of an AVX-512 selection, which its narrowed
+    /// backend keeps.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        None
+    }
+
     /// Returns the carried `Neon` token on AArch64 NEON backends.
     #[cfg(target_arch = "aarch64")]
     #[inline]
@@ -347,6 +355,7 @@ macro_rules! with_simd {
 #[derive(Clone, Copy)]
 pub struct Avx2Backend {
     token: fearless_simd::Avx2,
+    wide: Option<fearless_simd::Avx512>,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -399,6 +408,11 @@ impl SimdBackend for Avx2Backend {
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.token)
+    }
+
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        self.wide
     }
 
     #[inline]
@@ -455,7 +469,10 @@ impl SimdBackend for Avx512Backend {
 
     #[inline]
     fn narrow(self) -> Self::Narrow {
-        Avx2Backend { token: self.avx2 }
+        Avx2Backend {
+            token: self.avx2,
+            wide: Some(self.token),
+        }
     }
 
     #[inline]
@@ -466,6 +483,11 @@ impl SimdBackend for Avx512Backend {
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.avx2)
+    }
+
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        Some(self.token)
     }
 }
 
@@ -834,7 +856,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
     match selected {
         SelectedBackend::Avx2 => level
             .as_avx2()
-            .map(|token| ResolvedBackend::Avx2(Avx2Backend { token }))
+            .map(|token| ResolvedBackend::Avx2(Avx2Backend { token, wide: None }))
             .ok_or_else(err),
         SelectedBackend::Avx512 => level
             .as_avx512()
@@ -1068,7 +1090,7 @@ mod tests {
 
         #[cfg(target_arch = "x86_64")]
         {
-            assert_eq!(core::mem::size_of::<Avx2Backend>(), 0);
+            assert_eq!(core::mem::size_of::<Avx2Backend>(), 1);
             assert_eq!(core::mem::size_of::<Avx512Backend>(), 0);
         }
         let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
