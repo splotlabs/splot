@@ -10,7 +10,26 @@
 
 use std::sync::OnceLock;
 
+use splot_decode::encoder_syntax::TransformBlock;
+
 use super::*;
+
+/// The luma transform blocks of a decoder prediction with their samples.
+type LumaBlocks = Vec<(TransformBlock, Vec<u16>)>;
+
+#[cfg(test)]
+thread_local! {
+    /// While `Some`, collects the closed-form average cost and the cost of
+    /// the decoder's plain average prediction of each unrefined candidate.
+    pub(crate) static TYPED_UNITS: core::cell::RefCell<Option<Vec<(i64, i64)>>> =
+        const { core::cell::RefCell::new(None) };
+    /// Refined candidates on this thread whose average reference is the
+    /// decoder's refined prediction.
+    pub(crate) static TYPED_REFINED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Compound types that beat the closed-form average but not the refined
+    /// prediction, so the search drops them, on this thread.
+    pub(crate) static TYPED_DROPPED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 
 /// `MAX_WEDGE_TYPES`: the `WedgeIndex` values of `Wedge_Angle_Dist_2_Index`
 /// (§ 5.20.7.18).
@@ -72,7 +91,9 @@ impl TrialCoder<'_, '_> {
     /// `COMPOUND_AVERAGE` in closed form: the best `cwp_idx` weight, the best
     /// wedge with its sign and the better difference-weighted mask, each
     /// without optical flow or vector refinement, with `4096` times their
-    /// squared error; and that of the average.
+    /// squared error; and that of the average. With `opfl_refine_all` the
+    /// average of a candidate the decoder refines (`REFINE_ALL`, § 5.18.3.2)
+    /// is its refined prediction, so a type must beat that.
     pub(super) fn typed_variants(
         &mut self,
         leaf: &LeafBlock,
@@ -101,6 +122,11 @@ impl TrialCoder<'_, '_> {
         else {
             return none();
         };
+        let refined = if self.preset.opfl_refine_all {
+            self.refined_prediction(leaf, trial)?
+        } else {
+            None
+        };
         let rect = leaf_rect(leaf)?;
         let lists = [(base.refs.0, mvs[0]), (base.refs.1, mvs[1])];
         let CompoundScratch {
@@ -117,9 +143,38 @@ impl TrialCoder<'_, '_> {
         ee.clear();
         ee.resize(s.len(), 0);
         let [dd, sde, see] = kernels().compound_terms(s, (p0, p1), de, ee);
-        let average = blend_cost(dd, 32 * sde, 1024 * see);
+        let closed = blend_cost(dd, 32 * sde, 1024 * see);
+        let average = match &refined {
+            Some(blocks) => {
+                let visible = self.coder.source.visible_luma()?;
+                decoded_average_cost((s, p0, p1), rect, visible, blocks)?
+            }
+            None => closed,
+        };
+        #[cfg(test)]
+        TYPED_REFINED.set(TYPED_REFINED.get() + usize::from(refined.is_some()));
+        #[cfg(test)]
+        if refined.is_none() && TYPED_UNITS.with_borrow(Option::is_some) {
+            let plain = self
+                .syntax
+                .luma_prediction(leaf, prediction)
+                .map_err(Into::into);
+            if let Some(blocks) = codable(plain)? {
+                let visible = self.coder.source.visible_luma()?;
+                let decoded = decoded_average_cost((s, p0, p1), rect, visible, &blocks)?;
+                TYPED_UNITS.with_borrow_mut(|units| {
+                    if let Some(units) = units {
+                        units.push((closed, decoded));
+                    }
+                });
+            }
+        }
         let mut out = Vec::new();
         let keep = |cost: i64, blend: CompoundType, best: &mut Option<(i64, CompoundType)>| {
+            #[cfg(test)]
+            if cost < closed && cost >= average {
+                TYPED_DROPPED.set(TYPED_DROPPED.get() + 1);
+            }
             if cost < average && best.is_none_or(|(c, _)| cost < c) {
                 *best = Some((cost, blend));
             }
@@ -168,7 +223,76 @@ impl TrialCoder<'_, '_> {
     }
 }
 
+/// [`blend_cost`] of the average whose visible samples are the decoder's
+/// luma prediction `blocks`: `4096·(s - d)²` there, and the closed-form
+/// `(64·s - 32·p0 - 32·p1)²` of the search predictions outside the visible
+/// `(width, height)`, where the decoder predicts nothing to compare.
+#[cold]
+#[inline(never)]
+fn decoded_average_cost(
+    (s, p0, p1): (&[u16], &[u16], &[u16]),
+    (left, top, width, height): (usize, usize, usize, usize),
+    visible: (usize, usize),
+    blocks: &[(TransformBlock, Vec<u16>)],
+) -> Result<i64> {
+    let outside = || TileWriterError::Shape("prediction block outside the leaf");
+    let mut decoded = vec![None; width * height];
+    for (tx, samples) in blocks {
+        let (log2_w, _) = tx_log2(tx.tx_size)?;
+        let (Some(x), Some(y)) = (tx.x.checked_sub(left), tx.y.checked_sub(top)) else {
+            return Err(outside());
+        };
+        for (row, predicted) in (y..).zip(samples.chunks_exact(1 << log2_w)) {
+            let start = row * width + x;
+            let cells = decoded
+                .get_mut(start..start + predicted.len())
+                .filter(|_| x + predicted.len() <= width)
+                .ok_or_else(outside)?;
+            for (cell, &d) in cells.iter_mut().zip(predicted) {
+                *cell = Some(d);
+            }
+        }
+    }
+    let mut cost = 0i64;
+    let samples = decoded.iter().zip(s).zip(p0.iter().zip(p1));
+    for (i, ((&d, &s), (&p0, &p1))) in samples.enumerate() {
+        let s = i64::from(s);
+        let shown = left + i % width < visible.0 && top + i / width < visible.1;
+        cost += match (shown, d) {
+            (true, Some(d)) => 4096 * (s - i64::from(d)).pow(2),
+            (true, None) => {
+                return Err(TileWriterError::Shape(
+                    "visible sample without a prediction",
+                ));
+            }
+            (false, _) => (64 * s - 32 * i64::from(p0) - 32 * i64::from(p1)).pow(2),
+        };
+    }
+    Ok(cost)
+}
+
 impl TrialCoder<'_, '_> {
+    /// The decoder's luma prediction of `trial` when the decoder refines it
+    /// with optical flow (`REFINE_ALL`), `None` otherwise.
+    #[cold]
+    #[inline(never)]
+    fn refined_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        trial: CompoundModes,
+    ) -> Result<Option<LumaBlocks>> {
+        let refinements = self.syntax.compound_refinements(leaf, trial);
+        if !codable(refinements.map_err(Into::into))?.is_some_and(|(.., refined)| refined) {
+            return Ok(None);
+        }
+        let prediction = InterPrediction::Compound(trial);
+        codable(
+            self.syntax
+                .luma_prediction(leaf, prediction)
+                .map_err(Into::into),
+        )
+    }
+
     /// The list-1 vector of a same-reference `NEW_NEWMV` whose list 0 is
     /// `first`: the neighbour of `first` at one or one half sample whose
     /// two-vector average has the least luma SATD; `None` without one inside
