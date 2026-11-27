@@ -14,6 +14,9 @@ use splot_decode::encoder_syntax::TransformBlock;
 
 use super::*;
 
+/// The luma transform blocks of a decoder prediction with their samples.
+type LumaBlocks = Vec<(TransformBlock, Vec<u16>)>;
+
 #[cfg(test)]
 thread_local! {
     /// While `Some`, collects the closed-form average cost and the cost of
@@ -119,19 +122,8 @@ impl TrialCoder<'_, '_> {
         else {
             return none();
         };
-        let refined = self.preset.opfl_refine_all
-            && codable(
-                self.syntax
-                    .compound_refinements(leaf, trial)
-                    .map_err(Into::into),
-            )?
-            .is_some_and(|(.., refined)| refined);
-        let refined = if refined {
-            codable(
-                self.syntax
-                    .luma_prediction(leaf, InterPrediction::Compound(trial))
-                    .map_err(Into::into),
-            )?
+        let refined = if self.preset.opfl_refine_all {
+            self.refined_prediction(leaf, trial)?
         } else {
             None
         };
@@ -152,9 +144,11 @@ impl TrialCoder<'_, '_> {
         ee.resize(s.len(), 0);
         let [dd, sde, see] = kernels().compound_terms(s, (p0, p1), de, ee);
         let closed = blend_cost(dd, 32 * sde, 1024 * see);
-        let visible = self.coder.source.visible_luma()?;
         let average = match &refined {
-            Some(blocks) => decoded_average_cost((s, p0, p1), rect, visible, blocks)?,
+            Some(blocks) => {
+                let visible = self.coder.source.visible_luma()?;
+                decoded_average_cost((s, p0, p1), rect, visible, blocks)?
+            }
             None => closed,
         };
         #[cfg(test)]
@@ -166,6 +160,7 @@ impl TrialCoder<'_, '_> {
                 .luma_prediction(leaf, prediction)
                 .map_err(Into::into);
             if let Some(blocks) = codable(plain)? {
+                let visible = self.coder.source.visible_luma()?;
                 let decoded = decoded_average_cost((s, p0, p1), rect, visible, &blocks)?;
                 TYPED_UNITS.with_borrow_mut(|units| {
                     if let Some(units) = units {
@@ -232,6 +227,8 @@ impl TrialCoder<'_, '_> {
 /// luma prediction `blocks`: `4096·(s - d)²` there, and the closed-form
 /// `(64·s - 32·p0 - 32·p1)²` of the search predictions outside the visible
 /// `(width, height)`, where the decoder predicts nothing to compare.
+#[cold]
+#[inline(never)]
 fn decoded_average_cost(
     (s, p0, p1): (&[u16], &[u16], &[u16]),
     (left, top, width, height): (usize, usize, usize, usize),
@@ -275,6 +272,27 @@ fn decoded_average_cost(
 }
 
 impl TrialCoder<'_, '_> {
+    /// The decoder's luma prediction of `trial` when the decoder refines it
+    /// with optical flow (`REFINE_ALL`), `None` otherwise.
+    #[cold]
+    #[inline(never)]
+    fn refined_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        trial: CompoundModes,
+    ) -> Result<Option<LumaBlocks>> {
+        let refinements = self.syntax.compound_refinements(leaf, trial);
+        if !codable(refinements.map_err(Into::into))?.is_some_and(|(.., refined)| refined) {
+            return Ok(None);
+        }
+        let prediction = InterPrediction::Compound(trial);
+        codable(
+            self.syntax
+                .luma_prediction(leaf, prediction)
+                .map_err(Into::into),
+        )
+    }
+
     /// The list-1 vector of a same-reference `NEW_NEWMV` whose list 0 is
     /// `first`: the neighbour of `first` at one or one half sample whose
     /// two-vector average has the least luma SATD; `None` without one inside
