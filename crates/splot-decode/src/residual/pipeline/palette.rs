@@ -213,24 +213,29 @@ impl ResidualPlanePlan {
             }
             prev_identity_row_flag = usize::from(identity_row_flag);
         }
-        if cols != 0 && cols < plane_width {
-            for y in 0..rows {
-                let fill = color_map[y * plane_width + cols - 1];
-                for x in cols..plane_width {
-                    color_map[y * plane_width + x] = fill;
-                }
-            }
-        }
-        if rows != 0 {
-            for y in rows..plane_height {
-                let src = (rows - 1) * plane_width;
-                let dst = y * plane_width;
-                for x in 0..plane_width {
-                    color_map[dst + x] = color_map[src + x];
-                }
-            }
-        }
+        extend_palette_map(&mut color_map, plane_width, cols, rows);
         Ok(Some(color_map))
+    }
+}
+
+/// Extends the visible `cols` x `rows` corner of the row-major `map` over the
+/// whole block, as § 5.20.8.4 `palette_tokens` ends: each visible row repeats
+/// its last visible sample, and each row below repeats the last visible row.
+/// An empty corner leaves `map` as it is.
+fn extend_palette_map(map: &mut [u8], width: usize, cols: usize, rows: usize) {
+    if cols == 0 || rows == 0 {
+        return;
+    }
+    let (visible, below) = map.split_at_mut(rows * width);
+    if cols < width {
+        for row in visible.chunks_exact_mut(width) {
+            let (seen, hidden) = row.split_at_mut(cols);
+            hidden.fill(seen[cols - 1]);
+        }
+    }
+    let last = &visible[(rows - 1) * width..];
+    for row in below.chunks_exact_mut(width) {
+        row.copy_from_slice(last);
     }
 }
 
@@ -419,6 +424,46 @@ fn swap_color_order(
 mod tests {
     use super::*;
     use crate::bitstream::tile_payload::FrameCdfSubset;
+
+    /// The § 5.20.8.4 extension, one sample at a time.
+    fn extend_palette_map_oracle(map: &mut [u8], width: usize, cols: usize, rows: usize) {
+        let height = map.len() / width;
+        for y in 0..rows {
+            for x in cols..width {
+                map[y * width + x] = map[y * width + cols - 1];
+            }
+        }
+        for y in rows..height {
+            for x in 0..width {
+                map[y * width + x] = map[(rows - 1) * width + x];
+            }
+        }
+    }
+
+    #[test]
+    fn palette_map_extension_matches_the_per_sample_oracle() {
+        for (width, height) in [(4, 4), (8, 4), (4, 16), (16, 8), (32, 64), (64, 64)] {
+            for rows in 1..=height {
+                for cols in 1..=width {
+                    let mut map = vec![0xff_u8; width * height];
+                    for (y, row) in map.chunks_exact_mut(width).take(rows).enumerate() {
+                        for (x, index) in row[..cols].iter_mut().enumerate() {
+                            *index = ((x * 3 + y * 5) % 8) as u8;
+                        }
+                    }
+                    let mut expected = map.clone();
+                    extend_palette_map_oracle(&mut expected, width, cols, rows);
+                    extend_palette_map(&mut map, width, cols, rows);
+                    assert_eq!(map, expected, "{width}x{height} visible {cols}x{rows}");
+                }
+            }
+        }
+        for (cols, rows) in [(0, 2), (2, 0)] {
+            let mut map = [7_u8; 16];
+            extend_palette_map(&mut map, 4, cols, rows);
+            assert_eq!(map, [7; 16], "visible {cols}x{rows}");
+        }
+    }
 
     #[test]
     fn palette_cdf_alphabets_and_color_order_stay_inside_palette_size() {
