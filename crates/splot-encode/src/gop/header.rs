@@ -95,18 +95,20 @@ pub(crate) type FrameTools = (
     FrameTiles,
 );
 
-/// A temporal delimiter and the `OBU_REGULAR_SEF`, or the `OBU_LEADING_SEF`
-/// when `leading`, that outputs `slot`, with the explicit `order_hint` when
-/// given, and the film grain of `grain_seed`, in the temporal layer `tlayer`
-/// of the frame it shows; with `multi_frame_header` it codes `cur_mfh_id = 1`.
+/// A temporal delimiter, the prefix `metadata` OBUs and the
+/// `OBU_REGULAR_SEF`, or the `OBU_LEADING_SEF` when `leading`, that outputs
+/// `slot`, with the explicit `order_hint` when given, and the film grain of
+/// `grain_seed`, in the temporal layer `tlayer` of the frame it shows; with
+/// `multi_frame_header` it codes `cur_mfh_id = 1`.
 pub(crate) fn show_existing_unit(
     view: &CoreSeqView,
     slot: u32,
     order_hint: Option<u32>,
-    (grain_seed, multi_frame_header, leading): (Option<u16>, bool, bool),
+    (grain_seed, multi_frame_header, leading, metadata): (Option<u16>, bool, bool, &[u8]),
     tlayer: TemporalLayerId,
 ) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
+    unit.extend_from_slice(metadata);
     let flags = (multi_frame_header, leading, tlayer);
     unit.extend(
         encode_show_existing_frame_obu(view, slot, order_hint, grain_seed, flags)
@@ -177,7 +179,8 @@ impl GopFrame {
     /// `(qindex, filters, tools)`, whose `tile_groups` tile groups carry
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
     /// unit; a key frame repeats the sequence header, followed by `key_obus`,
-    /// its content interpretation, metadata and film grain OBUs. The
+    /// its content interpretation, metadata and film grain OBUs; an inter
+    /// frame codes `key_obus`, its frame metadata, before its frame OBUs. The
     /// header codes the smallest `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
@@ -236,6 +239,7 @@ impl GopFrame {
         } else {
             Vec::new()
         };
+        unit.extend_from_slice(key_obus);
         unit.extend(encode_inter_frame_obu(&header, tiles, tile_groups).map_err(header_error)?);
         Ok(unit)
     }
@@ -244,7 +248,8 @@ impl GopFrame {
     /// `tip_global_wtd_index` `weight`, the film grain of `grain_seed` and the
     /// chroma of the plane quantizer deltas `plane_delta_q` over
     /// the reference map `ref_frame_idx` references, after a temporal
-    /// delimiter when the frame opens its temporal unit; `tip` is its
+    /// delimiter when the frame opens its temporal unit and the prefix
+    /// `metadata` OBUs; `tip` is its
     /// `(qindex, TipGlobalMv, TipInterpFilter, TIP deblocking)`, the qindex
     /// coded only with `enable_tip_explicit_qp`.
     pub(crate) fn tip_output_unit(
@@ -253,7 +258,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
         (weight, grain_seed, plane_delta_q): (u8, Option<u16>, [i8; 3]),
-        multi_frame_header: bool,
+        (multi_frame_header, metadata): (bool, &[u8]),
         (qindex, mv, filter, deblocking): TipOutputChoice,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
@@ -290,6 +295,7 @@ impl GopFrame {
         } else {
             Vec::new()
         };
+        unit.extend_from_slice(metadata);
         unit.extend(encode_tip_output_frame_obu(&header).map_err(header_error)?);
         Ok((header.core, unit))
     }

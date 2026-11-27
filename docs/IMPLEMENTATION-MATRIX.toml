@@ -4867,6 +4867,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FRAME-METADATA"
+name = "Encoder timecode, temporal point info, scan type and banding hints metadata"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.17.2", "5.17.7", "5.17.8", "5.17.10", "5.17.11", "6.16.3", "6.16.7", "6.16.8", "6.16.10", "6.16.11", "7.3.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/content.rs"
+change_id = "encoder-frame-metadata"
+owner = "encoder"
+risk = "low"
+notes = "Config::frame_metadata writes, in front of every output frame (coded, implicit output or show-existing), prefix metadata short OBUs with NO_PERSISTENCE: a full timecode with counting_type 0 from the display index and the frame rate, frame_presentation_time as the frames since the most recent key frame, or since the key frame before it for a key frame or a leading frame (§ 6.16.11; needs timing info), a progressive non-duplicate scan type (key frames then write a content interpretation OBU), and banding hints passed through from a file (no detector). splot encode takes --timecode, --temporal-point-info, --scan-type-info and --banding-hints."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_content_tests.rs::output_frames_carry_the_frame_metadata", "crates/splot-encode/src/intra_frame_content_tests.rs::avm_decodes_a_stream_with_frame_metadata_like_splot", "crates/splot-encode/src/intra_frame_content_tests.rs::rejects_frame_metadata_the_stream_cannot_carry", "crates/splot-cli/tests/encode_decode_roundtrip.rs::frame_metadata_flags_write_metadata_obus"]
+commands = ["cargo test -p splot-encode frame_metadata", "cargo test -p splot-cli --test encode_decode_roundtrip frame_metadata_flags"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MINIMAL-INTRA-IVF"
 name = "Encoder minimal-intra IVF temporal-unit assembler"
 category = "encoder"
@@ -13164,6 +13196,7 @@ tests = [
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_mv_valid.rs::tests::the_offset_vector_moves_the_source_by_whole_samples",
     "crates/splot-decode/src/prediction/inter/block/resolve.rs::tests::local_intrabc_replays_chroma_partition_padding_in_leaf_order",
     "crates/splot-decode/tests/frame_pipelining.rs::intrabc_morph_offset_vector_outside_the_tile_is_rejected_at_every_width",
+    "crates/splot-decode/tests/frame_pipelining.rs::intrabc_vectors_outside_the_local_and_global_areas_are_rejected_at_every_width",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_partition_reader_uses_sequence_selected_reduced_cdf",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_reduced_partition_set_suppresses_one_axis_four_way_symbol",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed",
@@ -13205,6 +13238,17 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/invalid/syn-intrabc-morph-offset-dv-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-local-colo-coded-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-global-delay-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-global-wavefront-512x128.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-extra-range-delay-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-local-colo-uncoded-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-global-older-region-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-global-wavefront-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-extra-range-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-inter-local-128x64.ivf",
+    "tests/conformance/vectors/invalid/syn-intrabc-chroma-offset-local-edge-512x128.ivf",
+    "tests/conformance/vectors/valid/syn-intrabc-sdp-luma-local-edge-512x128.ivf",
     "tests/conformance/vectors/valid/syn-2frame-reduced-txpart-inter-64x64-q160.ivf",
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
     "local decoder mission fixture",

@@ -1262,6 +1262,52 @@ avmdec and splot decode reject it; the validator has no IntraBC vector rule, \
 so it validates clean."""
 expect = "clean"
 
+[[vector]]
+path = "vectors/invalid/syn-intrabc-local-colo-coded-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 8, MiCol 64 copies from the first 64x64 region of the row, whose IBC buffer index equals that of the current region, while the colocated cell of the current region is coded (check_valid_local_ibc refuses), and the global delay rule refuses it too, \
+which § 6.19.7.12 is_mv_valid forbids. avmdec and splot decode reject it; the \
+validator has no IntraBC vector rule, so it validates clean. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [-256, -2048] (1/8 units) at the 16x16 leaf at MiRow 8, MiCol 64. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 refuses it ("Invalid intrabc dv")."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/invalid/syn-intrabc-global-delay-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 8, MiCol 96 copies from the 64x64 region four superblocks to its left: the local area refuses it (coded colocated cell) and the global area refuses srcSb64 >= activeSb64 - INTRABC_DELAY_SB64, \
+which § 6.19.7.12 is_mv_valid forbids. avmdec and splot decode reject it; the \
+validator has no IntraBC vector rule, so it validates clean. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [-256, -2048] (1/8 units) at the 16x16 leaf at MiRow 8, MiCol 96. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 refuses it ("Invalid intrabc dv")."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/invalid/syn-intrabc-global-wavefront-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 16, MiCol 0 copies from the superblock above and to the right: the local area refuses it (the buffers of the earlier superblock row are cleared) and the global wavefront rule refuses srcSb64Col >= activeSb64Col - INTRABC_DELAY_SB64 + wfOffset, \
+which § 6.19.7.12 is_mv_valid forbids. avmdec and splot decode reject it; the \
+validator has no IntraBC vector rule, so it validates clean. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [-512, 512] (1/8 units) at the 16x16 leaf at MiRow 16, MiCol 0. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 refuses it ("Invalid intrabc dv")."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/invalid/syn-intrabc-extra-range-delay-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; 128x128 superblocks with AllowExtraIBCRange 1; the 16x16 leaf at MiRow 16, MiCol 96 (the bottom-left 64x64 of its superblock) copies from 64x64 column 3, one column inside the delay that sb64Residual -1 allows, \
+which § 6.19.7.12 is_mv_valid forbids. avmdec and splot decode reject it; the \
+validator has no IntraBC vector rule, so it validates clean. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1` plus a local test-only patch that keeps the forced block vector [0, -1536] (1/8 units) at the 16x16 leaf at MiRow 16, MiCol 96. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 refuses it ("Invalid intrabc dv")."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/invalid/syn-intrabc-chroma-offset-local-edge-512x128.ivf"
+description = """
+Non-conformant on purpose (DECODE-SELECTABLE-TRANSFORM-RECORDS): a splot encoder key frame of a project-owned 4-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, intrabc_small), made with a local test-only patch that forces one IntraBC block vector [8, -260] samples on the 4x4 leaf at MiRow 1, MiCol 97 (HasChroma, ChromaMiRow 0, ChromaMiCol 96), with enable_sdp 0: \
+check_valid_local_ibc tests the 8x8 chroma reference block, whose top-left source corner \
+lies in a replaced IBC buffer, which § 6.19.7.12 forbids. avmdec and splot decode reject it; \
+the validator has no IntraBC vector rule, so it validates clean. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 4][x % 4] and both chroma planes C[y % 2][x % 2], where T (4 x 4) and C (2 x 2) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --preset-set intrabc_small=1 --preset-set sdp=0 --fast-decode` plus a local test-only patch that keeps the forced block vector [64, -2080] (1/8 units) at the 4x4 leaf at MiRow 1, MiCol 97. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 refuses it ("Invalid intrabc dv")."""
+expect = "clean"
+
 # --- Diverse AVM positive vectors (avm-positive-vector-generation) ---
 # All from project-owned synthetic YUV input; --lag-in-frames=0 keeps the IVF
 # frame counts internally consistent.
@@ -3203,4 +3249,46 @@ X9 contains 153600 bytes with SHA-256 366d1de38bc4faa23e6b65e81e9cd07ecfefd5f0c3
 The independent nearest-neighbor oracle produced 10 composite 144x64 pictures with SHA-256 2286b9dc5c613cf1da66d598a6a67bc2da6ad37095006fd3a19ce4124f49adb4.
 See tools/decoder-fixtures/atlas_composition.py for source SHA-256, segment geometry, output order, and the generation command.
 """
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-local-colo-uncoded-512x128.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 0, MiCol 64 copies from the bottom-right corner of the first 64x64 region of the row, whose colocated cell in the current region is not coded yet, so check_valid_local_ibc accepts it (the coloY/coloX case). avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [384, -1664] (1/8 units) at the 16x16 leaf at MiRow 0, MiCol 64. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-global-older-region-512x128.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 0, MiCol 96 copies from 64x64 column 1: the local area refuses it (a later region replaced that buffer) and the global delay and wavefront rules accept it. avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [0, -2560] (1/8 units) at the 16x16 leaf at MiRow 0, MiCol 96. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-global-wavefront-512x128.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; the 16x16 leaf at MiRow 16, MiCol 0 copies from the superblock above: only the global area accepts it, inside the wavefront. avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [-512, 0] (1/8 units) at the 16x16 leaf at MiRow 16, MiCol 0. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-extra-range-512x128.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: a splot encoder key frame of a project-owned 16-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, allow_global_intrabc 1, allow_local_intrabc 1), made with a local test-only patch that forces one IntraBC block vector; 128x128 superblocks with AllowExtraIBCRange 1; the 16x16 leaf at MiRow 16, MiCol 96 copies from 64x64 column 2, which only sb64Residual -1 allows. avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 16][x % 16] and both chroma planes C[y % 8][x % 8], where T (16 x 16) and C (8 x 8) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1` plus a local test-only patch that keeps the forced block vector [0, -2048] (1/8 units) at the 16x16 leaf at MiRow 16, MiCol 96. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-inter-local-128x64.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: 128x64 4:2:0 8-bit, 1 key and 8 inter frames with 56 IntraBC leaves in the inter frames (allow_local_intrabc inferred 1, § 5.18.3.4), TIP on, use_ref_frame_mvs 1. Made by the splot encoder on the unmerged branch feat/intrabc-inter-header (base af4a6aef5) with test-only forced IntraBC leaves. avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: the splot-encode test avm_decodes_inter_frame_intrabc_like_splot (preset 9, sdp off, forced IntraBC leaves in inter frames) on that branch. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-intrabc-sdp-luma-local-edge-512x128.ivf"
+description = """
+DECODE-SELECTABLE-TRANSFORM-RECORDS: a splot encoder key frame of a project-owned 4-sample periodic texture (512x128, 4:2:0 8-bit, 64x64 superblocks, intrabc_small), made with a local test-only patch that forces one IntraBC block vector [8, -260] samples on the 4x4 leaf at MiRow 1, MiCol 97 (HasChroma, ChromaMiRow 0, ChromaMiCol 96), with enable_sdp 1: an SDP intra frame checks the luma leaf in place of its chroma block (§ 6.19.7.12), and both luma corners lie in valid buffers. avmdec accepts it, and splot decode matches avmdec's raw output byte for byte. \
+Generation: a one-frame 512x128 I420 Y4M with luma T[y % 4][x % 4] and both chroma planes C[y % 2][x % 2], where T (4 x 4) and C (2 x 2) are filled row by row after Python random.seed(7) with randrange(16, 236) then randrange(64, 192); encoded by splot af4a6aef5 with `encode --qp 120 --limit 1 --preset-set intrabc=1 --preset-set intrabc_local=1 --preset-set intrabc_small=1 --preset-set sdp=1 --fast-decode` plus a local test-only patch that keeps the forced block vector [64, -2080] (1/8 units) at the 4x4 leaf at MiRow 1, MiCol 97. Oracle: avmdec of AVM a1ec4594d97028ebc34083ec8346616d697c2fc9 gives the avm_raw_sha256 of decoder-oracle.toml."""
 expect = "clean"
