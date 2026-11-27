@@ -515,16 +515,23 @@ impl ParsedGeneralIntraResidual {
         arena: &ResidualPlaneArena,
         mut visit: impl FnMut(DecodedTransformUnit<'_>),
     ) {
+        let mut cctx_u = None;
         for plane in &arena.planes[self.planes.start as usize..self.planes.end as usize] {
             let plane_id = plane.plane.plane_id;
             match &plane.kind {
-                ParsedResidualPlaneKind::Single { coeffs, .. } => visit(DecodedTransformUnit {
-                    plane: plane_id,
-                    x: plane.plane.x as usize,
-                    y: plane.plane.y as usize,
-                    tx_size: plane.plane.tx_size,
-                    coeffs,
-                }),
+                ParsedResidualPlaneKind::Single { coeffs, .. } => {
+                    if plane_id == PlaneId::U {
+                        cctx_u = Some(coeffs);
+                    }
+                    visit(DecodedTransformUnit {
+                        plane: plane_id,
+                        x: plane.plane.x as usize,
+                        y: plane.plane.y as usize,
+                        tx_size: plane.plane.tx_size,
+                        coeffs,
+                        cctx_u: if plane_id == PlaneId::Y { None } else { cctx_u },
+                    });
+                }
                 ParsedResidualPlaneKind::Lossless(units)
                 | ParsedResidualPlaneKind::PartitionedLuma(units) => {
                     for unit in &arena.units[units.start as usize..units.end as usize] {
@@ -534,6 +541,7 @@ impl ParsedGeneralIntraResidual {
                             y: unit.block.y as usize,
                             tx_size: unit.block.tx_size,
                             coeffs: &unit.block.coeffs,
+                            cctx_u: None,
                         });
                     }
                 }

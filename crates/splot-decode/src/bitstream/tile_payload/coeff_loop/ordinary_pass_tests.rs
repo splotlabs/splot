@@ -201,6 +201,8 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
     )
     .unwrap();
 
+    #[cfg(feature = "block-evidence")]
+    let end = end.quant_end;
     assert_eq!((end, quant[0]), (1, -11));
     assert!(levels_clear(&mut state));
     assert_eq!(state.above_level(0).unwrap()[1], 4);
@@ -233,6 +235,8 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
     )
     .unwrap();
 
+    #[cfg(feature = "block-evidence")]
+    let end = end.quant_end;
     assert_eq!(end, 5);
     assert_eq!(quant[..5], [1, 2, 0, 0, 4]);
     assert!(levels_clear(&mut state));

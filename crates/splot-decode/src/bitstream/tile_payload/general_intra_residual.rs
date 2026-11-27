@@ -324,6 +324,32 @@ fn resolve_block_qm(
         user,
     })
 }
+
+#[cfg(feature = "block-evidence")]
+pub(crate) fn evidence_dequant_params(
+    qindex: u32,
+    plane: PlaneId,
+    (width, height): (usize, usize),
+    plane_tx_type: usize,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+) -> Result<DequantBlockParams, GeneralIntraResidualError> {
+    reconstruct_block_setup(
+        width * height,
+        qindex,
+        plane,
+        width.ilog2(),
+        height.ilog2(),
+        plane_tx_type,
+        use_tcq,
+        false,
+        false,
+        None,
+        bit_depth,
+    )
+    .map(|setup| setup.params)
+}
+
 const H_PRED: usize = 2;
 const D45_PRED: usize = 3;
 const D157_PRED: usize = 6;
@@ -527,6 +553,14 @@ pub(crate) struct IntraIstSyntax {
     pub(crate) most_probable_stx_set: Option<u8>,
 }
 
+#[cfg(feature = "block-evidence")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoefficientCoding {
+    Ordinary,
+    ForwardSkip,
+    HiddenDcParity,
+}
+
 /// One transform block's parsed coefficients, as a span of its row's arena.
 ///
 /// dav2d parses a frame's coefficients into one buffer owned by the frame
@@ -546,6 +580,8 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) cctx_type: Option<u8>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
     pub(crate) scan_order: bool,
+    #[cfg(feature = "block-evidence")]
+    pub(crate) coding: CoefficientCoding,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
 }
@@ -562,6 +598,8 @@ impl LumaCoeffBlock {
             cctx_type: None,
             intra_ist: None,
             scan_order: false,
+            #[cfg(feature = "block-evidence")]
+            coding: CoefficientCoding::Ordinary,
             use_tcq: false,
             lossless,
         }
@@ -1167,6 +1205,8 @@ fn decode_nonzero_plane_coeffs(
     let coeff_count = start.coeff_count();
     let scan_order =
         !use_fsc && plane == 0 && metadata.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
+    #[cfg(feature = "block-evidence")]
+    let coding;
     if use_fsc {
         arena.resize(start_idx + coeff_count, 0);
         let quant_end = decode_fsc_transform_block(
@@ -1179,6 +1219,10 @@ fn decode_nonzero_plane_coeffs(
         );
         arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
         quant_end.map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
+        #[cfg(feature = "block-evidence")]
+        {
+            coding = CoefficientCoding::ForwardSkip;
+        }
     } else {
         let tx_class = splot_recon::tx_class(plane_tx_type);
         let extent = if scan_order {
@@ -1203,8 +1247,22 @@ fn decode_nonzero_plane_coeffs(
             },
             &mut arena[start_idx..],
         );
-        arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
-        quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        #[cfg(feature = "block-evidence")]
+        {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |block| block.quant_end));
+            let ordinary = quant_end
+                .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+            coding = if ordinary.dc_parity_hidden {
+                CoefficientCoding::HiddenDcParity
+            } else {
+                CoefficientCoding::Ordinary
+            };
+        }
+        #[cfg(not(feature = "block-evidence"))]
+        {
+            arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
+            quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+        }
     }
     LumaCoeffBlock {
         eob: eob as u16,
@@ -1212,6 +1270,8 @@ fn decode_nonzero_plane_coeffs(
         scan_order,
         cctx_type: metadata.cctx_type.map(|cctx| cctx as u8),
         use_tcq: base_config.use_tcq,
+        #[cfg(feature = "block-evidence")]
+        coding,
         ..LumaCoeffBlock::empty(plane_tx_type, lossless)
     }
     .with_span(start_idx..arena.len(), coeff_count)

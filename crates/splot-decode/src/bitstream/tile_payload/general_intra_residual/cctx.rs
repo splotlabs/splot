@@ -314,6 +314,8 @@ mod tests {
                 let [u_block, v_block] = [u_len, v_len].map(|len| LumaCoeffBlock {
                     eob: u16::from(len != 0),
                     scan_order: false,
+                    #[cfg(feature = "block-evidence")]
+                    coding: crate::bitstream::tile_payload::CoefficientCoding::Ordinary,
                     quant_start: 0,
                     quant_len: len as u16,
                     zero_tail: (64 - len) as u16,
