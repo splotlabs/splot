@@ -51,6 +51,7 @@ jobs:
             film_grain::tests::wide_
           cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
             cdef_filter::segment::wide_luma::tests::wide_
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib wide_
 
       - name: Measure AVX2 and AVX-512 luma CDEF blocks on the same core
         if: ${{ inputs.timing }}
