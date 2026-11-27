@@ -526,6 +526,11 @@ pub struct PresetParams {
     /// the copy may come from the local area (§ 6.19.7.12). Off in every
     /// row, the screen-content rows too: not measured.
     pub intrabc_local: bool,
+    /// Inter frames code `allow_intrabc = 1` with the local area only
+    /// (§ 5.18.3.4), and their intra leaves get an IntraBC RD trial, also
+    /// with `intrabc` off. Needs `intrabc_local`. Off in every row, the
+    /// screen-content rows too: not measured.
+    pub intrabc_inter: bool,
     /// `seq_max_bvp_drl_bits_minus_1`, `0..=2`: IntraBC leaves choose the
     /// nearest of `intrabc_drl + 2` reference block vectors. 0 in every row,
     /// the screen-content rows too: not measured.
@@ -1029,6 +1034,7 @@ impl PresetParams {
             idtx_intra = false;
             palette = false;
             intrabc = false;
+            intrabc_inter = false;
             y_dc_delta_q = 0;
             u_delta_q = 0;
             v_delta_q = 0;
@@ -1069,6 +1075,14 @@ impl PresetParams {
                 field: "intrabc_morph",
                 value: 1,
                 allowed: "0 without bawp (morph_pred needs enable_bawp)".to_owned(),
+            });
+        }
+        if self.intrabc_inter && !self.intrabc_local {
+            return Err(PresetError::OutOfRange {
+                field: "intrabc_inter",
+                value: 1,
+                allowed: "0 without intrabc_local (inter frames code only the local area)"
+                    .to_owned(),
             });
         }
         if i32::from(self.sb256_min_height) < ranges::sb256_min_height.min {
@@ -1729,6 +1743,8 @@ preset_table! {
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
         "Allow local intra block copy in key frames. Requires intrabc."
         intrabc_local:         [false, false, false, false, false, false, false, false, false, false, false],
+        "Allow intra block copy in inter frames. Requires intrabc_local."
+        intrabc_inter:         [false, false, false, false, false, false, false, false, false, false, false],
         "Number of bits minus one for the intra block copy reference index." [0, 2]
         intrabc_drl:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         "Allow intra block copy on small or chroma-offset blocks. Requires intrabc."
@@ -2216,6 +2232,7 @@ mod tests {
             (&[("global_motion", "3")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
             (&[("intrabc_morph", "1"), ("bawp", "0")], "intrabc_morph"),
+            (&[("intrabc_inter", "1")], "intrabc_inter"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
