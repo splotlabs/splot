@@ -178,7 +178,7 @@ impl<'a> ArPlane<'a> {
         }
         let mut taps = [0_i16; MAX_LAG * (2 * MAX_LAG + 1) + MAX_LAG + 1];
         for (tap, &coeff) in taps.iter_mut().zip(coeffs) {
-            *tap = i16::try_from(coeff).map_err(|_| out_of_range(name))?;
+            *tap = i8::try_from(coeff).map_err(|_| out_of_range(name))?.into();
         }
         let mut above = [[[0; STEP]; MAX_LAG + 1]; MAX_LAG];
         for (row, taps) in above.iter_mut().zip(taps[..same_row].chunks(row_taps)) {

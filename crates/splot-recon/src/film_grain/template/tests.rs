@@ -308,7 +308,7 @@ fn templates_match_the_scalar_process_on_128_bit_vectors() {
 fn syntax_the_model_cannot_code_is_an_error() {
     let mut rng = TestRng(1);
     let valid = || model(&mut TestRng(2), 2, [true; 3], false, Coefficients::Random);
-    let reject = |model: FilmGrainModel, field: &'static str| {
+    let mut reject = |model: FilmGrainModel, field: &'static str| {
         let grain = ActiveFilmGrain {
             model: &model,
             grain_seed: rng.next() as u16,
@@ -319,7 +319,6 @@ fn syntax_the_model_cannot_code_is_an_error() {
             Some(ReconError::FilmGrainModelOutOfRange { field })
         );
     };
-    let mut reject = reject;
 
     let mut lag = valid();
     lag.ar_coeff_lag = 4;
@@ -331,6 +330,6 @@ fn syntax_the_model_cannot_code_is_an_error() {
     reject(count, "ar_coeffs_cb");
 
     let mut value = valid();
-    value.ar_coeffs_cr[3] = 1 << 15;
+    value.ar_coeffs_cr[3] = 128;
     reject(value, "ar_coeffs_cr");
 }
