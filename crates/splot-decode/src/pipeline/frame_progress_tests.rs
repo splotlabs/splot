@@ -584,8 +584,12 @@ fn resetting_progress_retains_stripes_and_clears_terminal_publication() {
         progress.publish_terminal(cycle % 2 == 0);
         progress
             .reset(
-                splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry, &mut planes)
-                    .expect("reset workspace"),
+                splot_recon::CurrentFrameWorkspace::new_recycled_from(
+                    geometry,
+                    splot_recon::KernelSelection::default(),
+                    &mut planes,
+                )
+                .expect("reset workspace"),
             )
             .expect("reset progress");
         assert_eq!(progress.published_luma_rows(), 0);
@@ -717,7 +721,12 @@ fn the_commit_band_and_the_frontier_write_disjoint_rows_concurrently() {
         rows.with_plane_rows_mut(U, 0, 7, |samples, _, _, _, _| samples.fill(7))
             .expect("frontier chroma rows");
     });
-    let stranger = splot_recon::CurrentFrameWorkspace::new_band(rows.info(), 0, None);
+    let stranger = splot_recon::CurrentFrameWorkspace::new_band(
+        rows.info(),
+        splot_recon::KernelSelection::default(),
+        0,
+        None,
+    );
     assert!(rows.return_commit_rows(stranger.expect("band")).is_err());
     rows.return_commit_rows(band).expect("the live band");
     let mut seen = Vec::new();

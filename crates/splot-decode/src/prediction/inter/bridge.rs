@@ -67,7 +67,8 @@ pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
         visible,
     )?
     .with_storage_luma_size(PlaneSize::new(storage_width, storage_height)?)?;
-    let mut workspace = CurrentFrameWorkspace::new_recycled(info)?; // the § 7.23 copy below covers the whole frame rect
+    let mut workspace =
+        CurrentFrameWorkspace::new_recycled(info, splot_recon::KernelSelection::default())?; // the § 7.23 copy below covers the whole frame rect
     motion_compensate_inter_block_into(
         backend,
         &mut CurrentFrameSurface::Frame(&mut workspace),

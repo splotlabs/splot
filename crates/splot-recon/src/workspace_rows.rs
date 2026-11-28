@@ -36,7 +36,7 @@ use splot_core::simd::SimdBackend;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Creates a workspace over recycled plane storage, without initializing
-    /// its samples.
+    /// its samples. `kernels` is the selection of the decode that opens it.
     ///
     /// The pooled buffers keep whatever the previous frame left in them, so
     /// this is only for a stage that seals every row before it reads it.
@@ -44,8 +44,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
     /// depth, geometry arithmetic overflows, or plane allocation fails.
-    pub fn new_recycled(info: DecodedFrameInfo) -> Result<Self> {
-        Self::with_fill(info, None)
+    pub fn new_recycled(info: DecodedFrameInfo, kernels: crate::KernelSelection) -> Result<Self> {
+        Self::with_planes(
+            info,
+            kernels,
+            None,
+            &mut crate::FramePlaneSamples::default(),
+        )
     }
 
     /// Creates a workspace over the sample buffers a retired frame handed back,
@@ -59,9 +64,10 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// depth, geometry arithmetic overflows, or plane allocation fails.
     pub fn new_recycled_from(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         recycled: &mut crate::FramePlaneSamples<T>,
     ) -> Result<Self> {
-        Self::with_planes(info, None, recycled)
+        Self::with_planes(info, kernels, None, recycled)
     }
 
     /// Creates a band: each plane stores the rows of one `luma_rows` tall
@@ -74,7 +80,12 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
     /// depth, geometry arithmetic overflows, or plane allocation fails.
-    pub fn new_band(info: DecodedFrameInfo, luma_rows: usize, spare: Option<Self>) -> Result<Self> {
+    pub fn new_band(
+        info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
+        luma_rows: usize,
+        spare: Option<Self>,
+    ) -> Result<Self> {
         crate::intra_dc_math::validate_sample_type::<T>(info.bit_depth())?;
         let (mut spare, intra_prediction_scratch) = match spare {
             Some(mut spare) => {
@@ -121,7 +132,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch,
-            kernels: crate::KernelSelection::default(),
+            kernels,
         })
     }
 
@@ -133,6 +144,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// plane's rows are not whole rows inside its storage.
     pub fn lend_band(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         [y, u, v]: [Option<(crate::LentRows<T>, usize)>; 3],
         scratch: IntraPredictionScratch<T>,
     ) -> Result<Self> {
@@ -188,7 +200,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: scratch,
-            kernels: crate::KernelSelection::default(),
+            kernels,
         })
     }
 

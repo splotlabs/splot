@@ -862,7 +862,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<
     );
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::from_workspace(
-            CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), &mut recycled)?,
+            CurrentFrameWorkspace::<T>::new_recycled_from(
+                geometry.info(),
+                decode_scratch.kernels(),
+                &mut recycled,
+            )?,
             None,
         )?,
     );

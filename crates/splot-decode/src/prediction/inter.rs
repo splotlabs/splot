@@ -166,9 +166,11 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
     )?;
     scratch.payload = payload_scratch;
     let mut recycled = scratch.pooled_planes();
-    let mut workspace =
-        splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry.info(), &mut recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
-    workspace.set_kernels(scratch.kernels());
+    let workspace = splot_recon::CurrentFrameWorkspace::new_recycled_from(
+        geometry.info(),
+        scratch.kernels(),
+        &mut recycled,
+    )?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
         workspace,

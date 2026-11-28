@@ -374,6 +374,7 @@ impl<T: ReconSample> FrameProgress<T> {
         Self::from_workspace(
             CurrentFrameWorkspace::new_recycled_from(
                 info,
+                splot_recon::KernelSelection::default(),
                 &mut splot_recon::FramePlaneSamples::default(),
             )?,
             None,
@@ -953,10 +954,13 @@ impl<T: ReconSample> FrontierRows<T> {
             })
         });
         self.commit_start = starts;
-        let mut band = CurrentFrameWorkspace::lend_band(self.progress.info, planes, scratch)?;
-        if let Some(buffers) = self.progress.buffers() {
-            band.set_kernels(buffers.kernels());
-        }
+        let kernels = self.progress.buffers().map(|buffers| buffers.kernels());
+        let band = CurrentFrameWorkspace::lend_band(
+            self.progress.info,
+            kernels.unwrap_or_default(),
+            planes,
+            scratch,
+        )?;
         self.commit_lease = band.lent_luma_addr();
         Ok(band)
     }

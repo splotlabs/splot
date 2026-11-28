@@ -191,7 +191,12 @@ fn a_recycled_workspace_decodes_into_the_retired_frame_buffers() {
         .map(|plane| frame.plane(plane).unwrap().samples().as_ptr());
     let mut retired = frame.into_plane_samples();
 
-    let recycled = CurrentFrameWorkspace::<u8>::new_recycled_from(info, &mut retired).unwrap();
+    let recycled = CurrentFrameWorkspace::<u8>::new_recycled_from(
+        info,
+        crate::KernelSelection::default(),
+        &mut retired,
+    )
+    .unwrap();
 
     for (plane, samples) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().zip(planes) {
         assert_eq!(
@@ -212,7 +217,13 @@ fn a_filled_workspace_overwrites_a_recycled_buffer_whole() {
         .into_plane_samples();
 
     let filled = CurrentFrameWorkspace::<u8>::new(info, 7).unwrap();
-    let recycled = CurrentFrameWorkspace::<u8>::with_planes(info, Some(7), &mut retired).unwrap();
+    let recycled = CurrentFrameWorkspace::<u8>::with_planes(
+        info,
+        crate::KernelSelection::default(),
+        Some(7),
+        &mut retired,
+    )
+    .unwrap();
 
     assert_eq!(packed(&recycled, PlaneId::Y), packed(&filled, PlaneId::Y));
 }

@@ -1207,16 +1207,12 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.kernels
     }
 
-    /// Sets [`Self::kernels`]; a new workspace holds none.
-    pub fn set_kernels(&mut self, kernels: crate::KernelSelection) {
-        self.kernels = kernels;
-    }
-
     /// Creates a workspace from decoded-frame metadata and an initial fill.
     ///
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
     /// reconstruction luma size, chroma storage follows AV2 §6.4.1 subsampling,
-    /// and monochrome workspaces allocate only Y.
+    /// and monochrome workspaces allocate only Y. It selects no kernels; a
+    /// decode opens its workspaces with [`Self::new_recycled_from`].
     ///
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
@@ -1224,15 +1220,17 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// overflows, or plane allocation fails.
     pub fn new(info: DecodedFrameInfo, fill: T) -> Result<Self> {
         validate_sample_value(PlaneId::Y, 0, fill, info.bit_depth().max_sample())?;
-        Self::with_fill(info, Some(fill))
-    }
-
-    pub(crate) fn with_fill(info: DecodedFrameInfo, fill: Option<T>) -> Result<Self> {
-        Self::with_planes(info, fill, &mut FramePlaneSamples::default())
+        Self::with_planes(
+            info,
+            crate::KernelSelection::default(),
+            Some(fill),
+            &mut FramePlaneSamples::default(),
+        )
     }
 
     fn with_planes(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         fill: Option<T>,
         recycled: &mut FramePlaneSamples<T>,
     ) -> Result<Self> {
@@ -1276,7 +1274,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: IntraPredictionScratch::new(),
-            kernels: crate::KernelSelection::default(),
+            kernels,
         })
     }
 

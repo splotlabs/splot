@@ -168,6 +168,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
         Self::pending_recycled(
             CurrentFrameWorkspace::new_recycled_from(
                 info,
+                splot_recon::KernelSelection::default(),
                 &mut splot_recon::FramePlaneSamples::default(),
             )?,
             None,
@@ -759,14 +760,14 @@ fn reserve_slot<T: SpareFramePlanes>(
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
     let report = ring.reserve_report()?;
     let buffers = Arc::clone(&ring.buffers);
-    let mut workspace = match workspace {
+    let workspace = match workspace {
         Some(workspace) => workspace,
         None => CurrentFrameWorkspace::new_recycled_from(
             info,
+            buffers.kernels(),
             &mut splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes())),
         )?,
     };
-    workspace.set_kernels(buffers.kernels());
     let (slot, writer) = match frames.take_retired()?.and_then(T::take_slot) {
         Some(slot) => slot.reuse_pending(workspace, &buffers)?,
         None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,
