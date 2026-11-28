@@ -8,12 +8,13 @@
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16, i16x32, u16x32};
 use splot_core::simd::SimdBackend;
 
+use crate::KernelSelection;
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
 #[cfg(target_arch = "x86_64")]
-use crate::wide_kernels::{PaethFn, WideKernels};
+use crate::wide_kernels::PaethFn;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx512;
@@ -96,7 +97,7 @@ impl<'a, T: ReconSample> IntraPaethEdges<'a, T> {
 struct BaselinePaeth;
 
 #[derive(Clone, Copy)]
-struct TypedPaeth<B: SimdBackend>(B);
+struct TypedPaeth<B: SimdBackend>(B, KernelSelection);
 
 trait PaethRunner: Copy {
     fn paeth<O: IntraLaneSample>(
@@ -140,10 +141,9 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
     ) {
         #[cfg(target_arch = "x86_64")]
         if size.width() >= 32
-            && let Some(wide) = self.0.avx512_token()
+            && let Some(wide) = self.1.wide()
         {
-            let paeth = O::wide_paeth(WideKernels::of(wide));
-            return paeth(size, (left, above, top_left), output, stride_samples);
+            return O::wide_paeth(wide)(size, (left, above, top_left), output, stride_samples);
         }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => {
@@ -258,12 +258,14 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_paeth_rect_into`] using caller-selected `backend`.
+/// Typed [`predict_intra_paeth_rect_into`] using caller-selected `backend`
+/// and the decoder's `kernels`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_paeth_rect_into`].
 pub fn predict_intra_paeth_rect_into_with<B: SimdBackend, T: ReconSample>(
     backend: B,
+    kernels: KernelSelection,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraPaethEdges<'_, T>,
@@ -271,7 +273,7 @@ pub fn predict_intra_paeth_rect_into_with<B: SimdBackend, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     predict_intra_paeth_rect_into_with_runner(
-        TypedPaeth(backend),
+        TypedPaeth(backend, kernels),
         bit_depth,
         size,
         edges,
@@ -709,6 +711,7 @@ mod tests {
                     .unwrap();
                     predict_intra_paeth_rect_into_with(
                         backend,
+                        KernelSelection::default(),
                         BitDepth::Eight,
                         size,
                         edges8,
@@ -737,6 +740,7 @@ mod tests {
                     .unwrap();
                     predict_intra_paeth_rect_into_with(
                         backend,
+                        KernelSelection::default(),
                         BitDepth::Ten,
                         size,
                         edges10,

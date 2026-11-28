@@ -595,6 +595,11 @@ impl InflightRing {
         slot
     }
 
+    #[cfg(test)]
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        self.buffers.kernels()
+    }
+
     /// The pool retired frame buffers return to.
     pub(crate) fn planes(&self) -> &Arc<splot_recon::PlanePool> {
         self.buffers.planes()
@@ -754,13 +759,14 @@ fn reserve_slot<T: SpareFramePlanes>(
 ) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
     let report = ring.reserve_report()?;
     let buffers = Arc::clone(&ring.buffers);
-    let workspace = match workspace {
+    let mut workspace = match workspace {
         Some(workspace) => workspace,
         None => CurrentFrameWorkspace::new_recycled_from(
             info,
             &mut splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes())),
         )?,
     };
+    workspace.set_kernels(buffers.kernels());
     let (slot, writer) = match frames.take_retired()?.and_then(T::take_slot) {
         Some(slot) => slot.reuse_pending(workspace, &buffers)?,
         None => RefFrameSlot::pending_recycled(workspace, Some(&buffers))?,

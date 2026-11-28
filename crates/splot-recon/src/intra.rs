@@ -6,6 +6,7 @@
 //! Feature tracking: `RECON-INTRA-DC-SQUARE-PREDICTION`,
 //! `RECON-INTRA-DC-RECTANGULAR-PREDICTION`.
 
+use crate::KernelSelection;
 use crate::intra_dc_math::IntraLaneSample;
 use crate::intra_dc_math::{
     fill_validated_output_shape, predict_intra_dc_rect_value_from_sums, validate_dc_edge,
@@ -418,7 +419,7 @@ pub fn predict_intra_dc_square<T: ReconSample>(
 struct BaselineIntra;
 
 #[derive(Clone, Copy)]
-struct TypedIntra<B: SimdBackend>(B);
+struct TypedIntra<B: SimdBackend>(B, KernelSelection);
 
 trait IntraRunner: Copy {
     fn palette<P: PaletteSample>(
@@ -460,9 +461,9 @@ impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
     ) -> u8 {
         #[cfg(target_arch = "x86_64")]
         if map.len().is_multiple_of(64)
-            && let Some(wide) = self.0.avx512_token()
+            && let Some(wide) = self.1.wide()
         {
-            return P::wide_palette(WideKernels::of(wide))(low, high, map, output);
+            return P::wide_palette(wide)(low, high, map, output);
         }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => palette_lanes(simd, low, high, map, output))
@@ -518,17 +519,19 @@ pub fn predict_intra_palette_into<T: ReconSample>(
     predict_intra_palette_into_with_runner(BaselineIntra, colors, map, output)
 }
 
-/// Typed [`predict_intra_palette_into`] using caller-selected `backend`.
+/// Typed [`predict_intra_palette_into`] using caller-selected `backend` and
+/// the decoder's `kernels`.
 ///
 /// # Errors
 /// Returns [`ReconError::BufferLengthMismatch`] for non-matching or non-16-aligned lengths.
 pub fn predict_intra_palette_into_with<B: SimdBackend, T: ReconSample>(
     backend: B,
+    kernels: KernelSelection,
     colors: &[u16; 8],
     map: &[u8],
     output: &mut [T],
 ) -> Result<u8> {
-    predict_intra_palette_into_with_runner(TypedIntra(backend), colors, map, output)
+    predict_intra_palette_into_with_runner(TypedIntra(backend, kernels), colors, map, output)
 }
 
 /// Sample storage a palette lookup writes: bytes from the low table, or
@@ -714,7 +717,11 @@ pub fn average_intra_predictions_with<B: SimdBackend, T: ReconSample>(
     primary: &mut [T],
     secondary: &[T],
 ) -> Result<()> {
-    average_intra_predictions_with_runner(TypedIntra(backend), primary, secondary)
+    average_intra_predictions_with_runner(
+        TypedIntra(backend, KernelSelection::default()),
+        primary,
+        secondary,
+    )
 }
 
 #[inline]
@@ -1216,16 +1223,28 @@ mod tests {
 
                 let (mut pal8_compat, mut pal8_typed) = (vec![0u8; 64], vec![0u8; 64]);
                 assert_eq!(
-                    predict_intra_palette_into_with(backend, &colors8, &map, &mut pal8_typed)
-                        .unwrap(),
+                    predict_intra_palette_into_with(
+                        backend,
+                        KernelSelection::default(),
+                        &colors8,
+                        &map,
+                        &mut pal8_typed
+                    )
+                    .unwrap(),
                     predict_intra_palette_into(&colors8, &map, &mut pal8_compat).unwrap()
                 );
                 assert_eq!(pal8_typed, pal8_compat);
 
                 let (mut pal10_compat, mut pal10_typed) = (vec![0u16; 64], vec![0u16; 64]);
                 assert_eq!(
-                    predict_intra_palette_into_with(backend, &colors10, &map, &mut pal10_typed)
-                        .unwrap(),
+                    predict_intra_palette_into_with(
+                        backend,
+                        KernelSelection::default(),
+                        &colors10,
+                        &map,
+                        &mut pal10_typed
+                    )
+                    .unwrap(),
                     predict_intra_palette_into(&colors10, &map, &mut pal10_compat).unwrap()
                 );
                 assert_eq!(pal10_typed, pal10_compat);

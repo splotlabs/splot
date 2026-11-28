@@ -226,6 +226,14 @@ impl<T: ReconSample> InterDecodeScratch<T> {
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
     }
 
+    /// The kernels this decode selected, for the workspaces it opens.
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        self.buffers
+            .as_ref()
+            .map(|buffers| buffers.kernels())
+            .unwrap_or_default()
+    }
+
     /// Names the pool this decode's workspaces retire into.
     pub(crate) fn set_decode_buffers(
         &mut self,

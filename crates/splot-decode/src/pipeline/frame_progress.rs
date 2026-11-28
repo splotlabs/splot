@@ -953,7 +953,10 @@ impl<T: ReconSample> FrontierRows<T> {
             })
         });
         self.commit_start = starts;
-        let band = CurrentFrameWorkspace::lend_band(self.progress.info, planes, scratch)?;
+        let mut band = CurrentFrameWorkspace::lend_band(self.progress.info, planes, scratch)?;
+        if let Some(buffers) = self.progress.buffers() {
+            band.set_kernels(buffers.kernels());
+        }
         self.commit_lease = band.lent_luma_addr();
         Ok(band)
     }

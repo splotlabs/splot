@@ -121,6 +121,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch,
+            kernels: crate::KernelSelection::default(),
         })
     }
 
@@ -187,6 +188,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: scratch,
+            kernels: crate::KernelSelection::default(),
         })
     }
 

@@ -116,7 +116,6 @@ mod subpel_mc;
 mod transform_params;
 mod views;
 mod warp_prediction;
-#[cfg(target_arch = "x86_64")]
 mod wide_kernels;
 mod wienerns_chroma_filter;
 mod wienerns_filter;
@@ -300,6 +299,7 @@ pub use warp_prediction::{
     ext_warp_predict_unit, ext_warp_predict_unit_with, warp_predict_block, warp_predict_block_into,
     warp_predict_block_into_with, warp_predict_block_with, warp_shear_is_valid,
 };
+pub use wide_kernels::KernelSelection;
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV,
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,

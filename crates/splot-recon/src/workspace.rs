@@ -211,6 +211,7 @@ pub struct CurrentFrameWorkspace<T: ReconSample> {
     u: Option<CurrentFramePlane<T>>,
     v: Option<CurrentFramePlane<T>>,
     intra_prediction_scratch: IntraPredictionScratch<T>,
+    kernels: crate::KernelSelection,
 }
 
 /// Selects one of the two reusable current-frame intra-prediction buffers.
@@ -1200,6 +1201,17 @@ pub(crate) fn subsampled_rect(
 const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// The kernels the decoder of this frame selected.
+    #[must_use]
+    pub fn kernels(&self) -> crate::KernelSelection {
+        self.kernels
+    }
+
+    /// Sets [`Self::kernels`]; a new workspace holds none.
+    pub fn set_kernels(&mut self, kernels: crate::KernelSelection) {
+        self.kernels = kernels;
+    }
+
     /// Creates a workspace from decoded-frame metadata and an initial fill.
     ///
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
@@ -1264,6 +1276,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: IntraPredictionScratch::new(),
+            kernels: crate::KernelSelection::default(),
         })
     }
 

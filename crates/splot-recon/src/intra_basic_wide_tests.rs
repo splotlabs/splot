@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::wide_kernels::WideKernels;
 use fearless_simd::Level;
 use std::{hint::black_box, time::Instant};
 

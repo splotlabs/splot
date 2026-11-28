@@ -457,9 +457,11 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<
             above,
             left,
         )?;
+        let kernels = workspace.kernels();
         let predict = |output: &mut [T], stride: usize| {
             predict_intra_paeth_rect_into_with(
                 backend,
+                kernels,
                 bit_depth,
                 block_size,
                 IntraPaethEdges::new(left, above, top_left),

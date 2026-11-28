@@ -216,7 +216,7 @@ impl DecodeSession {
             {
                 retained
             }
-            _ => RetainedDecode::new(depth, width),
+            _ => RetainedDecode::new(depth, width, splot_recon::KernelSelection::of(self.backend)),
         };
         retained.frames.detach_held = self.detach_held;
         *self.planes.lock() = Some(Arc::clone(retained.ring.planes()));
@@ -239,8 +239,8 @@ pub(super) struct RetainedDecode {
 }
 
 impl RetainedDecode {
-    fn new(depth: NonZeroUsize, width: usize) -> Self {
-        let buffers = DecodeBuffers::new();
+    fn new(depth: NonZeroUsize, width: usize, kernels: splot_recon::KernelSelection) -> Self {
+        let buffers = DecodeBuffers::with_kernels(kernels);
         Self {
             width,
             pools: RowPools::new(depth.get(), width, &buffers),
@@ -439,5 +439,29 @@ impl FrameEntry {
                 .as_mut()
                 .is_none_or(MotionFieldHandle::try_retire)
             && self.products.as_ref().is_none_or(FrameProducts::can_reuse)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::simd::{SimdPolicy, resolve_backend};
+
+    /// A decode's buffers carry the kernels its session's policy selected,
+    /// and a forced AVX2 session selects none.
+    #[test]
+    fn retained_decode_carries_the_session_kernel_selection() {
+        for policy in [SimdPolicy::Auto, SimdPolicy::Avx2, SimdPolicy::Avx512] {
+            let Ok(backend) = resolve_backend(policy) else {
+                continue;
+            };
+            let session = DecodeSession::new(NonZeroUsize::MIN, None, backend);
+            let retained = session.take(NonZeroUsize::MIN);
+            let selected = splot_recon::KernelSelection::of(backend);
+            assert_eq!(retained.ring.kernels(), selected, "{policy:?}");
+            if policy == SimdPolicy::Avx2 {
+                assert_eq!(selected, splot_recon::KernelSelection::default());
+            }
+        }
     }
 }

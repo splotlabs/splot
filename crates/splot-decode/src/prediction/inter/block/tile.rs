@@ -1999,6 +1999,14 @@ impl ParseProgress {
         })
     }
 
+    /// The kernels this decode selected, for the bands it opens.
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        self.buffers
+            .as_ref()
+            .map(|buffers| buffers.kernels())
+            .unwrap_or_default()
+    }
+
     pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
         if let Some(shared) = &self.buffers {
             buffers.fit(shared.note_unit_lengths(buffers.lengths));

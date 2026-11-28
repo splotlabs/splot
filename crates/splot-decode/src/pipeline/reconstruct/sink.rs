@@ -199,6 +199,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<B: SimdBackend, 
     )?;
     let fill_result = splot_recon::predict_intra_palette_into_with(
         backend,
+        workspace.kernels(),
         &palette.colors(),
         color_map,
         &mut prediction,
