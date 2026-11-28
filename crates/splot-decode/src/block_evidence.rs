@@ -28,10 +28,11 @@ use parking_lot::Mutex;
 use splot_core::obu::ObuHeader;
 use splot_recon::{BitDepth, PlaneId, PlaneRect};
 
-use crate::bitstream::tile_payload::{DecodeBlockFrontier, PartitionTreeType, TilePartitionCall};
+use crate::bitstream::tile_payload::{DecodeBlockFrontier, TilePartitionCall};
 use crate::{EmbeddedLayerId, ExtendedLayerId, ObuLocation, PictureProvenance, TemporalLayerId};
 
 pub use crate::encoder_syntax::Partition as BlockPartition;
+pub use crate::encoder_syntax::{BlockEvidenceId, BlockEvidenceTree};
 
 /// The structural records to collect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -238,49 +239,6 @@ pub struct BlockEvidenceFrame {
     pub embedded_layer_id: EmbeddedLayerId,
     /// The frame's temporal layer.
     pub temporal_layer_id: TemporalLayerId,
-}
-
-/// The partition tree that owns a node.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub enum BlockEvidenceTree {
-    /// The shared tree.
-    Shared,
-    /// The separate luma tree.
-    Luma,
-    /// The separate chroma tree.
-    Chroma,
-}
-
-impl From<PartitionTreeType> for BlockEvidenceTree {
-    fn from(tree: PartitionTreeType) -> Self {
-        match tree {
-            PartitionTreeType::Shared => Self::Shared,
-            PartitionTreeType::LumaPart => Self::Luma,
-            PartitionTreeType::ChromaPart => Self::Chroma,
-        }
-    }
-}
-
-/// Identifies a node within one captured coded frame.
-/// Keep its report's frame and input source identity to compare it across captures.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-#[non_exhaustive]
-pub struct BlockEvidenceId {
-    /// Zero-based tile index in raster order.
-    pub tile: usize,
-    /// The partition tree.
-    pub tree: BlockEvidenceTree,
-    /// The partition rectangle in coded luma samples, including edge padding.
-    pub coded: PlaneRect,
-}
-
-impl BlockEvidenceId {
-    /// Identifies a node by tile, tree and coded luma rectangle.
-    #[must_use]
-    pub const fn new(tile: usize, tree: BlockEvidenceTree, coded: PlaneRect) -> Self {
-        Self { tile, tree, coded }
-    }
 }
 
 /// Geometry and facts for one event from the block walk.
@@ -741,14 +699,7 @@ pub(crate) struct BlockEvidenceTile<'a> {
 
 impl BlockEvidenceTile<'_> {
     fn node_id(self, call: TilePartitionCall) -> Option<BlockEvidenceId> {
-        let [h, w] = call.b_size.num_4x4();
-        self.id(
-            call.tree_type().into(),
-            call.c() * 4,
-            call.r() * 4,
-            w * 4,
-            h * 4,
-        )
+        BlockEvidenceId::of_call(self.tile, call)
     }
 
     pub(crate) fn record_partition(

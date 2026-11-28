@@ -29,6 +29,13 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   metadata OBUs (§ 5.17.5, § 5.17.6) on every key frame. `splot encode` takes
   `--mastering-display "G(x,y)B(x,y)R(x,y)WP(x,y)L(max,min)"` and
   `--content-light CLL,FALL`.
+- `Encoder::start_decision_trace` captures a bounded trace of the encoder's
+  decisions for selected frames, and `Encoder::take_decision_trace` returns
+  it with a complete, partial or dropped status. The trace has each coding of
+  a frame (quantizer, measured bits, buffer room, re-code or commit),
+  partition and mode trials with their rate, distortion and outcome, and the
+  committed partition nodes. Block events use the `BlockEvidenceId` of
+  decoder block evidence. The stream bytes do not change.
 
 ### Encoder 4:2:2 and 4:4:4
 

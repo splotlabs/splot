@@ -68,6 +68,7 @@ impl FakeCoder {
             tip_output: None,
             warp: None,
             intra_cells: None,
+            trace: None,
             global_leaves: 0,
         })
     }

@@ -64,6 +64,16 @@ pub(crate) enum PartitionTree {
 }
 
 impl PartitionTree {
+    /// The partition the root of the tree codes; `None` for an SDP root,
+    /// which codes none.
+    pub(crate) const fn root_partition(&self) -> Option<Partition> {
+        match self {
+            Self::Leaf(_) => Some(Partition::None),
+            Self::Split { kind, .. } | Self::Region { kind, .. } => Some(*kind),
+            Self::Sdp { .. } => None,
+        }
+    }
+
     /// The leaves of the tree that `keep` accepts.
     pub(crate) fn count_leaves(&self, keep: &impl Fn(&LeafChoice) -> bool) -> usize {
         match self {

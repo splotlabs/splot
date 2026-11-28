@@ -11,6 +11,7 @@ use super::{Bits, Lambda, RdCost};
 use crate::hme::FrameMotion;
 use crate::preset::{PresetContext, PresetParams};
 use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
+use crate::trace::{PartitionOutcome, PartitionPruning};
 
 /// The luma child nodes and the chroma node of an `INTRA_REGION`.
 pub(crate) type RegionNodes<N> = (Vec<N>, N);
@@ -101,6 +102,23 @@ pub(crate) trait PartitionSearch {
     /// The frame context of the preset's [`crate::preset::Levels`] fields.
     fn context(&self) -> PresetContext {
         PresetContext::default()
+    }
+    /// Records for the decision trace that the search of `node` considered
+    /// `partition`, with its cost when it has one; returns the record.
+    fn trace_partition(
+        &mut self,
+        _node: Self::Node,
+        _partition: Partition,
+        _cost: Option<RdCost>,
+        _outcome: PartitionOutcome,
+    ) -> Option<usize> {
+        None
+    }
+    /// Marks the record `trial` as the shape the search of its node returned.
+    fn trace_selected(&mut self, _trial: usize) {}
+    /// Whether [`Self::trace_partition`] records anything.
+    fn traces(&self) -> bool {
+        false
     }
 }
 
@@ -326,6 +344,9 @@ fn search<S: PartitionSearch>(
         Some((_, Seen::Tree(tree))) if coder.replays(tree) => {
             let tree = tree.clone();
             let cost = recode(coder, node, &tree)?;
+            if let Some(shape) = tree.root_partition() {
+                coder.trace_partition(node, shape, Some(cost), PartitionOutcome::Replayed);
+            }
             return Ok(Some((tree, cost)));
         }
         Some((_, Seen::Bound(bound, _))) if budget.is_some_and(|budget| budget <= *bound) => {
@@ -404,6 +425,7 @@ fn search<S: PartitionSearch>(
         None
     };
     let mut best: Option<(u128, PartitionTree, RdCost, Option<S::Saved>)> = None;
+    let mut best_trial = None;
     let mut unsplit = None;
     let mut best_split = None;
     let mut three_way = [None; 2];
@@ -420,6 +442,11 @@ fn search<S: PartitionSearch>(
         };
         let gated = gate.map(|(j, margin)| within_margin(j, best_j, margin));
         if gated.map_or(exited, |accepted| !accepted) {
+            let pruning = match gated {
+                Some(_) => PartitionPruning::ExtendedMargin,
+                None => PartitionPruning::EarlyExit,
+            };
+            coder.trace_partition(node, *partition, None, PartitionOutcome::Pruned(pruning));
             continue;
         }
         if index > 0
@@ -496,10 +523,16 @@ fn search<S: PartitionSearch>(
                 _ => split,
             }
         };
+        let (cost, outcome) = match &found {
+            Some((_, cost)) => (Some(*cost), PartitionOutcome::Rejected),
+            None => (None, PartitionOutcome::OverBound),
+        };
+        let trial = coder.trace_partition(node, *partition, cost, outcome);
         let j = match found {
             Some((tree, cost)) => {
                 let j = cost.cost(lambda);
                 if best_j.is_none_or(|best_j| j < best_j) {
+                    best_trial = trial;
                     let end = if index + 1 < candidates.len() && !ends {
                         Some(coder.save(node, start.as_ref())?)
                     } else {
@@ -516,6 +549,15 @@ fn search<S: PartitionSearch>(
             if ends {
                 #[cfg(test)]
                 BREAKOUTS.set(BREAKOUTS.get() + 1);
+                let breakout = PartitionOutcome::Pruned(PartitionPruning::NoneBreakout);
+                let pruned = if coder.traces() {
+                    index + 1
+                } else {
+                    candidates.len()
+                };
+                for (partition, _) in candidates.iter().skip(pruned) {
+                    coder.trace_partition(node, *partition, None, breakout);
+                }
                 break;
             }
             continue;
@@ -540,6 +582,9 @@ fn search<S: PartitionSearch>(
     };
     if let Some(end) = &end {
         coder.restore(end)?;
+    }
+    if let Some(trial) = best_trial {
+        coder.trace_selected(trial);
     }
     remember(memo, key, node, Seen::Tree(tree.clone()));
     Ok(Some((tree, cost)))
