@@ -45,9 +45,8 @@ fn check<O: IntraLaneSample + PartialEq + core::fmt::Debug>(max: u32, extreme: b
         assert_eq!(wide, narrow, "{width}x{height}");
         if let Some(simd) = native {
             let mut wide = vec![O::default(); len];
-            simd.vectorize(|| {
-                paeth_rows_wide(simd, size, (&left, &above, top_left), &mut wide, stride);
-            });
+            let paeth = O::wide_paeth(WideKernels::of(simd));
+            paeth(size, (&left, &above, top_left), &mut wide, stride);
             assert_eq!(wide, narrow, "native {width}x{height}");
         }
     }
@@ -55,7 +54,7 @@ fn check<O: IntraLaneSample + PartialEq + core::fmt::Debug>(max: u32, extreme: b
 
 /// The 32-lane rows write what the 16-lane rows write, into bytes and
 /// words, on random and extreme edges; on a host with AVX-512 also through
-/// its native vectors.
+/// the bound kernel pointers.
 #[test]
 fn wide_paeth_rows_match_the_16_lane_rows() {
     for extreme in [false, true] {
@@ -88,14 +87,14 @@ fn measure_wide_paeth_blocks() {
         };
         let narrow =
             || ns(&|out| paeth_rows(avx2, size, black_box(&left), &above, top_left, out, width));
+        let paeth = O::wide_paeth(WideKernels::of(avx512));
         let wide = || {
             ns(&|out| {
-                avx512.vectorize(
-                    #[inline(always)]
-                    || {
-                        let edges = (black_box(&left[..]), &above[..], top_left);
-                        paeth_rows_wide(avx512, size, edges, out, width);
-                    },
+                paeth(
+                    size,
+                    (black_box(&left[..]), &above[..], top_left),
+                    out,
+                    width,
                 );
             })
         };

@@ -116,6 +116,8 @@ mod subpel_mc;
 mod transform_params;
 mod views;
 mod warp_prediction;
+#[cfg(target_arch = "x86_64")]
+mod wide_kernels;
 mod wienerns_chroma_filter;
 mod wienerns_filter;
 mod workspace;

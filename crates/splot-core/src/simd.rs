@@ -262,6 +262,14 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
         None
     }
 
+    /// Returns the `Avx512` token of an AVX-512 selection. Its narrowed
+    /// backend keeps it, for the kernels that have a wider form.
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        None
+    }
+
     /// Returns the carried `Neon` token on AArch64 NEON backends.
     #[cfg(target_arch = "aarch64")]
     #[inline]
@@ -347,6 +355,8 @@ macro_rules! with_simd {
 #[derive(Clone, Copy)]
 pub struct Avx2Backend {
     token: fearless_simd::Avx2,
+    /// The token of an AVX-512 selection that narrowed to this backend.
+    wide: Option<fearless_simd::Avx512>,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -399,6 +409,11 @@ impl SimdBackend for Avx2Backend {
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.token)
+    }
+
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        self.wide
     }
 
     #[inline]
@@ -455,7 +470,10 @@ impl SimdBackend for Avx512Backend {
 
     #[inline]
     fn narrow(self) -> Self::Narrow {
-        Avx2Backend { token: self.avx2 }
+        Avx2Backend {
+            token: self.avx2,
+            wide: Some(self.token),
+        }
     }
 
     #[inline]
@@ -466,6 +484,11 @@ impl SimdBackend for Avx512Backend {
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
         Some(self.avx2)
+    }
+
+    #[inline]
+    fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        Some(self.token)
     }
 }
 
@@ -834,7 +857,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
     match selected {
         SelectedBackend::Avx2 => level
             .as_avx2()
-            .map(|token| ResolvedBackend::Avx2(Avx2Backend { token }))
+            .map(|token| ResolvedBackend::Avx2(Avx2Backend { token, wide: None }))
             .ok_or_else(err),
         SelectedBackend::Avx512 => level
             .as_avx512()
@@ -1049,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_backend_stays_zero_sized_and_preserves_tokens() {
+    fn narrow_backend_preserves_tokens() {
         struct NarrowProbe;
 
         impl SimdScope<SelectedBackend> for NarrowProbe {
@@ -1060,6 +1083,11 @@ mod tests {
                     backend.avx2_token().is_some(),
                     B::KIND != SelectedBackend::Sse2
                 );
+                #[cfg(target_arch = "x86_64")]
+                assert_eq!(
+                    narrow.avx512_token().is_some(),
+                    B::KIND == SelectedBackend::Avx512
+                );
                 #[cfg(target_arch = "aarch64")]
                 assert!(backend.neon_token().is_some());
                 narrow.vectorize(|| <B::Narrow as SimdBackend>::KIND)
@@ -1068,8 +1096,10 @@ mod tests {
 
         #[cfg(target_arch = "x86_64")]
         {
-            assert_eq!(core::mem::size_of::<Avx2Backend>(), 0);
+            assert_eq!(core::mem::size_of::<Avx2Backend>(), 1);
             assert_eq!(core::mem::size_of::<Avx512Backend>(), 0);
+            let forced = resolve_backend(SimdPolicy::Avx2).expect("x86-64-v3 host");
+            assert_eq!(forced.enter(NarrowProbe), SelectedBackend::Avx2);
         }
         let resolved = resolve_backend(SimdPolicy::Auto).expect("supported host baseline");
         let expected = match resolved.kind() {

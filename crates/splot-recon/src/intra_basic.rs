@@ -6,13 +6,17 @@
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16, i16x32, u16x32};
-use splot_core::simd::{SelectedBackend, SimdBackend};
+use splot_core::simd::SimdBackend;
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::wide_kernels::{PaethFn, WideKernels};
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Avx512;
 
 /// Edge identifier for PAETH intra prediction inputs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -134,12 +138,12 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         output: &mut [O],
         stride_samples: usize,
     ) {
-        if B::KIND == SelectedBackend::Avx512 && size.width() >= 32 {
-            let (backend, args) = (self.0, (left, above, top_left));
-            return backend.vectorize(
-                #[inline(always)]
-                || paeth_rows_wide(backend.token(), size, args, output, stride_samples),
-            );
+        #[cfg(target_arch = "x86_64")]
+        if size.width() >= 32
+            && let Some(wide) = self.0.avx512_token()
+        {
+            let paeth = O::wide_paeth(WideKernels::of(wide));
+            return paeth(size, (left, above, top_left), output, stride_samples);
         }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => {
@@ -326,7 +330,11 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
 /// [`paeth_rows`] for a block 32 or 64 wide, 32 lanes a step. The above row
 /// and its distance to the corner are the same for every row, so they are
 /// widened and taken once per block.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "must be compiled inside its caller's AVX-512 context"
+)]
+#[inline(always)]
 fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
     simd: S,
     size: IntraRectBlockSize,
@@ -357,6 +365,26 @@ fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
         }
     }
 }
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// [`paeth_rows_wide`] on bytes as a pointer, made where AVX-512 is enabled.
+    pub(crate) fn bind_paeth_u8(_proof: Avx512) -> PaethFn<u8> {
+        |size, edges, output, stride| {
+            paeth_rows_wide(Avx512::assume_supported(), size, edges, output, stride);
+        }
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// [`paeth_rows_wide`] on words as a pointer, made where AVX-512 is enabled.
+    pub(crate) fn bind_paeth_u16(_proof: Avx512) -> PaethFn<u16> {
+        |size, edges, output, stride| {
+            paeth_rows_wide(Avx512::assume_supported(), size, edges, output, stride);
+        }
+    }
+);
 
 /// One lane group of [`predict_paeth_lanes`].
 #[inline]
