@@ -242,37 +242,39 @@ fn block_deltas<S: Simd, P: WindowSample>(
     weights: Weights,
     deltas: &mut [[[i32; 2]; 2]],
 ) -> Result<()> {
-    let shift = unit_size.trailing_zeros();
-    let columns = width >> shift;
-    let mut y = 0;
-    while y < height {
-        let mut x = 0;
-        while x < width {
-            let tile = (preds, starts.map(|start| start + y * stride + x), stride);
-            let size = [width - x, height - y].map(|size| size.min(GRADIENT_UNIT));
-            let sums = match size {
-                [16, 16] => tile_sums::<S, P, 16, 16>(simd, tile, weights),
-                [16, _] => tile_sums::<S, P, 16, 8>(simd, tile, weights),
-                [_, 16] => tile_sums::<S, P, 8, 16>(simd, tile, weights),
-                _ => tile_8x8(simd, tile, weights, unit_size == 4),
-            };
-            let [tile_columns, tile_rows] = size.map(|size| size >> shift);
-            for row in 0..tile_rows {
-                let first = ((y >> shift) + row) * columns + (x >> shift);
-                for column in 0..tile_columns {
-                    let sums = sums[row * tile_columns + column];
-                    if let Some(delta) = deltas.get_mut(first + column)
-                        && sums[3..] != [0; 2]
-                    {
-                        *delta = solve_sums(sums, weights.distances)?;
+    splot_core::in_scope!(simd => {
+        let shift = unit_size.trailing_zeros();
+        let columns = width >> shift;
+        let mut y = 0;
+        while y < height {
+            let mut x = 0;
+            while x < width {
+                let tile = (preds, starts.map(|start| start + y * stride + x), stride);
+                let size = [width - x, height - y].map(|size| size.min(GRADIENT_UNIT));
+                let sums = match size {
+                    [16, 16] => tile_sums::<S, P, 16, 16>(simd, tile, weights),
+                    [16, _] => tile_sums::<S, P, 16, 8>(simd, tile, weights),
+                    [_, 16] => tile_sums::<S, P, 8, 16>(simd, tile, weights),
+                    _ => tile_8x8(simd, tile, weights, unit_size == 4),
+                };
+                let [tile_columns, tile_rows] = size.map(|size| size >> shift);
+                for row in 0..tile_rows {
+                    let first = ((y >> shift) + row) * columns + (x >> shift);
+                    for column in 0..tile_columns {
+                        let sums = sums[row * tile_columns + column];
+                        if let Some(delta) = deltas.get_mut(first + column)
+                            && sums[3..] != [0; 2]
+                        {
+                            *delta = solve_sums(sums, weights.distances)?;
+                        }
                     }
                 }
+                x += GRADIENT_UNIT;
             }
-            x += GRADIENT_UNIT;
+            y += GRADIENT_UNIT;
         }
-        y += GRADIENT_UNIT;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Byte indices that repeat the first `i16` lane of a 128-bit block.

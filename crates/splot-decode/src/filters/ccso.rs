@@ -716,146 +716,64 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
     tile_clamp: (usize, usize),
     config: &CcsoPlaneConfig,
 ) -> (usize, usize) {
-    let (min_luma_x, max_luma_x) = tile_clamp;
-    let (dx0, dx1) = match offset_rows {
-        None => (0, 0),
-        Some(_) => (config.sample_offsets[0].0, config.sample_offsets[1].0),
-    };
-    let min_dx = dx0.min(dx1).min(0);
-    let max_dx = dx0.max(dx1).max(0);
-    let first = ((min_luma_x as isize - min_dx).max(0) as usize)
-        .div_ceil(1 << SUB_X)
-        .max(x_start)
-        .min(x_end);
-    let left_edge = first > x_start && x_end >= x_start + CCSO_LANES;
-    let first = if left_edge {
-        x_start + CCSO_LANES
-    } else {
-        first
-    };
-    let first_luma = first << SUB_X;
-    let last_tap = max_luma_x as isize - max_dx - ((CCSO_LANES - 1) << SUB_X) as isize;
-    let step = CCSO_LANES << SUB_X;
-    let (row0, row1) = offset_rows.unwrap_or((center_row, center_row));
-    let whole_steps =
-        |row: &[L], dx: isize| row.len().saturating_sub(first_luma.wrapping_add_signed(dx)) / step;
-    let count = ((x_end - first) / CCSO_LANES)
-        .min(match usize::try_from(last_tap - first_luma as isize) {
-            Ok(reach) => reach / step + 1,
-            Err(_) => 0,
-        })
-        .min(whole_steps(center_row, 0))
-        .min(whole_steps(row0, dx0))
-        .min(whole_steps(row1, dx1));
-    let span = |dx: isize| {
-        let start = first_luma.wrapping_add_signed(dx);
-        start..start + count * step
-    };
-    let (Some(centers), Some(taps0), Some(taps1), Some(outputs)) = (
-        center_row.get(span(0)),
-        row0.get(span(dx0)),
-        row1.get(span(dx1)),
-        destination.get_mut(first..first + count * CCSO_LANES),
-    ) else {
-        return (first, first);
-    };
-    let tables: [u8x16<S>; CCSO_LUT_LEN / 16] = core::array::from_fn(|block| {
-        u8x16::from_slice(simd, &config.offset_lut[16 * block..16 * block + 16])
-    });
-    let blocks = config.lut_blocks;
-    let (class_weight0, class_weight1) =
-        (config.max_edge_interval * config.max_band, config.max_band);
-    let quant_step = u16x16::splat(simd, config.quant_step as u16);
-    let edge_u16 = {
-        #[inline(always)]
-        |source: u16x16<S>, centers: u16x16<S>, weight: usize| {
-            let (weight, zero) = (u16x16::splat(simd, weight as u16), u16x16::splat(simd, 0));
-            let class = source
-                .saturating_add(quant_step)
-                .simd_ge(centers)
-                .select(weight, zero);
-            if config.edge_clf {
-                return class;
-            }
-            class
-                + source
-                    .simd_gt(centers.saturating_add(quant_step))
-                    .select(weight, zero)
-        }
-    };
-    let index_u16 = {
-        #[inline(always)]
-        |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-            let [center, row0, row1] = rows;
-            let load = |row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?);
-            let centers = load(center)?;
-            let mut index = centers >> u32::from(config.band_shift);
-            if offset_rows.is_some() {
-                index = index
-                    + edge_u16(load(row0)?, centers, class_weight0)
-                    + edge_u16(load(row1)?, centers, class_weight1);
-            }
-            let (low, high) = simd.split_u16x16(index);
-            Some(simd.narrow_u16x8(low, high))
-        }
-    };
-    let quant_step = u8x16::splat(simd, config.quant_step.clamp(0, 255) as u8);
-    let edge_u8 = |source: u8x16<S>, centers: u8x16<S>, weight: usize| {
-        let (weight, zero) = (u8x16::splat(simd, weight as u8), u8x16::splat(simd, 0));
-        let class = source
-            .saturating_add(quant_step)
-            .simd_ge(centers)
-            .select(weight, zero);
-        if config.edge_clf {
-            return class;
-        }
-        class
-            + source
-                .simd_gt(centers.saturating_add(quant_step))
-                .select(weight, zero)
-    };
-    let index_u8 = |rows: [&[L]; 3]| -> Option<u8x16<S>> {
-        let [centers, row0, row1] =
-            rows.map(|row| ccso_luma::<S, u8x16<S>, SUB_X>(simd, L::u8_slice(row)?));
-        let centers = centers?;
-        let mut index = match config.band_shift {
-            shift @ 0..8 => centers >> u32::from(shift),
-            _ => u8x16::splat(simd, 0),
+    splot_core::in_scope!(simd => {
+        let (min_luma_x, max_luma_x) = tile_clamp;
+        let (dx0, dx1) = match offset_rows {
+            None => (0, 0),
+            Some(_) => (config.sample_offsets[0].0, config.sample_offsets[1].0),
         };
-        if offset_rows.is_some() {
-            index = index
-                + edge_u8(row0?, centers, class_weight0)
-                + edge_u8(row1?, centers, class_weight1);
-        }
-        Some(index)
-    };
-    let max_sample = i16x16::splat(simd, config.max_sample as i16);
-    let filter = {
+        let min_dx = dx0.min(dx1).min(0);
+        let max_dx = dx0.max(dx1).max(0);
+        let first = ((min_luma_x as isize - min_dx).max(0) as usize)
+            .div_ceil(1 << SUB_X)
+            .max(x_start)
+            .min(x_end);
+        let left_edge = first > x_start && x_end >= x_start + CCSO_LANES;
+        let first = if left_edge {
+            x_start + CCSO_LANES
+        } else {
+            first
+        };
+        let first_luma = first << SUB_X;
+        let last_tap = max_luma_x as isize - max_dx - ((CCSO_LANES - 1) << SUB_X) as isize;
+        let step = CCSO_LANES << SUB_X;
+        let (row0, row1) = offset_rows.unwrap_or((center_row, center_row));
+        let whole_steps =
+            |row: &[L], dx: isize| row.len().saturating_sub(first_luma.wrapping_add_signed(dx)) / step;
+        let count = ((x_end - first) / CCSO_LANES)
+            .min(match usize::try_from(last_tap - first_luma as isize) {
+                Ok(reach) => reach / step + 1,
+                Err(_) => 0,
+            })
+            .min(whole_steps(center_row, 0))
+            .min(whole_steps(row0, dx0))
+            .min(whole_steps(row1, dx1));
+        let span = {
         #[inline(always)]
-        |rows: [&[L]; 3], output: &[D]| -> Option<u16x16<S>> {
-            let index = if L::u8_slice(rows[0]).is_some() {
-                index_u8(rows)
-            } else {
-                index_u16(rows)
-            }?;
-            let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x16<S>>();
-            let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
-            Some(
-                (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
-                    .max(i16x16::splat(simd, 0))
-                    .min(max_sample)
-                    .bitcast(),
-            )
+        |dx: isize| {
+            let start = first_luma.wrapping_add_signed(dx);
+            start..start + count * step
         }
     };
-    let mut x = first;
-    if count >= 2 {
-        let tables = tables.map(|table| simd.combine_u8x16(table, table));
-        let quant_step = u8x32::splat(simd, config.quant_step.clamp(0, 255) as u8);
-        let edge = {
+        let (Some(centers), Some(taps0), Some(taps1), Some(outputs)) = (
+            center_row.get(span(0)),
+            row0.get(span(dx0)),
+            row1.get(span(dx1)),
+            destination.get_mut(first..first + count * CCSO_LANES),
+        ) else {
+            return (first, first);
+        };
+        let tables: [u8x16<S>; CCSO_LUT_LEN / 16] = core::array::from_fn(|block| {
+            u8x16::from_slice(simd, &config.offset_lut[16 * block..16 * block + 16])
+        });
+        let blocks = config.lut_blocks;
+        let (class_weight0, class_weight1) =
+            (config.max_edge_interval * config.max_band, config.max_band);
+        let quant_step = u16x16::splat(simd, config.quant_step as u16);
+        let edge_u16 = {
             #[inline(always)]
-            |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
-                let (weight, zero) = (u8x32::splat(simd, weight as u8), u8x32::splat(simd, 0));
+            |source: u16x16<S>, centers: u16x16<S>, weight: usize| {
+                let (weight, zero) = (u16x16::splat(simd, weight as u16), u16x16::splat(simd, 0));
                 let class = source
                     .saturating_add(quant_step)
                     .simd_ge(centers)
@@ -869,151 +787,256 @@ fn ccso_lanes_span<S: Simd, D: ReconSample, L: ReconSample, const SUB_X: usize>(
                         .select(weight, zero)
             }
         };
-        let luma = |row: &[L]| ccso_luma::<S, u8x32<S>, SUB_X>(simd, L::u8_slice(row)?);
-        let wide_index = {
+        let index_u16 = {
             #[inline(always)]
-            |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
-                if L::u8_slice(centers).is_none() {
-                    let half = |at: usize| {
-                        index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?])
-                    };
-                    return Some(simd.combine_u8x16(half(0)?, half(step)?));
-                }
-                let (centers, row0, row1) = (luma(centers)?, luma(taps0)?, luma(taps1)?);
-                let mut index = match config.band_shift {
-                    shift @ 0..8 => centers >> u32::from(shift),
-                    _ => u8x32::splat(simd, 0),
-                };
+            |rows: [&[L]; 3]| -> Option<u8x16<S>> {
+                let [center, row0, row1] = rows;
+                let load = {
+        #[inline(always)]
+        |row| ccso_luma::<S, u16x16<S>, SUB_X>(simd, L::u16_slice(row)?)
+    };
+                let centers = load(center)?;
+                let mut index = centers >> u32::from(config.band_shift);
                 if offset_rows.is_some() {
                     index = index
-                        + edge(row0, centers, class_weight0)
-                        + edge(row1, centers, class_weight1);
+                        + edge_u16(load(row0)?, centers, class_weight0)
+                        + edge_u16(load(row1)?, centers, class_weight1);
                 }
-                Some(index)
+                let (low, high) = simd.split_u16x16(index);
+                Some(simd.narrow_u16x8(low, high))
             }
         };
-        let wide_lanes = centers
-            .chunks_exact(2 * step)
-            .zip(taps0.chunks_exact(2 * step))
-            .zip(taps1.chunks_exact(2 * step))
-            .zip(outputs.as_chunks_mut::<{ 2 * CCSO_LANES }>().0);
-        let add = |offset: u8x32<S>, output: &mut [D; 2 * CCSO_LANES]| {
-            let offset = offset.bitcast::<i8x32<S>>();
-            if let Some(bytes) = D::u8_slice_mut(output) {
-                let zero = i8x32::splat(simd, 0);
-                let (up, down) = (offset.max(zero), (zero - offset).max(zero));
-                u8x32::from_slice(simd, bytes)
-                    .saturating_add(up.bitcast::<u8x32<S>>())
-                    .saturating_sub(down.bitcast::<u8x32<S>>())
-                    .store_slice(bytes);
-                return;
+        let quant_step = u8x16::splat(simd, config.quant_step.clamp(0, 255) as u8);
+        let edge_u8 = {
+        #[inline(always)]
+        |source: u8x16<S>, centers: u8x16<S>, weight: usize| {
+            let (weight, zero) = (u8x16::splat(simd, weight as u8), u8x16::splat(simd, 0));
+            let class = source
+                .saturating_add(quant_step)
+                .simd_ge(centers)
+                .select(weight, zero);
+            if config.edge_clf {
+                return class;
             }
-            let (low, high) = simd.widen_i8x32(offset);
-            let (outputs, _) = output.as_chunks_mut::<CCSO_LANES>();
-            for (output, offset) in outputs.iter_mut().zip([low, high]) {
-                let Some(lanes) = load_lanes(simd, output) else {
-                    break;
-                };
-                let lanes = (lanes.bitcast::<i16x16<S>>() + offset)
-                    .max(i16x16::splat(simd, 0))
-                    .min(max_sample);
-                store_lanes(lanes.bitcast(), output);
+            class
+                + source
+                    .simd_gt(centers.saturating_add(quant_step))
+                    .select(weight, zero)
+        }
+    };
+        let index_u8 = {
+        #[inline(always)]
+        |rows: [&[L]; 3]| -> Option<u8x16<S>> {
+            let [centers, row0, row1] =
+                rows.map(|row| ccso_luma::<S, u8x16<S>, SUB_X>(simd, L::u8_slice(row)?));
+            let centers = centers?;
+            let mut index = match config.band_shift {
+                shift @ 0..8 => centers >> u32::from(shift),
+                _ => u8x16::splat(simd, 0),
+            };
+            if offset_rows.is_some() {
+                index = index
+                    + edge_u8(row0?, centers, class_weight0)
+                    + edge_u8(row1?, centers, class_weight1);
+            }
+            Some(index)
+        }
+    };
+        let max_sample = i16x16::splat(simd, config.max_sample as i16);
+        let filter = {
+            #[inline(always)]
+            |rows: [&[L]; 3], output: &[D]| -> Option<u16x16<S>> {
+                let index = if L::u8_slice(rows[0]).is_some() {
+                    index_u8(rows)
+                } else {
+                    index_u16(rows)
+                }?;
+                let offset = ccso_lookup(&tables, blocks, index).bitcast::<i8x16<S>>();
+                let offset = simd.widen_i8x32(simd.combine_i8x16(offset, offset)).0;
+                Some(
+                    (load_lanes(simd, output)?.bitcast::<i16x16<S>>() + offset)
+                        .max(i16x16::splat(simd, 0))
+                        .min(max_sample)
+                        .bitcast(),
+                )
             }
         };
-        let chunk = (&tables, wide_index, add);
-        x += match blocks {
-            1 => ccso_wide_chunks::<_, D, L, 1>(wide_lanes, chunk),
-            2 => ccso_wide_chunks::<_, D, L, 2>(wide_lanes, chunk),
-            3 => ccso_wide_chunks::<_, D, L, 3>(wide_lanes, chunk),
-            4 => ccso_wide_chunks::<_, D, L, 4>(wide_lanes, chunk),
-            _ => ccso_wide_chunks::<_, D, L, 5>(wide_lanes, chunk),
-        };
-    }
-    let done = (x - first) / CCSO_LANES * step;
-    let lanes = centers
-        .get(done..)
-        .unwrap_or_default()
-        .chunks_exact(step)
-        .zip(taps0.get(done..).unwrap_or_default().chunks_exact(step))
-        .zip(taps1.get(done..).unwrap_or_default().chunks_exact(step))
-        .zip(
-            outputs
-                .get_mut(x - first..)
-                .unwrap_or_default()
-                .chunks_exact_mut(CCSO_LANES),
-        );
-    for (((centers, taps0), taps1), output) in lanes {
-        let Some(samples) = filter([centers, taps0, taps1], output) else {
-            break;
-        };
-        store_lanes(samples, output);
-        x += CCSO_LANES;
-    }
-    let tail_end = x_end.min(match usize::try_from(max_luma_x as isize - max_dx) {
-        Ok(last) => (last >> SUB_X) + 1,
-        Err(_) => 0,
-    });
-    if tail_end > x
-        && let Some(start) = tail_end.checked_sub(CCSO_LANES)
-        && start <= x
-        && let luma = start << SUB_X
-        && let (Some(centers), Some(taps0), Some(taps1), Some(output)) = (
-            center_row.get(luma..).and_then(|row| row.get(..step)),
-            row0.get(luma.wrapping_add_signed(dx0)..)
-                .and_then(|row| row.get(..step)),
-            row1.get(luma.wrapping_add_signed(dx1)..)
-                .and_then(|row| row.get(..step)),
-            destination
-                .get_mut(start..)
-                .and_then(|row| row.first_chunk_mut::<CCSO_LANES>()),
-        )
-        && let Some(samples) = filter([centers, taps0, taps1], output)
-    {
-        let done = x - start;
-        let mut lanes = [D::default(); CCSO_LANES];
-        store_lanes(samples, &mut lanes);
-        output[done..].copy_from_slice(&lanes[done..]);
-        x = tail_end;
-    }
-    let edge =
-        |at: usize, staged: &mut [[L; 2 * CCSO_LANES]; 3], output: &[D]| -> Option<u16x16<S>> {
-            let luma = (at << SUB_X) as isize;
-            let [center, tap0, tap1] = staged;
-            let center = edge_taps::<S, L, SUB_X>(simd, center_row, luma, tile_clamp, center)?;
-            let tap0 = edge_taps::<S, L, SUB_X>(simd, row0, luma + dx0, tile_clamp, tap0)?;
-            let tap1 = edge_taps::<S, L, SUB_X>(simd, row1, luma + dx1, tile_clamp, tap1)?;
-            filter([center, tap0, tap1], output.get(at..at + CCSO_LANES)?)
-        };
-    let mut span = (first, x);
-    if x < x_end
-        && x_end >= x_start + CCSO_LANES
-        && x >= first
-        && let at = x_end - CCSO_LANES
-        && let Some(samples) = edge(at, &mut [[L::default(); 2 * CCSO_LANES]; 3], destination)
-        && let Some(output) = destination
-            .get_mut(at..)
-            .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
-    {
-        let new = u16x16::from_slice(simd, &CCSO_LANE_INDEX)
-            .simd_ge(u16x16::splat(simd, (x - at) as u16));
-        let samples = new.select(samples, load_lanes(simd, output).unwrap_or(samples));
-        store_lanes(samples, output);
-        span.1 = x_end;
-    }
-    if left_edge
-        && let Some(samples) = edge(
-            x_start,
-            &mut [[L::default(); 2 * CCSO_LANES]; 3],
-            destination,
-        )
-        && let Some(output) = destination
-            .get_mut(x_start..)
-            .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
-    {
-        store_lanes(samples, output);
-        span.0 = x_start;
-    }
-    span
+        let mut x = first;
+        if count >= 2 {
+            let tables = tables.map(|table| simd.combine_u8x16(table, table));
+            let quant_step = u8x32::splat(simd, config.quant_step.clamp(0, 255) as u8);
+            let edge = {
+                #[inline(always)]
+                |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
+                    let (weight, zero) = (u8x32::splat(simd, weight as u8), u8x32::splat(simd, 0));
+                    let class = source
+                        .saturating_add(quant_step)
+                        .simd_ge(centers)
+                        .select(weight, zero);
+                    if config.edge_clf {
+                        return class;
+                    }
+                    class
+                        + source
+                            .simd_gt(centers.saturating_add(quant_step))
+                            .select(weight, zero)
+                }
+            };
+            let luma = {
+        #[inline(always)]
+        |row: &[L]| ccso_luma::<S, u8x32<S>, SUB_X>(simd, L::u8_slice(row)?)
+    };
+            let wide_index = {
+                #[inline(always)]
+                |centers: &[L], taps0: &[L], taps1: &[L]| -> Option<u8x32<S>> {
+                    if L::u8_slice(centers).is_none() {
+                        let half = {
+        #[inline(always)]
+        |at: usize| {
+                            index_u16([centers.get(at..)?, taps0.get(at..)?, taps1.get(at..)?])
+                        }
+    };
+                        return Some(simd.combine_u8x16(half(0)?, half(step)?));
+                    }
+                    let (centers, row0, row1) = (luma(centers)?, luma(taps0)?, luma(taps1)?);
+                    let mut index = match config.band_shift {
+                        shift @ 0..8 => centers >> u32::from(shift),
+                        _ => u8x32::splat(simd, 0),
+                    };
+                    if offset_rows.is_some() {
+                        index = index
+                            + edge(row0, centers, class_weight0)
+                            + edge(row1, centers, class_weight1);
+                    }
+                    Some(index)
+                }
+            };
+            let wide_lanes = centers
+                .chunks_exact(2 * step)
+                .zip(taps0.chunks_exact(2 * step))
+                .zip(taps1.chunks_exact(2 * step))
+                .zip(outputs.as_chunks_mut::<{ 2 * CCSO_LANES }>().0);
+            let add = {
+        #[inline(always)]
+        |offset: u8x32<S>, output: &mut [D; 2 * CCSO_LANES]| {
+                let offset = offset.bitcast::<i8x32<S>>();
+                if let Some(bytes) = D::u8_slice_mut(output) {
+                    let zero = i8x32::splat(simd, 0);
+                    let (up, down) = (offset.max(zero), (zero - offset).max(zero));
+                    u8x32::from_slice(simd, bytes)
+                        .saturating_add(up.bitcast::<u8x32<S>>())
+                        .saturating_sub(down.bitcast::<u8x32<S>>())
+                        .store_slice(bytes);
+                    return;
+                }
+                let (low, high) = simd.widen_i8x32(offset);
+                let (outputs, _) = output.as_chunks_mut::<CCSO_LANES>();
+                for (output, offset) in outputs.iter_mut().zip([low, high]) {
+                    let Some(lanes) = load_lanes(simd, output) else {
+                        break;
+                    };
+                    let lanes = (lanes.bitcast::<i16x16<S>>() + offset)
+                        .max(i16x16::splat(simd, 0))
+                        .min(max_sample);
+                    store_lanes(lanes.bitcast(), output);
+                }
+            }
+    };
+            let chunk = (&tables, wide_index, add);
+            x += match blocks {
+                1 => ccso_wide_chunks::<_, D, L, 1>(wide_lanes, chunk),
+                2 => ccso_wide_chunks::<_, D, L, 2>(wide_lanes, chunk),
+                3 => ccso_wide_chunks::<_, D, L, 3>(wide_lanes, chunk),
+                4 => ccso_wide_chunks::<_, D, L, 4>(wide_lanes, chunk),
+                _ => ccso_wide_chunks::<_, D, L, 5>(wide_lanes, chunk),
+            };
+        }
+        let done = (x - first) / CCSO_LANES * step;
+        let lanes = centers
+            .get(done..)
+            .unwrap_or_default()
+            .chunks_exact(step)
+            .zip(taps0.get(done..).unwrap_or_default().chunks_exact(step))
+            .zip(taps1.get(done..).unwrap_or_default().chunks_exact(step))
+            .zip(
+                outputs
+                    .get_mut(x - first..)
+                    .unwrap_or_default()
+                    .chunks_exact_mut(CCSO_LANES),
+            );
+        for (((centers, taps0), taps1), output) in lanes {
+            let Some(samples) = filter([centers, taps0, taps1], output) else {
+                break;
+            };
+            store_lanes(samples, output);
+            x += CCSO_LANES;
+        }
+        let tail_end = x_end.min(match usize::try_from(max_luma_x as isize - max_dx) {
+            Ok(last) => (last >> SUB_X) + 1,
+            Err(_) => 0,
+        });
+        if tail_end > x
+            && let Some(start) = tail_end.checked_sub(CCSO_LANES)
+            && start <= x
+            && let luma = start << SUB_X
+            && let (Some(centers), Some(taps0), Some(taps1), Some(output)) = (
+                center_row.get(luma..).and_then(|row| row.get(..step)),
+                row0.get(luma.wrapping_add_signed(dx0)..)
+                    .and_then(|row| row.get(..step)),
+                row1.get(luma.wrapping_add_signed(dx1)..)
+                    .and_then(|row| row.get(..step)),
+                destination
+                    .get_mut(start..)
+                    .and_then(|row| row.first_chunk_mut::<CCSO_LANES>()),
+            )
+            && let Some(samples) = filter([centers, taps0, taps1], output)
+        {
+            let done = x - start;
+            let mut lanes = [D::default(); CCSO_LANES];
+            store_lanes(samples, &mut lanes);
+            output[done..].copy_from_slice(&lanes[done..]);
+            x = tail_end;
+        }
+        let edge =
+            |at: usize, staged: &mut [[L; 2 * CCSO_LANES]; 3], output: &[D]| -> Option<u16x16<S>> {
+                let luma = (at << SUB_X) as isize;
+                let [center, tap0, tap1] = staged;
+                let center = edge_taps::<S, L, SUB_X>(simd, center_row, luma, tile_clamp, center)?;
+                let tap0 = edge_taps::<S, L, SUB_X>(simd, row0, luma + dx0, tile_clamp, tap0)?;
+                let tap1 = edge_taps::<S, L, SUB_X>(simd, row1, luma + dx1, tile_clamp, tap1)?;
+                filter([center, tap0, tap1], output.get(at..at + CCSO_LANES)?)
+            };
+        let mut span = (first, x);
+        if x < x_end
+            && x_end >= x_start + CCSO_LANES
+            && x >= first
+            && let at = x_end - CCSO_LANES
+            && let Some(samples) = edge(at, &mut [[L::default(); 2 * CCSO_LANES]; 3], destination)
+            && let Some(output) = destination
+                .get_mut(at..)
+                .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
+        {
+            let new = u16x16::from_slice(simd, &CCSO_LANE_INDEX)
+                .simd_ge(u16x16::splat(simd, (x - at) as u16));
+            let samples = new.select(samples, load_lanes(simd, output).unwrap_or(samples));
+            store_lanes(samples, output);
+            span.1 = x_end;
+        }
+        if left_edge
+            && let Some(samples) = edge(
+                x_start,
+                &mut [[L::default(); 2 * CCSO_LANES]; 3],
+                destination,
+            )
+            && let Some(output) = destination
+                .get_mut(x_start..)
+                .and_then(<[D]>::first_chunk_mut::<CCSO_LANES>)
+        {
+            store_lanes(samples, output);
+            span.0 = x_start;
+        }
+        span
+    })
 }
 
 /// The offsets that `index` picks from the first `blocks` 16-entry blocks

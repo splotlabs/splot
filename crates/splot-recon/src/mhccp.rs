@@ -639,19 +639,21 @@ impl<S: Simd> PlaneLanes<S> {
 /// terms fit in `i32`.
 #[inline]
 fn adapt_lanes<S: Simd>(simd: S, param: i32x8<S>, bits: i32, v: i32x8<S>) -> i32x8<S> {
-    let zero = i32x8::splat(simd, 0);
-    let exponent = simd
-        .cvt_f32_i32x8(v.max(i32x8::splat(simd, 1)))
-        .bitcast::<i32x8<S>>()
-        >> 23;
-    let need = (exponent + (bits - 126 - 29)).max(zero);
-    let s1 = need >> 1;
-    let product = simd.shrv_i32x8(param, s1) * simd.shrv_i32x8(v, need - s1);
-    let adjust = i32x8::splat(simd, MHCCP_BITS as i32) - need;
-    let half = simd.shlv_i32x8(i32x8::splat(simd, 1), (adjust - 1).max(zero));
-    let rounded = simd.shrv_i32x8(product.abs() + half, adjust.max(zero));
-    let rounded = product.simd_lt(zero).select(zero - rounded, rounded);
-    adjust.simd_gt(zero).select(rounded, product)
+    splot_core::in_scope!(simd => {
+        let zero = i32x8::splat(simd, 0);
+        let exponent = simd
+            .cvt_f32_i32x8(v.max(i32x8::splat(simd, 1)))
+            .bitcast::<i32x8<S>>()
+            >> 23;
+        let need = (exponent + (bits - 126 - 29)).max(zero);
+        let s1 = need >> 1;
+        let product = simd.shrv_i32x8(param, s1) * simd.shrv_i32x8(v, need - s1);
+        let adjust = i32x8::splat(simd, MHCCP_BITS as i32) - need;
+        let half = simd.shlv_i32x8(i32x8::splat(simd, 1), (adjust - 1).max(zero));
+        let rounded = simd.shrv_i32x8(product.abs() + half, adjust.max(zero));
+        let rounded = product.simd_lt(zero).select(zero - rounded, rounded);
+        adjust.simd_gt(zero).select(rounded, product)
+    })
 }
 
 /// [`MhccpPredictor::predict_planes`] in 8-lane groups, two rows each for

@@ -523,27 +523,29 @@ fn add_residual_u16_tail<S: Simd>(
     max: i32,
     out: &mut [u16],
 ) {
-    let len = out.len().min(residual.len());
-    let mut start = 0;
-    if let (Some(slot), Some(res)) = (out.first_chunk::<4>(), residual.first_chunk::<4>()) {
-        let pred = prediction
-            .and_then(<[u16]>::first_chunk::<4>)
-            .unwrap_or(slot);
-        let sum = add_residual_lanes(simd, *pred, res, max);
-        if let Some(slot) = out.first_chunk_mut::<4>() {
-            *slot = sum;
+    splot_core::in_scope!(simd => {
+        let len = out.len().min(residual.len());
+        let mut start = 0;
+        if let (Some(slot), Some(res)) = (out.first_chunk::<4>(), residual.first_chunk::<4>()) {
+            let pred = prediction
+                .and_then(<[u16]>::first_chunk::<4>)
+                .unwrap_or(slot);
+            let sum = add_residual_lanes(simd, *pred, res, max);
+            if let Some(slot) = out.first_chunk_mut::<4>() {
+                *slot = sum;
+            }
+            start = 4;
         }
-        start = 4;
-    }
-    if start >= len {
-        return;
-    }
-    let n = len - start;
-    let (mut pred, mut res) = ([0u16; 4], [0i32; 4]);
-    pred[..n].copy_from_slice(&prediction.unwrap_or(&*out)[start..len]); // splot-copy-ok: zero-padded lane group
-    res[..n].copy_from_slice(&residual[start..len]); // splot-copy-ok: zero-padded lane group
-    let sum = add_residual_lanes(simd, pred, &res, max);
-    out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
+        if start >= len {
+            return;
+        }
+        let n = len - start;
+        let (mut pred, mut res) = ([0u16; 4], [0i32; 4]);
+        pred[..n].copy_from_slice(&prediction.unwrap_or(&*out)[start..len]); // splot-copy-ok: zero-padded lane group
+        res[..n].copy_from_slice(&residual[start..len]); // splot-copy-ok: zero-padded lane group
+        let sum = add_residual_lanes(simd, pred, &res, max);
+        out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
+    });
 }
 
 #[expect(clippy::inline_always, reason = "per-row residual add hot path")]

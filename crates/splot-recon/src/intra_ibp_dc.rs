@@ -450,17 +450,19 @@ fn ibp_dc_lanes<S: Simd>(
     edge: u16x16<S>,
     inverse: u16x16<S>,
 ) -> u16x16<S> {
-    if wide {
-        return blend_ibp_lanes(
-            simd,
-            true,
-            dc,
-            edge,
-            u16x16::splat(simd, IBP_WEIGHT_MAX) - inverse,
-        );
-    }
-    let base = (dc << u32::from(IBP_WEIGHT_SHIFT)) + (1 << (IBP_WEIGHT_SHIFT - 1));
-    (base + (edge - dc) * inverse) >> u32::from(IBP_WEIGHT_SHIFT)
+    splot_core::in_scope!(simd => {
+        if wide {
+            return blend_ibp_lanes(
+                simd,
+                true,
+                dc,
+                edge,
+                u16x16::splat(simd, IBP_WEIGHT_MAX) - inverse,
+            );
+        }
+        let base = (dc << u32::from(IBP_WEIGHT_SHIFT)) + (1 << (IBP_WEIGHT_SHIFT - 1));
+        (base + (edge - dc) * inverse) >> u32::from(IBP_WEIGHT_SHIFT)
+    })
 }
 
 /// `Round2(pred * weight + edge * (128 - weight), 7)` over 16 lanes, in `u16`
@@ -473,22 +475,24 @@ pub(crate) fn blend_ibp_lanes<S: Simd>(
     edge: u16x16<S>,
     weight: u16x16<S>,
 ) -> u16x16<S> {
-    let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
-    let round = 1 << (IBP_WEIGHT_SHIFT - 1);
-    if !wide {
-        return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
-    }
-    let [
-        (pred_low, pred_high),
-        (edge_low, edge_high),
-        (weight_low, weight_high),
-        (inverse_low, inverse_high),
-    ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
-    let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
-        >> u32::from(IBP_WEIGHT_SHIFT);
-    let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
-        >> u32::from(IBP_WEIGHT_SHIFT);
-    simd.relaxed_narrow_u32x8(low, high)
+    splot_core::in_scope!(simd => {
+        let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
+        let round = 1 << (IBP_WEIGHT_SHIFT - 1);
+        if !wide {
+            return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
+        }
+        let [
+            (pred_low, pred_high),
+            (edge_low, edge_high),
+            (weight_low, weight_high),
+            (inverse_low, inverse_high),
+        ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
+        let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
+            >> u32::from(IBP_WEIGHT_SHIFT);
+        let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
+            >> u32::from(IBP_WEIGHT_SHIFT);
+        simd.relaxed_narrow_u32x8(low, high)
+    })
 }
 
 #[cfg(test)]

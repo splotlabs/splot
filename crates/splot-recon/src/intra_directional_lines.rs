@@ -534,25 +534,36 @@ fn store_short<P: Copy, const N: usize>(out: &mut [P], lanes: &[P; N]) {
 )]
 #[inline(always)]
 fn line_lanes_u16<S: Simd>(simd: S, window: &[u16], taps: [i8; 4], max: u16, out: &mut [u16]) {
-    let pair = |low: i8, high: i8| {
-        i32x8::splat(simd, i32::from(low as i16 as u16) | i32::from(high) << 16)
-            .bitcast::<i16x16<S>>()
+    splot_core::in_scope!(simd => {
+        let pair = {
+        #[inline(always)]
+        |low: i8, high: i8| {
+            i32x8::splat(simd, i32::from(low as i16 as u16) | i32::from(high) << 16)
+                .bitcast::<i16x16<S>>()
+        }
     };
-    let (taps01, taps23) = (pair(taps[0], taps[1]), pair(taps[2], taps[3]));
-    let max = i32::from(max);
-    store_chunks::<u16, 8>(out, |at| {
-        let load = |tap: usize| u16x8::from_slice(simd, &window[at + tap..at + tap + 8]);
-        let madd = |near: u16x8<S>, far: u16x8<S>, weights: i16x16<S>| {
-            let pairs = simd.combine_u16x8(
-                simd.zip_low_u16x8(near, far),
-                simd.zip_high_u16x8(near, far),
-            );
-            simd.pairwise_dot_product_i16x16(pairs.bitcast::<i16x16<S>>(), weights)
-        };
-        let sum = madd(load(0), load(1), taps01) + madd(load(2), load(3), taps23);
-        let values = ((sum + 64) >> 7).max(0).min(max);
-        let (low, high) = simd.split_u32x8(values.bitcast());
-        simd.relaxed_narrow_u32x4(low, high).into()
+        let (taps01, taps23) = (pair(taps[0], taps[1]), pair(taps[2], taps[3]));
+        let max = i32::from(max);
+        store_chunks::<u16, 8>(out, |at| {
+            let load = {
+        #[inline(always)]
+        |tap: usize| u16x8::from_slice(simd, &window[at + tap..at + tap + 8])
+    };
+            let madd = {
+        #[inline(always)]
+        |near: u16x8<S>, far: u16x8<S>, weights: i16x16<S>| {
+                let pairs = simd.combine_u16x8(
+                    simd.zip_low_u16x8(near, far),
+                    simd.zip_high_u16x8(near, far),
+                );
+                simd.pairwise_dot_product_i16x16(pairs.bitcast::<i16x16<S>>(), weights)
+            }
+    };
+            let sum = madd(load(0), load(1), taps01) + madd(load(2), load(3), taps23);
+            let values = ((sum + 64) >> 7).max(0).min(max);
+            let (low, high) = simd.split_u32x8(values.bitcast());
+            simd.relaxed_narrow_u32x4(low, high).into()
+        });
     });
 }
 
@@ -566,40 +577,54 @@ fn small_lanes_u16<S: Simd>(
     max: u16,
     last: u16,
 ) -> [u16; 16] {
-    let load = |t: usize| u16x16::from_slice(simd, &lanes.taps[t][..16]);
-    let weight = |t: usize| u16x16::from_slice(simd, &lanes.weights[t][..16]);
-    let values = if filter == LineFilter::Bilinear {
-        (load(1) * (weight(1) >> 2) + load(2) * (weight(2) >> 2) + 16) >> 5
-    } else {
-        let zip = |x: u16x16<S>, y: u16x16<S>| {
-            let ((x0, x1), (y0, y1)) = (simd.split_u16x16(x), simd.split_u16x16(y));
-            [
-                simd.combine_u16x8(simd.zip_low_u16x8(x0, y0), simd.zip_high_u16x8(x0, y0)),
-                simd.combine_u16x8(simd.zip_low_u16x8(x1, y1), simd.zip_high_u16x8(x1, y1)),
-            ]
+    splot_core::in_scope!(simd => {
+        let load = {
+            #[inline(always)]
+            |t: usize| u16x16::from_slice(simd, &lanes.taps[t][..16])
         };
-        let madd = |a: usize, b: usize| {
-            let (samples, weights) = (zip(load(a), load(b)), zip(weight(a), weight(b)));
-            [0, 1].map(|half| {
-                simd.pairwise_dot_product_i16x16(
-                    samples[half].bitcast::<i16x16<S>>(),
-                    weights[half].bitcast::<i16x16<S>>(),
-                )
-            })
+        let weight = {
+            #[inline(always)]
+            |t: usize| u16x16::from_slice(simd, &lanes.weights[t][..16])
         };
-        let (near, far) = (madd(0, 1), madd(2, 3));
-        let max = i32::from(max);
-        let [low, high] = [0, 1].map(|half| {
-            let values: u32x8<S> = ((near[half] + far[half] + 64) >> 7)
-                .max(0)
-                .min(max)
-                .bitcast();
-            let (a, b) = simd.split_u32x8(values);
-            simd.relaxed_narrow_u32x4(a, b)
-        });
-        simd.combine_u16x8(low, high)
-    };
-    lanes.clamp_tail(simd, values, last).into()
+        let values = if filter == LineFilter::Bilinear {
+            (load(1) * (weight(1) >> 2) + load(2) * (weight(2) >> 2) + 16) >> 5
+        } else {
+            let zip = {
+            #[inline(always)]
+            |x: u16x16<S>, y: u16x16<S>| {
+                let ((x0, x1), (y0, y1)) = (simd.split_u16x16(x), simd.split_u16x16(y));
+                [
+                    simd.combine_u16x8(simd.zip_low_u16x8(x0, y0), simd.zip_high_u16x8(x0, y0)),
+                    simd.combine_u16x8(simd.zip_low_u16x8(x1, y1), simd.zip_high_u16x8(x1, y1)),
+                ]
+            }
+        };
+            let madd = {
+            #[inline(always)]
+            |a: usize, b: usize| {
+                let (samples, weights) = (zip(load(a), load(b)), zip(weight(a), weight(b)));
+                [0, 1].map(|half| {
+                    simd.pairwise_dot_product_i16x16(
+                        samples[half].bitcast::<i16x16<S>>(),
+                        weights[half].bitcast::<i16x16<S>>(),
+                    )
+                })
+            }
+        };
+            let (near, far) = (madd(0, 1), madd(2, 3));
+            let max = i32::from(max);
+            let [low, high] = [0, 1].map(|half| {
+                let values: u32x8<S> = ((near[half] + far[half] + 64) >> 7)
+                    .max(0)
+                    .min(max)
+                    .bitcast();
+                let (a, b) = simd.split_u32x8(values);
+                simd.relaxed_narrow_u32x4(a, b)
+            });
+            simd.combine_u16x8(low, high)
+        };
+        lanes.clamp_tail(simd, values, last).into()
+    })
 }
 
 /// The `u16` bilinear line kernel, sixteen samples per step: `Round2(a * (32 -
@@ -612,9 +637,14 @@ fn small_lanes_u16<S: Simd>(
 )]
 #[inline(always)]
 fn bilinear_lanes_u16<S: Simd>(simd: S, window: &[u16], [near, far]: [u16; 2], out: &mut [u16]) {
-    store_chunks::<u16, 16>(out, |at| {
-        let load = |tap: usize| u16x16::from_slice(simd, &window[at + tap..at + tap + 16]);
-        ((load(1) * near + load(2) * far + 16) >> 5).into()
+    splot_core::in_scope!(simd => {
+        store_chunks::<u16, 16>(out, |at| {
+            let load = {
+            #[inline(always)]
+            |tap: usize| u16x16::from_slice(simd, &window[at + tap..at + tap + 16])
+        };
+            ((load(1) * near + load(2) * far + 16) >> 5).into()
+        });
     });
 }
 
@@ -1186,63 +1216,74 @@ fn transpose_tiles<S: Simd>(
     output: &mut [u8],
     stride: usize,
 ) {
-    let tile_width = if width >= 8 { 8 } else { 4 };
-    let tile_rows = if height >= 8 { 8 } else { 4 };
-    for c0 in (0..width).step_by(tile_width) {
-        for r0 in (0..height).step_by(tile_rows) {
-            let column = |c: usize| {
-                let at = (c0 + c) * height + r0;
-                columns
-                    .get(at..at + 16)
-                    .map_or(u8x16::splat(simd, 0), |lanes| {
-                        u8x16::from_slice(simd, lanes)
-                    })
-            };
-            let pairs = |a: usize| {
-                simd.zip_low_u8x16(column(a), column(a + 1))
-                    .bitcast::<u16x8<S>>()
-            };
-            let (t0, t1) = (pairs(0), pairs(2));
-            let low: [u8x16<S>; 2] = [
-                simd.zip_low_u16x8(t0, t1).bitcast(),
-                simd.zip_high_u16x8(t0, t1).bitcast(),
-            ];
-            let mut store = |row: usize, bytes: &[u8]| {
-                let start = (r0 + row) * stride + c0;
-                if let Some(out) = output.get_mut(start..start + bytes.len()) {
-                    out.copy_from_slice(bytes); // splot-copy-ok: publish one transposed tile row
+    splot_core::in_scope!(simd => {
+        let tile_width = if width >= 8 { 8 } else { 4 };
+        let tile_rows = if height >= 8 { 8 } else { 4 };
+        for c0 in (0..width).step_by(tile_width) {
+            for r0 in (0..height).step_by(tile_rows) {
+                let column = {
+        #[inline(always)]
+        |c: usize| {
+                    let at = (c0 + c) * height + r0;
+                    columns
+                        .get(at..at + 16)
+                        .map_or(u8x16::splat(simd, 0), |lanes| {
+                            u8x16::from_slice(simd, lanes)
+                        })
                 }
-            };
-            if tile_width == 4 {
-                for (half, rows) in low.iter().enumerate().take(tile_rows / 4) {
-                    let bytes: [u8; 16] = (*rows).into();
-                    for (row, samples) in bytes.as_chunks::<4>().0.iter().enumerate() {
-                        store(4 * half + row, samples);
+    };
+                let pairs = {
+        #[inline(always)]
+        |a: usize| {
+                    simd.zip_low_u8x16(column(a), column(a + 1))
+                        .bitcast::<u16x8<S>>()
+                }
+    };
+                let (t0, t1) = (pairs(0), pairs(2));
+                let low: [u8x16<S>; 2] = [
+                    simd.zip_low_u16x8(t0, t1).bitcast(),
+                    simd.zip_high_u16x8(t0, t1).bitcast(),
+                ];
+                let mut store = {
+        #[inline(always)]
+        |row: usize, bytes: &[u8]| {
+                    let start = (r0 + row) * stride + c0;
+                    if let Some(out) = output.get_mut(start..start + bytes.len()) {
+                        out.copy_from_slice(bytes); // splot-copy-ok: publish one transposed tile row
                     }
                 }
-                continue;
-            }
-            let (t2, t3) = (pairs(4), pairs(6));
-            let high: [u8x16<S>; 2] = [
-                simd.zip_low_u16x8(t2, t3).bitcast(),
-                simd.zip_high_u16x8(t2, t3).bitcast(),
-            ];
-            for (half, (left, right)) in low.iter().zip(&high).enumerate().take(tile_rows / 4) {
-                let (left, right) = (left.bitcast::<u32x4<S>>(), right.bitcast::<u32x4<S>>());
-                for (pair, rows) in [
-                    simd.zip_low_u32x4(left, right),
-                    simd.zip_high_u32x4(left, right),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let bytes: [u8; 16] = rows.bitcast::<u8x16<S>>().into();
-                    store(4 * half + 2 * pair, &bytes[..8]);
-                    store(4 * half + 2 * pair + 1, &bytes[8..]);
+    };
+                if tile_width == 4 {
+                    for (half, rows) in low.iter().enumerate().take(tile_rows / 4) {
+                        let bytes: [u8; 16] = (*rows).into();
+                        for (row, samples) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                            store(4 * half + row, samples);
+                        }
+                    }
+                    continue;
+                }
+                let (t2, t3) = (pairs(4), pairs(6));
+                let high: [u8x16<S>; 2] = [
+                    simd.zip_low_u16x8(t2, t3).bitcast(),
+                    simd.zip_high_u16x8(t2, t3).bitcast(),
+                ];
+                for (half, (left, right)) in low.iter().zip(&high).enumerate().take(tile_rows / 4) {
+                    let (left, right) = (left.bitcast::<u32x4<S>>(), right.bitcast::<u32x4<S>>());
+                    for (pair, rows) in [
+                        simd.zip_low_u32x4(left, right),
+                        simd.zip_high_u32x4(left, right),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let bytes: [u8; 16] = rows.bitcast::<u8x16<S>>().into();
+                        store(4 * half + 2 * pair, &bytes[..8]);
+                        store(4 * half + 2 * pair + 1, &bytes[8..]);
+                    }
                 }
             }
         }
-    }
+    });
 }
 
 /// The `u16` [`LineSample::transpose`]: each 4- or 8-wide tile of 4 or 8 rows
@@ -1258,43 +1299,45 @@ fn transpose_tiles_u16<S: Simd>(
     output: &mut [u16],
     stride: usize,
 ) {
-    let tile_width = if width >= 8 { 8 } else { 4 };
-    let tile_rows = if height >= 8 { 8 } else { 4 };
-    for c0 in (0..width).step_by(tile_width) {
-        for r0 in (0..height).step_by(tile_rows) {
-            let mut rows: [u16x8<S>; 8] = core::array::from_fn(|c| {
-                let at = (c0 + c) * height + r0;
-                columns
-                    .get(at..at + 8)
-                    .filter(|_| c < tile_width)
-                    .map_or(u16x8::splat(simd, 0), |lanes| {
-                        u16x8::from_slice(simd, lanes)
-                    })
-            });
-            for _ in 0..3 {
-                let mut next = rows;
-                for i in 0..4 {
-                    next[2 * i] = simd.zip_low_u16x8(rows[i], rows[i + 4]);
-                    next[2 * i + 1] = simd.zip_high_u16x8(rows[i], rows[i + 4]);
-                }
-                rows = next;
-            }
-            for (row, values) in rows.iter().enumerate().take(tile_rows) {
-                let lanes: [u16; 8] = (*values).into();
-                let out = output.get_mut((r0 + row) * stride + c0..);
-                if tile_width == 8 {
-                    if let Some(out) = out.and_then(<[u16]>::first_chunk_mut::<8>) {
-                        *out = lanes;
+    splot_core::in_scope!(simd => {
+        let tile_width = if width >= 8 { 8 } else { 4 };
+        let tile_rows = if height >= 8 { 8 } else { 4 };
+        for c0 in (0..width).step_by(tile_width) {
+            for r0 in (0..height).step_by(tile_rows) {
+                let mut rows: [u16x8<S>; 8] = core::array::from_fn(|c| {
+                    let at = (c0 + c) * height + r0;
+                    columns
+                        .get(at..at + 8)
+                        .filter(|_| c < tile_width)
+                        .map_or(u16x8::splat(simd, 0), |lanes| {
+                            u16x8::from_slice(simd, lanes)
+                        })
+                });
+                for _ in 0..3 {
+                    let mut next = rows;
+                    for i in 0..4 {
+                        next[2 * i] = simd.zip_low_u16x8(rows[i], rows[i + 4]);
+                        next[2 * i + 1] = simd.zip_high_u16x8(rows[i], rows[i + 4]);
                     }
-                } else if let (Some(out), Some(lanes)) = (
-                    out.and_then(<[u16]>::first_chunk_mut::<4>),
-                    lanes.first_chunk::<4>(),
-                ) {
-                    *out = *lanes;
+                    rows = next;
+                }
+                for (row, values) in rows.iter().enumerate().take(tile_rows) {
+                    let lanes: [u16; 8] = (*values).into();
+                    let out = output.get_mut((r0 + row) * stride + c0..);
+                    if tile_width == 8 {
+                        if let Some(out) = out.and_then(<[u16]>::first_chunk_mut::<8>) {
+                            *out = lanes;
+                        }
+                    } else if let (Some(out), Some(lanes)) = (
+                        out.and_then(<[u16]>::first_chunk_mut::<4>),
+                        lanes.first_chunk::<4>(),
+                    ) {
+                        *out = *lanes;
+                    }
                 }
             }
         }
-    }
+    });
 }
 
 /// Samples past a block's columns that [`LineSample::transpose`] may read.

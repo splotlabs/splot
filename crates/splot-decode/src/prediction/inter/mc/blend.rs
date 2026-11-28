@@ -640,49 +640,60 @@ fn masked_row<S: Simd, T: ReconSample>(
     output: &mut [T],
     masks: impl Fn(usize) -> i32x4<S>,
 ) -> splot_recon::Result<()> {
-    let width = output.len();
-    let (Some(left), Some(right)) = (left.get(..width), right.get(..width)) else {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: width,
-            actual: left.len().min(right.len()),
-        });
-    };
-    let shift = 6 + INTER_POST_ROUND;
-    let blend = |col: usize, left: &[i32], right: &[i32]| {
-        let (mask, l, r) = (
-            masks(col),
-            i32x4::from_slice(simd, &left[col..col + 4]),
-            i32x4::from_slice(simd, &right[col..col + 4]),
-        );
-        let value = (mask * l + (i32x4::splat(simd, 64) - mask) * r + (1 << (shift - 1))) >> shift;
-        value.clamp(0, max_sample).bitcast::<u32x4<S>>()
-    };
-    let store = |values: u16x8<S>, output: &mut [T]| {
-        if let Some(output) = T::u8_slice_mut(output) {
-            output.copy_from_slice(&values.narrow(values).to_array()[..output.len()]);
-        } else if let Some(output) = T::u16_slice_mut(output) {
-            output.copy_from_slice(&values.to_array()[..output.len()]);
-        }
-    };
-    if width < 4 {
-        let pad = |samples: &[i32]| -> [i32; 4] {
-            core::array::from_fn(|col| samples.get(col).copied().unwrap_or(0))
+    splot_core::in_scope!(simd => {
+        let width = output.len();
+        let (Some(left), Some(right)) = (left.get(..width), right.get(..width)) else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: width,
+                actual: left.len().min(right.len()),
+            });
         };
-        let value = blend(0, &pad(left), &pad(right));
-        store(value.narrow(value), output);
-        return Ok(());
-    }
-    let mut start = 0;
-    while start + 8 <= width {
-        let values = blend(start, left, right).narrow(blend(start + 4, left, right));
-        store(values, &mut output[start..start + 8]);
-        start += 8;
-    }
-    for col in (start..width).step_by(4).map(|col| col.min(width - 4)) {
-        let value = blend(col, left, right);
-        store(value.narrow(value), &mut output[col..col + 4]);
-    }
-    Ok(())
+        let shift = 6 + INTER_POST_ROUND;
+        let blend = {
+            #[inline(always)]
+            |col: usize, left: &[i32], right: &[i32]| {
+            let (mask, l, r) = (
+                masks(col),
+                i32x4::from_slice(simd, &left[col..col + 4]),
+                i32x4::from_slice(simd, &right[col..col + 4]),
+            );
+            let value = (mask * l + (i32x4::splat(simd, 64) - mask) * r + (1 << (shift - 1))) >> shift;
+            value.clamp(0, max_sample).bitcast::<u32x4<S>>()
+        }
+        };
+        let store = {
+            #[inline(always)]
+            |values: u16x8<S>, output: &mut [T]| {
+            if let Some(output) = T::u8_slice_mut(output) {
+                output.copy_from_slice(&values.narrow(values).to_array()[..output.len()]);
+            } else if let Some(output) = T::u16_slice_mut(output) {
+                output.copy_from_slice(&values.to_array()[..output.len()]);
+            }
+        }
+        };
+        if width < 4 {
+            let pad = {
+            #[inline(always)]
+            |samples: &[i32]| -> [i32; 4] {
+                core::array::from_fn(|col| samples.get(col).copied().unwrap_or(0))
+            }
+        };
+            let value = blend(0, &pad(left), &pad(right));
+            store(value.narrow(value), output);
+            return Ok(());
+        }
+        let mut start = 0;
+        while start + 8 <= width {
+            let values = blend(start, left, right).narrow(blend(start + 4, left, right));
+            store(values, &mut output[start..start + 8]);
+            start += 8;
+        }
+        for col in (start..width).step_by(4).map(|col| col.min(width - 4)) {
+            let value = blend(col, left, right);
+            store(value.narrow(value), &mut output[col..col + 4]);
+        }
+        Ok(())
+    })
 }
 
 /// Blends the `[x, y, width, height]` region of a motion-grid plane, whose

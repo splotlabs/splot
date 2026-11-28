@@ -598,65 +598,82 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
     output: &mut [P],
     stride: usize,
 ) {
-    let (width, height) = (size.width(), size.height());
-    let (log2_width, log2_height) = (u32::from(size.log2_width()), u32::from(size.log2_height()));
-    let [[h_far, h_near, h_blend], [v_far, v_near, v_blend]] = smooth_tables(size, &SMOOTH_TABLES);
-    let rows_per_group = (16 / width).max(1);
-    let index = match width {
-        4 => Some(u8x32::from_slice(simd, &ROW_INDEX_4)),
-        8 => Some(u8x32::from_slice(simd, &ROW_INDEX_8)),
-        _ => None,
-    };
-    let rows = |row_terms: &[u16; LANE_LEN], row: usize| match index {
-        Some(index) => u16x16::block_splat(u16x8::from_slice(simd, &row_terms[row..row + 8]))
-            .swizzle_dyn_within_blocks(index),
-        None => u16x16::splat(simd, row_terms[row]),
-    };
-    let full = u16x16::splat(simd, 64);
-    let blend = |pred: u16x16<S>, edge: u16x16<S>, weight: u16x16<S>| {
-        (pred * (full - weight) + edge * weight + 32) >> 6
-    };
-    let (round_h, round_v) = (1u16 << (log2_width - 1), 1u16 << (log2_height - 1));
-    for chunk in (0..width).step_by(16) {
-        let columns = |column_terms: &[u16; LANE_LEN]| {
-            u16x16::from_slice(simd, &column_terms[chunk..chunk + 16])
+    splot_core::in_scope!(simd => {
+        let (width, height) = (size.width(), size.height());
+        let (log2_width, log2_height) = (u32::from(size.log2_width()), u32::from(size.log2_height()));
+        let [[h_far, h_near, h_blend], [v_far, v_near, v_blend]] = smooth_tables(size, &SMOOTH_TABLES);
+        let rows_per_group = (16 / width).max(1);
+        let index = match width {
+            4 => Some(u8x32::from_slice(simd, &ROW_INDEX_4)),
+            8 => Some(u8x32::from_slice(simd, &ROW_INDEX_8)),
+            _ => None,
         };
-        let (top, far, s_left) = (columns(above), columns(h_far), columns(h_blend));
-        let right_near = columns(h_near) * right + round_h;
-        let mut rest = &mut *output;
-        for row in (0..height).step_by(rows_per_group) {
-            let vertical = || {
-                let bottom_near = rows(v_near, row) * bottom + round_v;
-                let pred = (top * rows(v_far, row) + bottom_near) >> log2_height;
-                blend(pred, top, rows(v_blend, row))
-            };
-            let horizontal = || {
-                let left = rows(left, row);
-                blend((left * far + right_near) >> log2_width, left, s_left)
-            };
-            let value = match mode {
-                IntraSmoothMode::SmoothVertical => vertical(),
-                IntraSmoothMode::SmoothHorizontal => horizontal(),
-                IntraSmoothMode::Smooth => (vertical() + horizontal() + 1) >> 1,
-            };
-            if width >= 16 {
-                if let Some(out) = rest.get_mut(chunk..).and_then(<[P]>::first_chunk_mut) {
-                    P::store16(simd, value, out);
-                }
-                rest = core::mem::take(&mut rest)
-                    .get_mut(stride..)
-                    .unwrap_or_default();
-                continue;
-            }
-            let mut lanes = [P::default(); 16];
-            P::store16(simd, value, &mut lanes);
-            rest = if width == 4 {
-                publish_rows::<P, 4>(&lanes, rest, stride)
-            } else {
-                publish_rows::<P, 8>(&lanes, rest, stride)
-            };
+        let rows = {
+        #[inline(always)]
+        |row_terms: &[u16; LANE_LEN], row: usize| match index {
+            Some(index) => u16x16::block_splat(u16x8::from_slice(simd, &row_terms[row..row + 8]))
+                .swizzle_dyn_within_blocks(index),
+            None => u16x16::splat(simd, row_terms[row]),
         }
-    }
+    };
+        let full = u16x16::splat(simd, 64);
+        let blend = {
+        #[inline(always)]
+        |pred: u16x16<S>, edge: u16x16<S>, weight: u16x16<S>| {
+            (pred * (full - weight) + edge * weight + 32) >> 6
+        }
+    };
+        let (round_h, round_v) = (1u16 << (log2_width - 1), 1u16 << (log2_height - 1));
+        for chunk in (0..width).step_by(16) {
+            let columns = {
+        #[inline(always)]
+        |column_terms: &[u16; LANE_LEN]| {
+                u16x16::from_slice(simd, &column_terms[chunk..chunk + 16])
+            }
+    };
+            let (top, far, s_left) = (columns(above), columns(h_far), columns(h_blend));
+            let right_near = columns(h_near) * right + round_h;
+            let mut rest = &mut *output;
+            for row in (0..height).step_by(rows_per_group) {
+                let vertical = {
+        #[inline(always)]
+        || {
+                    let bottom_near = rows(v_near, row) * bottom + round_v;
+                    let pred = (top * rows(v_far, row) + bottom_near) >> log2_height;
+                    blend(pred, top, rows(v_blend, row))
+                }
+    };
+                let horizontal = {
+        #[inline(always)]
+        || {
+                    let left = rows(left, row);
+                    blend((left * far + right_near) >> log2_width, left, s_left)
+                }
+    };
+                let value = match mode {
+                    IntraSmoothMode::SmoothVertical => vertical(),
+                    IntraSmoothMode::SmoothHorizontal => horizontal(),
+                    IntraSmoothMode::Smooth => (vertical() + horizontal() + 1) >> 1,
+                };
+                if width >= 16 {
+                    if let Some(out) = rest.get_mut(chunk..).and_then(<[P]>::first_chunk_mut) {
+                        P::store16(simd, value, out);
+                    }
+                    rest = core::mem::take(&mut rest)
+                        .get_mut(stride..)
+                        .unwrap_or_default();
+                    continue;
+                }
+                let mut lanes = [P::default(); 16];
+                P::store16(simd, value, &mut lanes);
+                rest = if width == 4 {
+                    publish_rows::<P, 4>(&lanes, rest, stride)
+                } else {
+                    publish_rows::<P, 8>(&lanes, rest, stride)
+                };
+            }
+        }
+    });
 }
 
 /// The scalar inputs of one 8-bit kernel call, small enough for one register.

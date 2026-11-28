@@ -103,17 +103,19 @@ impl Load {
         (start, bound): (usize, i32),
         dc: bool,
     ) -> i32x8<S> {
-        let v = if let Some(chunk) = row.get(start..start + 8) {
-            i32x8::from_slice(simd, chunk)
-        } else {
-            let tail = row.get(start..).unwrap_or_default();
-            if tail.is_empty() {
-                return i32x8::splat(simd, 0);
-            }
-            let padded: [i32; 8] = core::array::from_fn(|i| tail.get(i).copied().unwrap_or(0));
-            i32x8::from_slice(simd, &padded)
-        };
-        self.dequantize(simd, v, dc, bound)
+        splot_core::in_scope!(simd => {
+            let v = if let Some(chunk) = row.get(start..start + 8) {
+                i32x8::from_slice(simd, chunk)
+            } else {
+                let tail = row.get(start..).unwrap_or_default();
+                if tail.is_empty() {
+                    return i32x8::splat(simd, 0);
+                }
+                let padded: [i32; 8] = core::array::from_fn(|i| tail.get(i).copied().unwrap_or(0));
+                i32x8::from_slice(simd, &padded)
+            };
+            self.dequantize(simd, v, dc, bound)
+        })
     }
 
     #[inline]
@@ -1448,7 +1450,11 @@ fn rescaled<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
 }
 
 /// The optional rescale and the row input clamp to `±bound`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn row_input<S: Simd>(v: i32x8<S>, rescale: bool, bound: i32) -> i32x8<S> {
     let v = rescaled(v, rescale);
     v.max(i32x8::splat(v.simd, -bound))
@@ -1576,33 +1582,43 @@ fn row_pass<S: Simd, const N: usize, const SPLIT: bool, const REV: bool>(
 
 /// [`row_pass`] of a 4-wide block, two rows per input load.
 fn row_pass_4<S: Simd>(simd: S, kernel: &[[i32; 4]; 4], rows: Rows<'_>, out: &mut [i32]) {
-    let k = kernel.map(|k| i32x4::from_slice(simd, &k));
-    let transform = |x: i32x4<S>| k[0] * x[0] + k[1] * x[1] + k[2] * x[2] + k[3] * x[3];
-    for q in 0..rows.coded.div_ceil(2) {
-        let (a, b) = simd.split_i32x8(rows.inputs(simd, rows.input, q, q == 0));
-        let sum = simd.combine_i32x4(transform(a), transform(b));
-        put(out, q, clip_round(sum, rows.shift, rows.bound));
-    }
+    splot_core::in_scope!(simd => {
+        let k = kernel.map(|k| i32x4::from_slice(simd, &k));
+        let transform = {
+            #[inline(always)]
+            |x: i32x4<S>| k[0] * x[0] + k[1] * x[1] + k[2] * x[2] + k[3] * x[3]
+        };
+        for q in 0..rows.coded.div_ceil(2) {
+            let (a, b) = simd.split_i32x8(rows.inputs(simd, rows.input, q, q == 0));
+            let sum = simd.combine_i32x4(transform(a), transform(b));
+            put(out, q, clip_round(sum, rows.shift, rows.bound));
+        }
+    });
 }
 
 /// [`row_pass`] for the § 7.15.2.3 identity transform: each row output is
 /// its own clamped input times the identity scale, in the row `Clip3`.
 fn row_pass_identity<S: Simd>(simd: S, w: usize, rows: Rows<'_>, out: &mut [i32]) {
-    let scale = identity_scale(w);
-    let scaled = |v: i32x8<S>| clip_round(v * scale, rows.shift, rows.bound);
-    if rows.in_w == w {
-        for k in 0..(rows.coded * w).div_ceil(8) {
-            put(out, k, scaled(rows.inputs(simd, rows.input, k, k == 0)));
+    splot_core::in_scope!(simd => {
+        let scale = identity_scale(w);
+        let scaled = {
+            #[inline(always)]
+            |v: i32x8<S>| clip_round(v * scale, rows.shift, rows.bound)
+        };
+        if rows.in_w == w {
+            for k in 0..(rows.coded * w).div_ceil(8) {
+                put(out, k, scaled(rows.inputs(simd, rows.input, k, k == 0)));
+            }
+            return;
         }
-        return;
-    }
-    for r in 0..rows.coded {
-        let row = input_row(rows.input, r, rows.in_w);
-        for k in 0..w / 8 {
-            let v = rows.inputs(simd, row, k, r == 0 && k == 0);
-            put(out, r * w / 8 + k, scaled(v));
+        for r in 0..rows.coded {
+            let row = input_row(rows.input, r, rows.in_w);
+            for k in 0..w / 8 {
+                let v = rows.inputs(simd, row, k, r == 0 && k == 0);
+                put(out, r * w / 8 + k, scaled(v));
+            }
         }
-    }
+    });
 }
 
 /// The column-pass geometry of one block.

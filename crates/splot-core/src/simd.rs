@@ -336,6 +336,15 @@ impl PartialEq for SimdBackend {
 
 impl Eq for SimdBackend {}
 
+/// Calls `f`, for [`in_scope!`] on a build whose floor already enables the
+/// token's features.
+#[doc(hidden)]
+#[expect(clippy::inline_always, reason = "the body must stay in its caller")]
+#[inline(always)]
+pub fn call_in_place<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// [`fearless_simd::Simd::vectorize`] for [`with_simd!`], which expands in
 /// crates that do not name the trait.
 #[doc(hidden)]
@@ -376,12 +385,20 @@ macro_rules! with_simd {
                         target_feature = "lzcnt"
                     )))]
                     {
-                        $crate::simd::vectorize_token($simd, || $body)
+                        $crate::simd::vectorize_token(
+                            $simd,
+                            #[inline(always)]
+                            || $body,
+                        )
                     }
                 }
                 $crate::simd::X86Simd::Sse2(__floor) => {
                     let $simd = __floor.token();
-                    $crate::simd::vectorize_token($simd, || $body)
+                    $crate::simd::vectorize_token(
+                        $simd,
+                        #[inline(always)]
+                        || $body,
+                    )
                 }
             }
         }
@@ -394,13 +411,71 @@ macro_rules! with_simd {
             }
             #[cfg(not(target_feature = "neon"))]
             {
-                $crate::simd::vectorize_token($simd, || $body)
+                $crate::simd::vectorize_token(
+                    $simd,
+                    #[inline(always)]
+                    || $body,
+                )
             }
         }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         {
             let $simd = $crate::simd::SimdBackend::token(__backend);
-            $crate::simd::vectorize_token($simd, || $body)
+            $crate::simd::vectorize_token(
+                $simd,
+                #[inline(always)]
+                || $body,
+            )
+        }
+    }};
+}
+
+/// Runs `$body` in the target-feature scope of the token `$simd`, as an
+/// immediately called closure in either case: in place where the build floor
+/// enables its features (x86-64-v3, AArch64), through `Simd::vectorize`
+/// below it. Kernels that a token reaches out of line or outside
+/// [`with_simd!`] enter their scope this way, so a build below the v3 floor
+/// keeps their vector operations inlined.
+#[macro_export]
+macro_rules! in_scope {
+    ($simd:expr => $body:expr) => {{
+        #[cfg(any(
+            all(
+                target_arch = "x86_64",
+                target_feature = "avx2",
+                target_feature = "fma",
+                target_feature = "bmi1",
+                target_feature = "bmi2",
+                target_feature = "f16c",
+                target_feature = "lzcnt"
+            ),
+            all(target_arch = "aarch64", target_feature = "neon")
+        ))]
+        {
+            let _ = $simd;
+            $crate::simd::call_in_place(
+                #[inline(always)]
+                || $body,
+            )
+        }
+        #[cfg(not(any(
+            all(
+                target_arch = "x86_64",
+                target_feature = "avx2",
+                target_feature = "fma",
+                target_feature = "bmi1",
+                target_feature = "bmi2",
+                target_feature = "f16c",
+                target_feature = "lzcnt"
+            ),
+            all(target_arch = "aarch64", target_feature = "neon")
+        )))]
+        {
+            $crate::simd::vectorize_token(
+                $simd,
+                #[inline(always)]
+                || $body,
+            )
         }
     }};
 }

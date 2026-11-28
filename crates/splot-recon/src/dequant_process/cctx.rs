@@ -77,50 +77,64 @@ fn pair_groups<S: Simd>(
     [cos, sin]: [i32; 2],
     [u_out, v_out]: [&mut [i32]; 2],
 ) -> Result<()> {
-    let dequant = |params: &DequantBlockParams, quant: &[i32], group: usize| {
-        let bound = clamp_bound(params);
-        let coded = &quant[quant.len().min(8 * group)..];
-        let (lanes, len) = match coded.first_chunk() {
-            Some(lanes) => (*lanes, 8),
-            None if coded.is_empty() => return Ok(i32x8::splat(simd, 0)),
-            None => (zero_padded_group(coded), coded.len()),
-        };
-        let q2 = group_quantizers(simd, params, group, len)?;
-        let denom_shift = params.dq_denom.max(1).trailing_zeros();
-        let lanes = i32x8::load_array(simd, lanes);
-        Ok(dequant_lanes(simd, lanes, q2, denom_shift, bound))
-    };
-    let round = |sum: i32x8<S>| {
-        (sum + (sum >> (i32::BITS - 1)) + (1 << (CCTX_PREC_BITS - 1))) >> CCTX_PREC_BITS
-    };
-    let rotated = |group: usize| -> Result<[i32x8<S>; 2]> {
-        let u = dequant(u_params, u_quant, group)?;
-        let v = dequant(v_params, v_quant, group)?;
-        let clip = |sum: i32x8<S>, params| {
+    splot_core::in_scope!(simd => {
+        let dequant = {
+            #[inline(always)]
+            |params: &DequantBlockParams, quant: &[i32], group: usize| {
             let bound = clamp_bound(params);
-            round(sum).clamp(-bound, bound - 1)
+            let coded = &quant[quant.len().min(8 * group)..];
+            let (lanes, len) = match coded.first_chunk() {
+                Some(lanes) => (*lanes, 8),
+                None if coded.is_empty() => return Ok(i32x8::splat(simd, 0)),
+                None => (zero_padded_group(coded), coded.len()),
+            };
+            let q2 = group_quantizers(simd, params, group, len)?;
+            let denom_shift = params.dq_denom.max(1).trailing_zeros();
+            let lanes = i32x8::load_array(simd, lanes);
+            Ok(dequant_lanes(simd, lanes, q2, denom_shift, bound))
+        }
         };
-        Ok([
-            clip(u * cos - v * sin, u_params),
-            clip(u * sin + v * cos, v_params),
-        ])
-    };
-    let (u_groups, u_half) = u_out.as_chunks_mut::<8>();
-    let (v_groups, v_half) = v_out.as_chunks_mut::<8>();
-    for (group, (u, v)) in u_groups.iter_mut().zip(v_groups.iter_mut()).enumerate() {
-        let [next_u, next_v] = rotated(group)?;
-        *u = next_u.into();
-        *v = next_v.into();
-    }
-    if let (Ok(u), Ok(v)) = (
-        <&mut [i32; 4]>::try_from(u_half),
-        <&mut [i32; 4]>::try_from(v_half),
-    ) {
-        let [next_u, next_v] = rotated(u_groups.len())?;
-        *u = simd.split_i32x8(next_u).0.into();
-        *v = simd.split_i32x8(next_v).0.into();
-    }
-    Ok(())
+        let round = {
+            #[inline(always)]
+            |sum: i32x8<S>| {
+            (sum + (sum >> (i32::BITS - 1)) + (1 << (CCTX_PREC_BITS - 1))) >> CCTX_PREC_BITS
+        }
+        };
+        let rotated = {
+            #[inline(always)]
+            |group: usize| -> Result<[i32x8<S>; 2]> {
+            let u = dequant(u_params, u_quant, group)?;
+            let v = dequant(v_params, v_quant, group)?;
+            let clip = {
+            #[inline(always)]
+            |sum: i32x8<S>, params| {
+                let bound = clamp_bound(params);
+                round(sum).clamp(-bound, bound - 1)
+            }
+        };
+            Ok([
+                clip(u * cos - v * sin, u_params),
+                clip(u * sin + v * cos, v_params),
+            ])
+        }
+        };
+        let (u_groups, u_half) = u_out.as_chunks_mut::<8>();
+        let (v_groups, v_half) = v_out.as_chunks_mut::<8>();
+        for (group, (u, v)) in u_groups.iter_mut().zip(v_groups.iter_mut()).enumerate() {
+            let [next_u, next_v] = rotated(group)?;
+            *u = next_u.into();
+            *v = next_v.into();
+        }
+        if let (Ok(u), Ok(v)) = (
+            <&mut [i32; 4]>::try_from(u_half),
+            <&mut [i32; 4]>::try_from(v_half),
+        ) {
+            let [next_u, next_v] = rotated(u_groups.len())?;
+            *u = simd.split_i32x8(next_u).0.into();
+            *v = simd.split_i32x8(next_v).0.into();
+        }
+        Ok(())
+    })
 }
 
 /// § 7.14.4 and § 7.14.6 clip coefficients to `±(1 << (BitDepth + 7))`.

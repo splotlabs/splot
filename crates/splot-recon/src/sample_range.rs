@@ -137,36 +137,41 @@ pub(crate) fn sum_lanes<S: Simd, T: SummedSample>(
     samples: &[T],
     every_second: bool,
 ) -> u32 {
-    let (chunks, rest) = samples.as_chunks::<16>();
-    let mask = u16x16::from_slice(
-        simd,
-        &core::array::from_fn::<u16, 16, _>(|lane| {
-            if every_second && lane % 2 == 1 {
-                0
-            } else {
-                u16::MAX
-            }
-        }),
-    );
-    let add = |sum: fearless_simd::u32x8<S>, group: &[T; 16]| {
-        let (low, high) = simd.widen_u16x16(T::lanes(simd, group) & mask);
-        sum + low + high
-    };
-    let mut sum = chunks
-        .iter()
-        .fold(fearless_simd::u32x8::splat(simd, 0), add);
-    if !rest.is_empty() {
-        let mut padded = [T::default(); 16];
-        let mut at = 0;
-        for width in [8, 4, 2, 1] {
-            if rest.len() - at >= width {
-                padded[at..at + width].copy_from_slice(&rest[at..at + width]); // splot-copy-ok: zero-pad the last sample group
-                at += width;
-            }
+    splot_core::in_scope!(simd => {
+        let (chunks, rest) = samples.as_chunks::<16>();
+        let mask = u16x16::from_slice(
+            simd,
+            &core::array::from_fn::<u16, 16, _>(|lane| {
+                if every_second && lane % 2 == 1 {
+                    0
+                } else {
+                    u16::MAX
+                }
+            }),
+        );
+        let add = {
+        #[inline(always)]
+        |sum: fearless_simd::u32x8<S>, group: &[T; 16]| {
+            let (low, high) = simd.widen_u16x16(T::lanes(simd, group) & mask);
+            sum + low + high
         }
-        sum = add(sum, &padded);
-    }
-    simd.reduce_sum_u32x8(sum)
+    };
+        let mut sum = chunks
+            .iter()
+            .fold(fearless_simd::u32x8::splat(simd, 0), add);
+        if !rest.is_empty() {
+            let mut padded = [T::default(); 16];
+            let mut at = 0;
+            for width in [8, 4, 2, 1] {
+                if rest.len() - at >= width {
+                    padded[at..at + width].copy_from_slice(&rest[at..at + width]); // splot-copy-ok: zero-pad the last sample group
+                    at += width;
+                }
+            }
+            sum = add(sum, &padded);
+        }
+        simd.reduce_sum_u32x8(sum)
+    })
 }
 
 #[cfg(test)]

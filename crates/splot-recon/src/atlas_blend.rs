@@ -151,22 +151,24 @@ fn blend<S: Simd, T: IntraLaneSample, A: IntraLaneSample>(
     alpha: &[A],
     depth: u32,
 ) {
-    let alpha_max = 1 << depth;
-    let bias = u32x4::splat(simd, alpha_max / 2);
-    for ((out, foreground), mask) in canvas
-        .chunks_mut(8)
-        .zip(texture.chunks(8))
-        .zip(alpha.chunks(8))
-    {
-        let weights = load(simd, mask);
-        let inverse = u16x8::splat(simd, alpha_max as u16) - weights;
-        let (back_lo, back_hi) = load(simd, out).widening_mul(inverse);
-        let (front_lo, front_hi) = load(simd, foreground).widening_mul(weights);
-        let low = (back_lo + front_lo + bias) >> depth;
-        let high = (back_hi + front_hi + bias) >> depth;
-        let result = low.narrow(high);
-        store(simd, result, out);
-    }
+    splot_core::in_scope!(simd => {
+        let alpha_max = 1 << depth;
+        let bias = u32x4::splat(simd, alpha_max / 2);
+        for ((out, foreground), mask) in canvas
+            .chunks_mut(8)
+            .zip(texture.chunks(8))
+            .zip(alpha.chunks(8))
+        {
+            let weights = load(simd, mask);
+            let inverse = u16x8::splat(simd, alpha_max as u16) - weights;
+            let (back_lo, back_hi) = load(simd, out).widening_mul(inverse);
+            let (front_lo, front_hi) = load(simd, foreground).widening_mul(weights);
+            let low = (back_lo + front_lo + bias) >> depth;
+            let high = (back_hi + front_hi + bias) >> depth;
+            let result = low.narrow(high);
+            store(simd, result, out);
+        }
+    });
 }
 
 fn store<S: Simd, T: IntraLaneSample>(simd: S, value: u16x8<S>, out: &mut [T]) {

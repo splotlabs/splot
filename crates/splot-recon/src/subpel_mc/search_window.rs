@@ -795,11 +795,13 @@ pub(super) mod generic {
     #[expect(clippy::inline_always, reason = "per refine-MV unit search")]
     #[inline(always)]
     fn blend<S: Simd>(simd: S, phase: u8, top: u16x8<S>, bottom: u16x8<S>) -> u16x8<S> {
-        let weights = (
-            u16x8::splat(simd, 16 - u16::from(phase)),
-            u16x8::splat(simd, u16::from(phase)),
-        );
-        (top * weights.0 + bottom * weights.1 + 128) >> 8
+        splot_core::in_scope!(simd => {
+            let weights = (
+                u16x8::splat(simd, 16 - u16::from(phase)),
+                u16x8::splat(simd, u16::from(phase)),
+            );
+            (top * weights.0 + bottom * weights.1 + 128) >> 8
+        })
     }
 
     /// The `w x h` search window, `w` and `h` each 16 or 24, of the rows of

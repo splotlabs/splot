@@ -143,8 +143,7 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     }
 }
 
-/// `[row(0), .., row(7)]`, expanded in the caller: `core::array::from_fn`
-/// leaves the choice to the inliner, which took it out of the 10-bit path.
+/// `[row(0), .., row(7)]` unrolled: the inliner left `core::array::from_fn` out of line.
 #[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
 #[inline(always)]
 fn eight_rows<T>(row: impl Fn(usize) -> T) -> [T; 8] {
@@ -1458,29 +1457,31 @@ fn cdef_filter_block_to_valid_stride_simd<
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let (w, h) = (w.min(8), h.min(8));
-    let mut block = [0u16; 64];
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    if w == 0
-        || cdef_filter_block_rows::<
-            _,
-            _,
-            8,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)
-        .is_none()
-    {
-        return false;
-    }
-    let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
-    let size = (w, h, unfiltered);
-    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    splot_core::in_scope!(simd => {
+        const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
+        let (w, h) = (w.min(8), h.min(8));
+        let mut block = [0u16; 64];
+        let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+        if w == 0
+            || cdef_filter_block_rows::<
+                _,
+                _,
+                8,
+                HAS_UNAVAILABLE,
+                CDEF_PADDED_SIDE,
+                2,
+                8,
+                SPAN,
+                CDEF_PADDED_AREA,
+            >(simd, args)
+            .is_none()
+        {
+            return false;
+        }
+        let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
+        let size = (w, h, unfiltered);
+        cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    })
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
@@ -1494,25 +1495,27 @@ fn cdef_publish_block<S: SimdToken, T: ReconSample>(
     out: &mut [T],
     out_stride: usize,
 ) -> Option<()> {
-    for (row, lanes) in block.as_chunks::<8>().0.iter().enumerate().take(h) {
-        let start = row.checked_mul(out_stride)?;
-        if let Some(out) = T::u8_slice_mut(&mut *out) {
-            let mut lanes = u16x8::load_array(simd, *lanes);
-            if unfiltered {
-                let group = u16x8::splat(simd, if w == 4 { 4 } else { 8 });
-                let lane = u16x8::load_array(simd, [0, 1, 2, 3, 4, 5, 6, 7]);
-                lanes = lane.simd_lt(group).select(lanes, u16x8::splat(simd, 0));
-                if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
-                    return None;
+    splot_core::in_scope!(simd => {
+        for (row, lanes) in block.as_chunks::<8>().0.iter().enumerate().take(h) {
+            let start = row.checked_mul(out_stride)?;
+            if let Some(out) = T::u8_slice_mut(&mut *out) {
+                let mut lanes = u16x8::load_array(simd, *lanes);
+                if unfiltered {
+                    let group = u16x8::splat(simd, if w == 4 { 4 } else { 8 });
+                    let lane = u16x8::load_array(simd, [0, 1, 2, 3, 4, 5, 6, 7]);
+                    lanes = lane.simd_lt(group).select(lanes, u16x8::splat(simd, 0));
+                    if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
+                        return None;
+                    }
                 }
+                let bytes = simd.saturating_narrow_u16x8(lanes, lanes);
+                cdef_publish_row(bytes.as_slice().first_chunk()?, w, out.get_mut(start..)?)?;
+            } else {
+                cdef_publish_row(lanes, w, T::u16_slice_mut(&mut *out)?.get_mut(start..)?)?;
             }
-            let bytes = simd.saturating_narrow_u16x8(lanes, lanes);
-            cdef_publish_row(bytes.as_slice().first_chunk()?, w, out.get_mut(start..)?)?;
-        } else {
-            cdef_publish_row(lanes, w, T::u16_slice_mut(&mut *out)?.get_mut(start..)?)?;
         }
-    }
-    Some(())
+        Some(())
+    })
 }
 
 /// Writes the first `w` of the 8 `lanes` of one row to the start of `out`,
@@ -1580,22 +1583,24 @@ fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
-    if h > 4 {
-        return false;
-    }
-    let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
-    cdef_filter_block_rows::<
-        _,
-        _,
-        8,
-        false,
-        CDEF_PAIR_STRIDE,
-        4,
-        4,
-        { 3 * CDEF_PAIR_STRIDE + 8 },
-        CDEF_PADDED_AREA,
-    >(simd, args)
-    .is_some()
+    splot_core::in_scope!(simd => {
+        if h > 4 {
+            return false;
+        }
+        let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
+        cdef_filter_block_rows::<
+            _,
+            _,
+            8,
+            false,
+            CDEF_PAIR_STRIDE,
+            4,
+            4,
+            { 3 * CDEF_PAIR_STRIDE + 8 },
+            CDEF_PADDED_AREA,
+        >(simd, args)
+        .is_some()
+    })
 }
 
 mod segment;

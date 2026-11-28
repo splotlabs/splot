@@ -18,8 +18,10 @@ pub fn cdef_direction_padded_with(
 ) -> (usize, i32) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        let rows = cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(avx2, pad, coeff_shift);
-        return cdef_direction_avx2(avx2, rows);
+        return splot_core::in_scope!(avx2 => {
+            let rows = cdef_direction_input::<_, CDEF_PADDED_SIDE, _>(avx2, pad, coeff_shift);
+            cdef_direction_avx2(avx2, rows)
+        });
     }
     splot_core::with_simd!(backend, simd => {
         cdef_direction_rows(

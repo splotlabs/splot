@@ -269,7 +269,11 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, span: &[T], at: usize) -> u16x
 }
 
 /// `Min(Round2(top * (16 - v) + bottom * v, 8), max)` of two horizontal rows.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max: u16) -> u16x8<S> {
     let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, 16 - v));
     let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, v));
@@ -883,31 +887,36 @@ fn tip_refinemv_sad<S: Simd>(
     dx: i32,
     dy: i32,
 ) -> u32 {
-    const STEP: usize = 2 * TIP_PREDICTION_SIZE;
-    const SPAN: usize = 5 * STEP + 16;
-    const ACTIVE: [i16; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
-    let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
-    let (Some(left), Some(right)) = (
-        pred0
-            .get(start(dx, dy)..)
-            .and_then(<[u16]>::first_chunk::<SPAN>),
-        pred1
-            .get(start(-dx, -dy)..)
-            .and_then(<[u16]>::first_chunk::<SPAN>),
-    ) else {
-        return u32::MAX;
+    splot_core::in_scope!(simd => {
+        const STEP: usize = 2 * TIP_PREDICTION_SIZE;
+        const SPAN: usize = 5 * STEP + 16;
+        const ACTIVE: [i16; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
+        let start = {
+        #[inline(always)]
+        |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize
     };
-    let mut sum = i16x16::splat(simd, 0);
-    for row in 0..6 {
-        let at = row * STEP;
-        if let (Some(a), Some(b)) = (left[at..].first_chunk(), right[at..].first_chunk()) {
-            let a = u16x16::load_array_ref(simd, a);
-            let b = u16x16::load_array_ref(simd, b);
-            sum += (a - b).bitcast::<i16x16<S>>().abs();
+        let (Some(left), Some(right)) = (
+            pred0
+                .get(start(dx, dy)..)
+                .and_then(<[u16]>::first_chunk::<SPAN>),
+            pred1
+                .get(start(-dx, -dy)..)
+                .and_then(<[u16]>::first_chunk::<SPAN>),
+        ) else {
+            return u32::MAX;
+        };
+        let mut sum = i16x16::splat(simd, 0);
+        for row in 0..6 {
+            let at = row * STEP;
+            if let (Some(a), Some(b)) = (left[at..].first_chunk(), right[at..].first_chunk()) {
+                let a = u16x16::load_array_ref(simd, a);
+                let b = u16x16::load_array_ref(simd, b);
+                sum += (a - b).bitcast::<i16x16<S>>().abs();
+            }
         }
-    }
-    simd.pairwise_dot_product_i16x16(sum, i16x16::load_array_ref(simd, &ACTIVE))
-        .reduce_sum() as u32
+        simd.pairwise_dot_product_i16x16(sum, i16x16::load_array_ref(simd, &ACTIVE))
+            .reduce_sum() as u32
+    })
 }
 
 fn search_range_allowed(candidates: [MotionVector; 2]) -> bool {

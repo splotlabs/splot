@@ -411,7 +411,7 @@ impl SegmentSimd for BaselineSegment {
     fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
         #[cfg(target_arch = "x86_64")]
         if let Some(avx2) = Level::baseline().as_avx2() {
-            return op.run(avx2, MinPos);
+            return splot_core::in_scope!(avx2 => op.run(avx2, MinPos));
         }
         baseline_simd!(simd => op.run(simd, Reduced))
     }
@@ -422,7 +422,7 @@ impl SegmentSimd for TypedSegment {
     fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
         #[cfg(target_arch = "x86_64")]
         if let Some(avx2) = self.0.avx2_token() {
-            return op.run(avx2, MinPos);
+            return splot_core::in_scope!(avx2 => op.run(avx2, MinPos));
         }
         splot_core::with_simd!(self.0, simd => op.run(simd, Reduced))
     }
@@ -663,18 +663,29 @@ fn pair_ranges<S: SimdToken, R: LaneBounds<S>>(
     min: [[u16x8<S>; 3]; 2],
     max: [[u16x8<S>; 3]; 2],
 ) -> [u16; CDEF_SEGMENT_BLOCKS] {
-    let range = |plane: usize, block: usize| {
-        let pick = |[first, second, third]: [u16x8<S>; 3]| match block {
-            0 => first,
-            1 => simd.slide_u16x8::<4>(first, second),
-            2 => second,
-            _ => third,
+    splot_core::in_scope!(simd => {
+        let range = {
+            #[inline(always)]
+            |plane: usize, block: usize| {
+            let pick = {
+            #[inline(always)]
+            |[first, second, third]: [u16x8<S>; 3]| match block {
+                0 => first,
+                1 => simd.slide_u16x8::<4>(first, second),
+                2 => second,
+                _ => third,
+            }
         };
-        let [least, greatest] = reduce.bounds(simd, pick(min[plane]), pick(max[plane]));
-        greatest - least
-    };
-    let block = |block: usize| range(0, block).max(range(1, block));
-    [block(0), block(1), block(2), block(3)]
+            let [least, greatest] = reduce.bounds(simd, pick(min[plane]), pick(max[plane]));
+            greatest - least
+        }
+        };
+        let block = {
+            #[inline(always)]
+            |block: usize| range(0, block).max(range(1, block))
+        };
+        [block(0), block(1), block(2), block(3)]
+    })
 }
 
 /// The 8-column chunks of a chroma row from columns 0, 8 and
@@ -1358,7 +1369,7 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        return splot_core::in_scope!(avx2 => segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output));
     }
     baseline_simd!(simd => segment_with(
         simd, Ordered, segment, unit, blocks, fill_flat, output,
@@ -1381,7 +1392,7 @@ pub fn cdef_filter_segment_with<T: crate::ReconSample>(
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
+        return splot_core::in_scope!(avx2 => segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output));
     }
     splot_core::with_simd!(backend, simd => segment_with(
         simd, Ordered, segment, unit, blocks, fill_flat, output,

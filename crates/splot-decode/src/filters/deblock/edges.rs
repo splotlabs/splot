@@ -117,25 +117,27 @@ impl<'a> Strengths<'a> {
     #[cold]
     #[inline(never)]
     fn of_distinct<S: Simd>(&mut self, simd: S, sides: [u16x16<S>; 2]) -> [u16x16<S>; 4] {
-        let qindexes = sides.map(SimdBase::to_array);
-        let mut words = [u16x16::splat(simd, 0); 4];
-        let mut pending = u32::MAX;
-        while let Some(&qindex) = qindexes
-            .as_flattened()
-            .get(pending.trailing_zeros() as usize)
-        {
-            let (q_thr, side) = self.cache.get(u32::from(qindex));
-            let strengths = [q_thr, side].map(|value| value.clamp(0, 0x7fff) as u16);
-            self.last = (qindex, strengths);
-            let [q_thr, side] = strengths.map(|value| u16x16::splat(simd, value));
-            for (index, lanes) in sides.into_iter().enumerate() {
-                let same = lanes.simd_eq(u16x16::splat(simd, qindex));
-                words[2 * index] = simd.select_u16x16(same, q_thr, words[2 * index]);
-                words[2 * index + 1] = simd.select_u16x16(same, side, words[2 * index + 1]);
-                pending &= !((same.to_bitmask() as u32) << (GROUP * index));
+        splot_core::in_scope!(simd => {
+            let qindexes = sides.map(SimdBase::to_array);
+            let mut words = [u16x16::splat(simd, 0); 4];
+            let mut pending = u32::MAX;
+            while let Some(&qindex) = qindexes
+                .as_flattened()
+                .get(pending.trailing_zeros() as usize)
+            {
+                let (q_thr, side) = self.cache.get(u32::from(qindex));
+                let strengths = [q_thr, side].map(|value| value.clamp(0, 0x7fff) as u16);
+                self.last = (qindex, strengths);
+                let [q_thr, side] = strengths.map(|value| u16x16::splat(simd, value));
+                for (index, lanes) in sides.into_iter().enumerate() {
+                    let same = lanes.simd_eq(u16x16::splat(simd, qindex));
+                    words[2 * index] = simd.select_u16x16(same, q_thr, words[2 * index]);
+                    words[2 * index + 1] = simd.select_u16x16(same, side, words[2 * index + 1]);
+                    pending &= !((same.to_bitmask() as u32) << (GROUP * index));
+                }
             }
-        }
-        words
+            words
+        })
     }
 }
 

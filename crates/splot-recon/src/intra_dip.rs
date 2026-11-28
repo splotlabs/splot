@@ -305,14 +305,16 @@ fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
     above: &[P],
     output: &mut [P],
 ) -> Option<()> {
-    let inputs = (features, rows, left, above);
-    match block.size.log2_width() {
-        2 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
-        3 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
-        4 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
-        5 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
-        _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
-    }
+    splot_core::in_scope!(simd => {
+        let inputs = (features, rows, left, above);
+        match block.size.log2_width() {
+            2 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
+            3 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
+            4 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
+            5 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
+            _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
+        }
+    })
 }
 
 fn validate_dip_edges<T: ReconSample>(

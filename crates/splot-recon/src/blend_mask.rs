@@ -486,7 +486,11 @@ fn rest<V>(buffer: &[V], start: usize) -> &[V] {
 }
 
 /// `Clip1(Round2(64 * p1 + m * (p0 - p1), 10))` of eight lanes, `diff = p0 - p1`.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn blend<S: Simd>(p1: i16x8<S>, diff: i16x8<S>, mask: i16x8<S>) -> [u8; LANES] {
     let (low, high) = mask.widening_mul(diff);
     let (base_low, base_high) = p1.widen();
@@ -503,13 +507,18 @@ fn wide_blend<S: Simd>(
     mask: i16x8<S>,
     max: i32,
 ) -> [i32x4<S>; 2] {
-    let (low, high) = mask.widen();
-    let half = |half: usize, mask: i32x4<S>| {
-        let p0 = i32x4::from_slice(simd, &p0[4 * half..4 * half + 4]);
-        let p1 = i32x4::from_slice(simd, &p1[4 * half..4 * half + 4]);
-        (((p1 << 6) + mask * (p0 - p1) + 512) >> 10).max(0).min(max)
+    splot_core::in_scope!(simd => {
+        let (low, high) = mask.widen();
+        let half = {
+        #[inline(always)]
+        |half: usize, mask: i32x4<S>| {
+            let p0 = i32x4::from_slice(simd, &p0[4 * half..4 * half + 4]);
+            let p1 = i32x4::from_slice(simd, &p1[4 * half..4 * half + 4]);
+            (((p1 << 6) + mask * (p0 - p1) + 512) >> 10).max(0).min(max)
+        }
     };
-    [half(0, low), half(1, high)]
+        [half(0, low), half(1, high)]
+    })
 }
 
 /// The § 7.13.3.28 weight `|flip - Min(38 + ((|p0 - p1| + round) >> shift), 64)|`
@@ -521,12 +530,17 @@ fn wide_weight<S: Simd>(
     flip: i16x8<S>,
     (round, shift): (i32, u32),
 ) -> i16x8<S> {
-    let half = |half: usize| {
-        let p0 = i32x4::from_slice(simd, &p0[4 * half..4 * half + 4]);
-        let p1 = i32x4::from_slice(simd, &p1[4 * half..4 * half + 4]);
-        ((((p0 - p1).abs() + round) >> shift) + 38).min(64)
+    splot_core::in_scope!(simd => {
+        let half = {
+        #[inline(always)]
+        |half: usize| {
+            let p0 = i32x4::from_slice(simd, &p0[4 * half..4 * half + 4]);
+            let p1 = i32x4::from_slice(simd, &p1[4 * half..4 * half + 4]);
+            ((((p0 - p1).abs() + round) >> shift) + 38).min(64)
+        }
     };
-    (flip - half(0).narrow(half(1))).abs()
+        (flip - half(0).narrow(half(1))).abs()
+    })
 }
 
 /// A sample type that [`blend_mask_wide`] stores.
@@ -698,7 +712,11 @@ fn small_tail<P: Copy + Default, O: Copy + Default, const W: usize>(
 
 /// Runs `weighted` on every eight-lane chunk of a packed `w x h` block (`w %
 /// 8 == 0`) and stores the weights it returns as the chroma mask.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn diff_block<S: Simd, P: Copy, O: Copy>(
     (output, stride): (&mut [O], usize),
     preds: [&[P]; 2],
