@@ -1094,9 +1094,9 @@ impl TemporalBandPlan {
         })
     }
 
-    pub(crate) fn project<'a, B: splot_core::simd::SimdBackend>(
+    pub(crate) fn project<'a>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         context: &TemporalMvContext,
         index: usize,
         mut source_band: impl FnMut(usize, usize) -> Option<&'a TemporalMotionBand>,
@@ -1400,9 +1400,9 @@ impl TemporalMvContext {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn refresh_from_references<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn refresh_from_references(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
         config: TemporalProjectionConfig,
@@ -1640,9 +1640,9 @@ impl TemporalMvContext {
             .trajectory_cell(reference, y8, x8)
     }
 
-    pub(crate) fn prepare_tip<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn prepare_tip(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         references: TipReferencePair,
         projection_step: usize,
         tmvp_unit_size8: usize,
@@ -2057,8 +2057,8 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 /// Bands partition the writes, and each band replays the queue in its original
 /// order, so the result matches the whole-field scan whatever order the bands
 /// run in.
-fn run_band_projections<B: splot_core::simd::SimdBackend>(
-    backend: B,
+fn run_band_projections(
+    backend: splot_core::simd::SimdBackend,
     prepared: &[Option<PreparedTemporalProjection<'_>>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,

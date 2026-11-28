@@ -78,9 +78,9 @@ impl GeneralIntraReconCommand {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(crate) fn reconstruct<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         arena: &mut crate::residual::pipeline::ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut GeneralIntraReconScratch<T>,

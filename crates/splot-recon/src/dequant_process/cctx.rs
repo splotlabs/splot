@@ -40,8 +40,9 @@ pub const CCTX_MTX: [[i32; 2]; 6] = [
 /// Returns the errors of [`dequantize_block`](super::dequantize_block) for
 /// either block, and [`ReconError::InvalidDequantBlockShape`] if the V block
 /// does not have the shape of the U block.
-pub fn dequantize_cctx_pair_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn dequantize_cctx_pair_with(
+    backend: SimdBackend,
     params: [&DequantBlockParams; 2],
     quant: [&[i32]; 2],
     rotation: [i32; 2],
@@ -58,8 +59,7 @@ pub fn dequantize_cctx_pair_with<B: SimdBackend>(
     let v_coded = dequant_block_prefix(v, quant[1].len(), v_out.len())?;
     let coded = u_coded.max(v_coded);
     let out = [&mut u_out[..coded], &mut v_out[..coded]];
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => pair_groups(simd, params, quant, rotation, out))?;
+    splot_core::with_simd!(backend, simd => pair_groups(simd, params, quant, rotation, out))?;
     Ok(coded)
 }
 
@@ -135,7 +135,7 @@ mod tests {
     use super::*;
     use crate::BitDepth;
     use crate::math::round2_signed_i32;
-    use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdPolicy, resolve_backend};
 
     /// The scalar § 7.14.6 rotation of one dequantized pair: the oracle of
     /// [`pair_groups`].
@@ -152,8 +152,8 @@ mod tests {
         [&'a mut [i32]; 2],
     );
 
-    impl SimdScope<Result<usize>> for Pair<'_> {
-        fn run<B: SimdBackend>(self, backend: B) -> Result<usize> {
+    impl Pair<'_> {
+        fn run(self, backend: SimdBackend) -> Result<usize> {
             dequantize_cctx_pair_with(backend, self.0, self.1, self.2, self.3)
         }
     }
@@ -164,9 +164,7 @@ mod tests {
         rotation: [i32; 2],
         out: [&'a mut [i32]; 2],
     ) -> Result<usize> {
-        resolve_backend(SimdPolicy::Auto)
-            .unwrap()
-            .enter(Pair(params, quant, rotation, out))
+        Pair(params, quant, rotation, out).run(resolve_backend(SimdPolicy::Auto).unwrap().backend())
     }
 
     /// The lane groups must reproduce the per-coefficient oracle exactly for

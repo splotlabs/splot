@@ -17,16 +17,17 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_raw_stream_from_plan(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
     writer: &mut (dyn Write + Send),
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
+    let kernels = splot_recon::KernelSelection::of(session.backend());
     let mut seen_xlayer = None;
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,
@@ -36,6 +37,7 @@ pub(crate) fn write_raw_stream_from_plan(
             let frame = output.ready_frame()?;
             write_display_frame(
                 backend,
+                kernels,
                 &frame,
                 output.output_grain(options),
                 &mut spare,
@@ -48,7 +50,8 @@ pub(crate) fn write_raw_stream_from_plan(
 
 /// Writes one displayed frame.
 fn write_display_frame(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     frame: &PipelineDecodedFrame,
     display_grain: Option<&crate::pipeline::ActiveFilmGrain>,
     spare: &mut GrainPlanes,
@@ -57,6 +60,7 @@ fn write_display_frame(
     match frame {
         PipelineDecodedFrame::Eight(frame) => write_display(
             backend,
+            kernels,
             frame.get(),
             display_grain,
             &mut spare.eight,
@@ -64,6 +68,7 @@ fn write_display_frame(
         ),
         PipelineDecodedFrame::Ten(frame) => write_display(
             backend,
+            kernels,
             frame.get(),
             display_grain,
             &mut spare.ten,
@@ -73,14 +78,15 @@ fn write_display_frame(
 }
 
 pub(crate) fn discard_raw_stream_from_plan(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
+    let kernels = splot_recon::KernelSelection::of(session.backend());
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,
@@ -88,11 +94,18 @@ pub(crate) fn discard_raw_stream_from_plan(
         |output| {
             let grain = output.output_grain(options);
             match &output.ready_frame()? {
-                PipelineDecodedFrame::Eight(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.eight, |_| Ok(()))
-                }
+                PipelineDecodedFrame::Eight(frame) => write_display(
+                    backend,
+                    kernels,
+                    frame.get(),
+                    grain,
+                    &mut spare.eight,
+                    |_| Ok(()),
+                ),
                 PipelineDecodedFrame::Ten(frame) => {
-                    write_display(backend, frame.get(), grain, &mut spare.ten, |_| Ok(()))
+                    write_display(backend, kernels, frame.get(), grain, &mut spare.ten, |_| {
+                        Ok(())
+                    })
                 }
             }
         },

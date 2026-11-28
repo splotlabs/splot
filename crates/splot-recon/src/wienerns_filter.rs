@@ -309,14 +309,14 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`wiener_ns_filter_luma_block_padded_into`].
 #[inline]
-pub fn wiener_ns_filter_luma_block_padded_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn wiener_ns_filter_luma_block_padded_into_with<T: ReconSample>(
+    backend: SimdBackend,
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
-    let backend = lr_madd::TypedLr(backend.narrow());
+    let backend = lr_madd::TypedLr(backend);
     let subclasses = params
         .subclasses
         .map_or(LumaSubclassLayout::Uniform, LumaSubclassLayout::Samples);
@@ -361,15 +361,15 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`wiener_ns_filter_luma_block_padded_cells_into`].
 #[inline]
-pub fn wiener_ns_filter_luma_block_padded_cells_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn wiener_ns_filter_luma_block_padded_cells_into_with<T: ReconSample>(
+    backend: SimdBackend,
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
     source: &WienerNsLumaPaddedSource<'_, T>,
     cell_subclasses: &[u8],
     scratch: &mut WienerNsLumaScratch,
 ) -> Result<()> {
-    let backend = lr_madd::TypedLr(backend.narrow());
+    let backend = lr_madd::TypedLr(backend);
     wiener_ns_filter_luma_block_padded_layout_into(
         backend,
         output,

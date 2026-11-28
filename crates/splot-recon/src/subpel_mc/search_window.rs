@@ -104,10 +104,10 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     bilinear_u8(BaselineSubpel, view, params, output, stride)
 }
 
-/// Typed [`subpel_predict_bilinear_u8`] using caller-selected `backend`.
+/// [`subpel_predict_bilinear_u8`] using caller-selected `backend`.
 #[must_use]
-pub fn subpel_predict_bilinear_u8_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_bilinear_u8_with<T: ReconSample>(
+    backend: SimdBackend,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
@@ -207,10 +207,10 @@ pub fn refinemv_area_sad_u8<T: ReconSample>(
     area_sad_u8(BaselineSubpel, views, corners, size)
 }
 
-/// Typed [`refinemv_area_sad_u8`] using caller-selected `backend`.
+/// [`refinemv_area_sad_u8`] using caller-selected `backend`.
 #[must_use]
-pub fn refinemv_area_sad_u8_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn refinemv_area_sad_u8_with<T: ReconSample>(
+    backend: SimdBackend,
     views: [&ReferencePlaneView<'_, T>; 2],
     corners: [[usize; 2]; 2],
     size: [usize; 2],

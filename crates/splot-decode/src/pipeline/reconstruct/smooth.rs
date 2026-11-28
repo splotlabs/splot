@@ -20,11 +20,8 @@ use crate::bitstream::tile_payload::{
 const SMOOTH_EDGE_CAPACITY: usize = 65;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: IntraSmoothMode,
@@ -91,8 +88,8 @@ pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_into<
 /// declines it.
 #[expect(clippy::too_many_arguments)]
 #[inline]
-pub(crate) fn reconstruct_smooth_in_frame<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_smooth_in_frame<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -126,11 +123,8 @@ pub(crate) fn reconstruct_smooth_in_frame<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -195,8 +189,8 @@ pub(crate) struct SmoothIntraPredictionRequest {
     pub(crate) bit_depth: BitDepth,
 }
 
-pub(crate) fn predict_intra_smooth_over_available_edges_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &CurrentFrameWorkspace<T>,
     request: SmoothIntraPredictionRequest,
     prediction: &mut [T],
@@ -220,8 +214,8 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<B: SimdBackend, T: 
 /// The `[left, above]` § 7.13.2.13 edges, sentinels included.
 type SmoothEdgeArrays<T> = [[T; SMOOTH_EDGE_CAPACITY]; 2];
 
-fn predict_smooth_from_edges<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_smooth_from_edges<T: ReconSample>(
+    backend: SimdBackend,
     request: SmoothIntraPredictionRequest,
     [left_edge, above_edge]: &SmoothEdgeArrays<T>,
     output: &mut [T],

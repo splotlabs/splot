@@ -180,13 +180,13 @@ pub fn derive_optflow_mv_deltas_into<'a, P: WindowSample>(
     Ok(&scratch.deltas)
 }
 
-/// Typed [`derive_optflow_mv_deltas_into`] using caller-selected `backend`.
+/// [`derive_optflow_mv_deltas_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation and solve errors as [`derive_optflow_mv_deltas_into`].
 #[expect(clippy::too_many_arguments)]
-pub fn derive_optflow_mv_deltas_into_with<'a, B: SimdBackend, P: WindowSample>(
-    backend: B,
+pub fn derive_optflow_mv_deltas_into_with<'a, P: WindowSample>(
+    backend: SimdBackend,
     preds: [&[P]; 2],
     starts: [usize; 2],
     stride: usize,
@@ -208,9 +208,7 @@ pub fn derive_optflow_mv_deltas_into_with<'a, B: SimdBackend, P: WindowSample>(
         return Ok(&scratch.deltas);
     };
     let block = (preds, starts, stride, [width, height], unit_size);
-    let narrow = backend.narrow();
-    if let Err(error) =
-        narrow.vectorize(|| block_deltas(narrow.token(), block, weights, &mut scratch.deltas))
+    if let Err(error) = splot_core::with_simd!(backend, simd => block_deltas(simd, block, weights, &mut scratch.deltas))
     {
         scratch.deltas.clear();
         return Err(error);
@@ -539,14 +537,15 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
     ))
 }
 
-/// Typed [`derive_optflow_mv_delta_8x8_strided_into`] using caller-selected `backend`.
+/// [`derive_optflow_mv_delta_8x8_strided_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation and solve errors as [`derive_optflow_mv_delta_8x8_strided_into`].
 #[doc(hidden)]
 #[expect(clippy::too_many_arguments)]
-pub fn derive_optflow_mv_delta_8x8_strided_into_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn derive_optflow_mv_delta_8x8_strided_into_with(
+    backend: SimdBackend,
     pred0: &[u16],
     start0: usize,
     pred1: &[u16],
@@ -565,10 +564,9 @@ pub fn derive_optflow_mv_delta_8x8_strided_into_with<B: SimdBackend>(
     else {
         return Ok([[0; 2]; 2]);
     };
-    let narrow = backend.narrow();
-    narrow.vectorize(|| {
+    splot_core::with_simd!(backend, simd => {
         strided_8x8_delta(
-            narrow.token(),
+            simd,
             v.pred0,
             v.pred1,
             stride,
@@ -686,20 +684,20 @@ pub fn optflow_unit_8x8_u8(
     baseline_simd!(simd => unit_8x8(simd, &rows, reduced, threshold))
 }
 
-/// Typed [`optflow_unit_8x8_u8`] using caller-selected `backend`.
+/// [`optflow_unit_8x8_u8`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same arithmetic errors as [`optflow_unit_8x8_u8`].
 #[doc(hidden)]
-pub fn optflow_unit_8x8_u8_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn optflow_unit_8x8_u8_with(
+    backend: SimdBackend,
     rows: [[u64; 8]; 2],
     distances: [i32; 2],
     sad_threshold: Option<u32>,
 ) -> Result<Option<[[i32; 2]; 2]>> {
     let (reduced, threshold) = unit_8x8_u8_params(distances, sad_threshold);
-    let narrow = backend.narrow();
-    narrow.vectorize(|| unit_8x8(narrow.token(), &rows, reduced, threshold))
+    splot_core::with_simd!(backend, simd => unit_8x8(simd, &rows, reduced, threshold))
 }
 
 /// [`optflow_unit_8x8_u8`] of its eight-byte rows and reduced `distances`:
@@ -767,13 +765,14 @@ pub fn optflow_unit_8x8_u16(
     baseline_simd!(simd => unit_8x8_u16_simd(simd, &rows, downshift, max, distances, threshold))
 }
 
-/// Typed [`optflow_unit_8x8_u16`] using caller-selected `backend`.
+/// [`optflow_unit_8x8_u16`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same arithmetic errors as [`optflow_unit_8x8_u16`].
 #[doc(hidden)]
-pub fn optflow_unit_8x8_u16_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn optflow_unit_8x8_u16_with(
+    backend: SimdBackend,
     rows: [[[u16; 8]; 8]; 2],
     bit_depth: BitDepth,
     distances: [i32; 2],
@@ -782,9 +781,8 @@ pub fn optflow_unit_8x8_u16_with<B: SimdBackend>(
     let threshold = sad_threshold.unwrap_or(0);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     let max = bit_depth.max_sample();
-    let narrow = backend.narrow();
-    narrow.vectorize(|| {
-        unit_8x8_u16_simd(narrow.token(), &rows, downshift, max, distances, threshold)
+    splot_core::with_simd!(backend, simd => {
+        unit_8x8_u16_simd(simd, &rows, downshift, max, distances, threshold)
     })
 }
 
@@ -1640,126 +1638,125 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let stride = 20usize;
-                let (w, h) = (16usize, 16usize);
-                let pred0_8: Vec<u8> = (0..stride * h)
-                    .map(|i| ((i * 17 + (i / stride) * 5 + 3) % 256) as u8)
-                    .collect();
-                let pred1_8: Vec<u8> = (0..stride * h)
-                    .map(|i| ((i * 23 + (i / stride) * 11 + 7) % 256) as u8)
-                    .collect();
-                let mut compat_scratch = OptflowScratch::default();
-                let mut typed_scratch = OptflowScratch::default();
-                let compat_u8 = derive_optflow_mv_deltas_into(
-                    [&pred0_8[..], &pred1_8[..]],
-                    [0; 2],
-                    stride,
-                    [w, h],
-                    8,
-                    BitDepth::Eight,
-                    [2, -1],
-                    &mut compat_scratch,
-                )
-                .unwrap();
-                let typed_u8 = derive_optflow_mv_deltas_into_with(
-                    backend,
-                    [&pred0_8[..], &pred1_8[..]],
-                    [0; 2],
-                    stride,
-                    [w, h],
-                    8,
-                    BitDepth::Eight,
-                    [2, -1],
-                    &mut typed_scratch,
-                )
-                .unwrap();
-                assert_eq!(typed_u8, compat_u8);
+        fn check(backend: SimdBackend) {
+            let stride = 20usize;
+            let (w, h) = (16usize, 16usize);
+            let pred0_8: Vec<u8> = (0..stride * h)
+                .map(|i| ((i * 17 + (i / stride) * 5 + 3) % 256) as u8)
+                .collect();
+            let pred1_8: Vec<u8> = (0..stride * h)
+                .map(|i| ((i * 23 + (i / stride) * 11 + 7) % 256) as u8)
+                .collect();
+            let mut compat_scratch = OptflowScratch::default();
+            let mut typed_scratch = OptflowScratch::default();
+            let compat_u8 = derive_optflow_mv_deltas_into(
+                [&pred0_8[..], &pred1_8[..]],
+                [0; 2],
+                stride,
+                [w, h],
+                8,
+                BitDepth::Eight,
+                [2, -1],
+                &mut compat_scratch,
+            )
+            .unwrap();
+            let typed_u8 = derive_optflow_mv_deltas_into_with(
+                backend,
+                [&pred0_8[..], &pred1_8[..]],
+                [0; 2],
+                stride,
+                [w, h],
+                8,
+                BitDepth::Eight,
+                [2, -1],
+                &mut typed_scratch,
+            )
+            .unwrap();
+            assert_eq!(typed_u8, compat_u8);
 
-                let pred0_10: Vec<u16> = (0..stride * h)
-                    .map(|i| ((i * 61 + (i / stride) * 13 + 9) % 1024) as u16)
-                    .collect();
-                let pred1_10: Vec<u16> = (0..stride * h)
-                    .map(|i| ((i * 79 + (i / stride) * 19 + 15) % 1024) as u16)
-                    .collect();
-                let compat_u16 = derive_optflow_mv_deltas_into(
-                    [&pred0_10[..], &pred1_10[..]],
-                    [0; 2],
-                    stride,
-                    [w, h],
-                    8,
-                    BitDepth::Ten,
-                    [1, -2],
-                    &mut compat_scratch,
-                )
-                .unwrap();
-                let typed_u16 = derive_optflow_mv_deltas_into_with(
-                    backend,
-                    [&pred0_10[..], &pred1_10[..]],
-                    [0; 2],
-                    stride,
-                    [w, h],
-                    8,
-                    BitDepth::Ten,
-                    [1, -2],
-                    &mut typed_scratch,
-                )
-                .unwrap();
-                assert_eq!(typed_u16, compat_u16);
+            let pred0_10: Vec<u16> = (0..stride * h)
+                .map(|i| ((i * 61 + (i / stride) * 13 + 9) % 1024) as u16)
+                .collect();
+            let pred1_10: Vec<u16> = (0..stride * h)
+                .map(|i| ((i * 79 + (i / stride) * 19 + 15) % 1024) as u16)
+                .collect();
+            let compat_u16 = derive_optflow_mv_deltas_into(
+                [&pred0_10[..], &pred1_10[..]],
+                [0; 2],
+                stride,
+                [w, h],
+                8,
+                BitDepth::Ten,
+                [1, -2],
+                &mut compat_scratch,
+            )
+            .unwrap();
+            let typed_u16 = derive_optflow_mv_deltas_into_with(
+                backend,
+                [&pred0_10[..], &pred1_10[..]],
+                [0; 2],
+                stride,
+                [w, h],
+                8,
+                BitDepth::Ten,
+                [1, -2],
+                &mut typed_scratch,
+            )
+            .unwrap();
+            assert_eq!(typed_u16, compat_u16);
 
-                let strided_compat = derive_optflow_mv_delta_8x8_strided_into(
-                    &pred0_10,
-                    2,
-                    &pred1_10,
-                    3,
-                    stride,
-                    BitDepth::Ten,
-                    [1, -1],
-                )
-                .unwrap();
-                let strided_typed = derive_optflow_mv_delta_8x8_strided_into_with(
-                    backend,
-                    &pred0_10,
-                    2,
-                    &pred1_10,
-                    3,
-                    stride,
-                    BitDepth::Ten,
-                    [1, -1],
-                )
-                .unwrap();
-                assert_eq!(strided_typed, strided_compat);
+            let strided_compat = derive_optflow_mv_delta_8x8_strided_into(
+                &pred0_10,
+                2,
+                &pred1_10,
+                3,
+                stride,
+                BitDepth::Ten,
+                [1, -1],
+            )
+            .unwrap();
+            let strided_typed = derive_optflow_mv_delta_8x8_strided_into_with(
+                backend,
+                &pred0_10,
+                2,
+                &pred1_10,
+                3,
+                stride,
+                BitDepth::Ten,
+                [1, -1],
+            )
+            .unwrap();
+            assert_eq!(strided_typed, strided_compat);
 
-                let rows_u8: [[u64; 8]; 2] = core::array::from_fn(|p| {
-                    core::array::from_fn(|r| {
-                        let base = r * 8 + p * 31;
-                        u64::from_le_bytes(core::array::from_fn(|c| ((base + c * 19) % 256) as u8))
-                    })
-                });
-                assert_eq!(
-                    optflow_unit_8x8_u8_with(backend, rows_u8, [2, -1], Some(16)).unwrap(),
-                    optflow_unit_8x8_u8(rows_u8, [2, -1], Some(16)).unwrap(),
-                );
+            let rows_u8: [[u64; 8]; 2] = core::array::from_fn(|p| {
+                core::array::from_fn(|r| {
+                    let base = r * 8 + p * 31;
+                    u64::from_le_bytes(core::array::from_fn(|c| ((base + c * 19) % 256) as u8))
+                })
+            });
+            assert_eq!(
+                optflow_unit_8x8_u8_with(backend, rows_u8, [2, -1], Some(16)).unwrap(),
+                optflow_unit_8x8_u8(rows_u8, [2, -1], Some(16)).unwrap(),
+            );
 
-                let rows_u16: [[[u16; 8]; 8]; 2] = core::array::from_fn(|p| {
-                    core::array::from_fn(|r| {
-                        core::array::from_fn(|c| ((r * 37 + c * 53 + p * 41) % 1024) as u16)
-                    })
-                });
-                assert_eq!(
-                    optflow_unit_8x8_u16_with(backend, rows_u16, BitDepth::Ten, [1, -2], Some(8))
-                        .unwrap(),
-                    optflow_unit_8x8_u16(rows_u16, BitDepth::Ten, [1, -2], Some(8)).unwrap(),
-                );
-            }
+            let rows_u16: [[[u16; 8]; 8]; 2] = core::array::from_fn(|p| {
+                core::array::from_fn(|r| {
+                    core::array::from_fn(|c| ((r * 37 + c * 53 + p * 41) % 1024) as u16)
+                })
+            });
+            assert_eq!(
+                optflow_unit_8x8_u16_with(backend, rows_u16, BitDepth::Ten, [1, -2], Some(8))
+                    .unwrap(),
+                optflow_unit_8x8_u16(rows_u16, BitDepth::Ten, [1, -2], Some(8)).unwrap(),
+            );
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

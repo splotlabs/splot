@@ -273,8 +273,8 @@ pub(crate) fn is_active(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn apply_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn apply_stripe<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
     separate_cdef_luma: Option<&StripePlane<T>>,
@@ -309,8 +309,8 @@ pub(crate) fn apply_stripe<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// BitDepth)`, so the rounding keeps `err` exact, and a sample range wide
 /// enough that no `err` clips.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn error_stripe<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(crate) fn error_stripe(
+    backend: splot_core::simd::SimdBackend,
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, u16>,
     separate_cdef_luma: Option<&StripePlane<u16>>,
@@ -347,8 +347,8 @@ pub(crate) fn error_stripe<B: splot_core::simd::SimdBackend>(
 pub(crate) const GDF_ERROR_BASE: u16 = 1024;
 
 #[expect(clippy::too_many_arguments)]
-fn apply_stripe_config<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn apply_stripe_config<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     config: GdfConfig,
     core: &FrameHeaderCore,
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
@@ -524,8 +524,8 @@ fn bru_active_run(
 /// columns, each tile's source window copied just before the tile is
 /// filtered. When `post_lr_luma` is the CDEF luma the windows read, the next
 /// tile's window is copied before a tile writes the columns it shares.
-fn filter_run_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn filter_run_tiles<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     (deblocked_luma, separate_cdef_luma, cdef_overlap): (
         FramePlane<'_, T>,
         Option<&StripePlane<T>>,
@@ -574,7 +574,7 @@ fn filter_run_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
             let cdef_luma = separate_cdef_luma.unwrap_or(&*post_lr_luma);
             let rows = stripe_rows(deblocked_luma, cdef_luma, cdef_overlap);
             let samples = source.get_mut(buffer(staged)).ok_or_else(gdf_state_error)?;
-            fill_tile::<_, T, T>(backend, samples, layout(staged), bounds, run, rows)?;
+            fill_tile::<T, T>(backend, samples, layout(staged), bounds, run, rows)?;
         }
         let samples = source.get(buffer(index)).ok_or_else(gdf_state_error)?;
         let tile = tile(index);
@@ -941,9 +941,9 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         self.0.len()
     }
 
-    fn copy_range_as<B: splot_core::simd::SimdBackend, U: ReconSample>(
+    fn copy_range_as<U: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         start: usize,
         dst: &mut [u16],
         shift: u32,
@@ -1008,7 +1008,7 @@ impl<'a> GdfSource<'a> {
         resize_overwrite_scratch(samples, sample_count)?;
         let layout = (width, block.width.max(1), 0);
         let (origin_x, origin_y) = crate::test_support::with_auto_backend!(backend => {
-            fill_tile::<_, S, T>(backend, samples, layout, bounds, block, source_row)
+            fill_tile::<S, T>(backend, samples, layout, bounds, block, source_row)
         })?;
         Ok(Self {
             samples: samples.as_slice(),
@@ -1073,8 +1073,8 @@ fn window_size(block: &GdfBlock) -> Result<(usize, usize)> {
 /// is the § 7.20.2 source row; a row that § 7.20.2 clips to the row above
 /// copies that row, and the columns it clips repeat the row's edge sample.
 #[inline(never)]
-fn fill_tile<'b, B: splot_core::simd::SimdBackend, S: ReconSample, T: ReconSample>(
-    backend: B,
+fn fill_tile<'b, S: ReconSample, T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     samples: &mut [u16],
     (stride, tile_cols, tile): (usize, usize, usize),
     bounds: &LoopRestorationPlaneBounds,
@@ -1124,7 +1124,7 @@ fn fill_tile<'b, B: splot_core::simd::SimdBackend, S: ReconSample, T: ReconSampl
         let (pads, rest) = dst.split_at_mut(pre);
         let (copied, posts) = rest.split_at_mut(mid);
         source_row
-            .copy_range_as::<_, T>(backend, mid_start, copied, shift)
+            .copy_range_as::<T>(backend, mid_start, copied, shift)
             .ok_or_else(gdf_state_error)?;
         pads.fill(copied[0]);
         posts.fill(copied[mid - 1]);
@@ -1777,7 +1777,7 @@ mod tests {
                 let mut samples = vec![u16::MAX; area];
                 let layout = (simd::TILE_STRIDE, simd::TILE_COLS, index);
                 crate::test_support::with_auto_backend!(backend => {
-                    fill_tile::<_, S, S>(backend, &mut samples, layout, &plane, &run, rows)
+                    fill_tile::<S, S>(backend, &mut samples, layout, &plane, &run, rows)
                 })
                 .expect("valid tile window");
                 let tile = GdfBlock {

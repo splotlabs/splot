@@ -92,7 +92,7 @@ impl<'a, T: ReconSample> IntraSmoothEdges<'a, T> {
 struct BaselineSmooth;
 
 #[derive(Clone, Copy)]
-struct TypedSmooth<B: SimdBackend>(B);
+struct TypedSmooth(SimdBackend);
 
 trait SmoothRunner: Copy {
     #[cfg(target_arch = "x86_64")]
@@ -133,11 +133,11 @@ impl SmoothRunner for BaselineSmooth {
     }
 }
 
-impl<B: SimdBackend> SmoothRunner for TypedSmooth<B> {
+impl SmoothRunner for TypedSmooth {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
-        self.0.narrow().avx2_token()
+        self.0.avx2_token()
     }
 
     #[inline]
@@ -150,8 +150,7 @@ impl<B: SimdBackend> SmoothRunner for TypedSmooth<B> {
         output: &mut [P],
         stride: usize,
     ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => {
+        splot_core::with_simd!(self.0, simd => {
             smooth_lanes(simd, size, mode, lanes, corners, output, stride);
         });
     }
@@ -222,12 +221,12 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_smooth_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_smooth_rect_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_smooth_rect_into`].
-pub fn predict_intra_smooth_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_smooth_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
@@ -434,13 +433,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.predict_intra_smooth_in_frame_with_runner(BaselineSmooth, plane, x, y, request)
     }
 
-    /// Typed [`Self::predict_intra_smooth_in_frame`] using caller-selected `backend`.
+    /// [`Self::predict_intra_smooth_in_frame`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::predict_intra_smooth_in_frame`].
-    pub fn predict_intra_smooth_in_frame_with<B: SimdBackend>(
+    pub fn predict_intra_smooth_in_frame_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -1456,129 +1455,125 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
         use crate::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                for (log2_w, log2_h) in [(2, 2), (3, 3), (4, 3), (5, 4)] {
-                    let size = rect_size(log2_w, log2_h);
-                    let stride = size.width() + 4;
-                    for mode in [
-                        IntraSmoothMode::Smooth,
-                        IntraSmoothMode::SmoothVertical,
-                        IntraSmoothMode::SmoothHorizontal,
-                    ] {
-                        let left8: Vec<u8> =
-                            (0..=size.height()).map(|i| (i * 23 + 7) as u8).collect();
-                        let above8: Vec<u8> =
-                            (0..=size.width()).map(|i| (i * 31 + 11) as u8).collect();
-                        let edges8 = IntraSmoothEdges::new(&left8[..], &above8[..]);
-                        let mut compat8 = vec![3u8; stride * size.height()];
-                        let mut typed8 = Vec::from(compat8.as_slice());
-                        predict_intra_smooth_rect_into(
-                            BitDepth::Eight,
-                            size,
-                            mode,
-                            edges8,
-                            &mut compat8,
-                            stride,
-                        )
-                        .unwrap();
-                        predict_intra_smooth_rect_into_with(
-                            backend,
-                            BitDepth::Eight,
-                            size,
-                            mode,
-                            edges8,
-                            &mut typed8,
-                            stride,
-                        )
-                        .unwrap();
-                        assert_eq!(typed8, compat8);
+        fn check(backend: SimdBackend) {
+            for (log2_w, log2_h) in [(2, 2), (3, 3), (4, 3), (5, 4)] {
+                let size = rect_size(log2_w, log2_h);
+                let stride = size.width() + 4;
+                for mode in [
+                    IntraSmoothMode::Smooth,
+                    IntraSmoothMode::SmoothVertical,
+                    IntraSmoothMode::SmoothHorizontal,
+                ] {
+                    let left8: Vec<u8> = (0..=size.height()).map(|i| (i * 23 + 7) as u8).collect();
+                    let above8: Vec<u8> = (0..=size.width()).map(|i| (i * 31 + 11) as u8).collect();
+                    let edges8 = IntraSmoothEdges::new(&left8[..], &above8[..]);
+                    let mut compat8 = vec![3u8; stride * size.height()];
+                    let mut typed8 = Vec::from(compat8.as_slice());
+                    predict_intra_smooth_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        edges8,
+                        &mut compat8,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_smooth_rect_into_with(
+                        backend,
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        edges8,
+                        &mut typed8,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed8, compat8);
 
-                        let left10: Vec<u16> = (0..=size.height())
-                            .map(|i| (i as u16 * 71 + 9) % 1024)
-                            .collect();
-                        let above10: Vec<u16> = (0..=size.width())
-                            .map(|i| (i as u16 * 97 + 13) % 1024)
-                            .collect();
-                        let edges10 = IntraSmoothEdges::new(&left10[..], &above10[..]);
-                        let mut compat10 = vec![5u16; stride * size.height()];
-                        let mut typed10 = Vec::from(compat10.as_slice());
-                        predict_intra_smooth_rect_into(
-                            BitDepth::Ten,
-                            size,
-                            mode,
-                            edges10,
-                            &mut compat10,
-                            stride,
-                        )
-                        .unwrap();
-                        predict_intra_smooth_rect_into_with(
-                            backend,
-                            BitDepth::Ten,
-                            size,
-                            mode,
-                            edges10,
-                            &mut typed10,
-                            stride,
-                        )
-                        .unwrap();
-                        assert_eq!(typed10, compat10);
-                    }
+                    let left10: Vec<u16> = (0..=size.height())
+                        .map(|i| (i as u16 * 71 + 9) % 1024)
+                        .collect();
+                    let above10: Vec<u16> = (0..=size.width())
+                        .map(|i| (i as u16 * 97 + 13) % 1024)
+                        .collect();
+                    let edges10 = IntraSmoothEdges::new(&left10[..], &above10[..]);
+                    let mut compat10 = vec![5u16; stride * size.height()];
+                    let mut typed10 = Vec::from(compat10.as_slice());
+                    predict_intra_smooth_rect_into(
+                        BitDepth::Ten,
+                        size,
+                        mode,
+                        edges10,
+                        &mut compat10,
+                        stride,
+                    )
+                    .unwrap();
+                    predict_intra_smooth_rect_into_with(
+                        backend,
+                        BitDepth::Ten,
+                        size,
+                        mode,
+                        edges10,
+                        &mut typed10,
+                        stride,
+                    )
+                    .unwrap();
+                    assert_eq!(typed10, compat10);
                 }
-
-                let coded = PlaneSize::new(32, 32).unwrap();
-                let visible = PlaneRect::new(0, 0, 32, 32).unwrap();
-                let info = DecodedFrameInfo::new(
-                    OutputIndex::new(0),
-                    BitDepth::Eight,
-                    PixelFormat::Yuv420,
-                    coded,
-                    visible,
-                )
-                .unwrap();
-                let mut ws_compat = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
-                let mut ws_typed = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
-                let init_plane: Vec<u8> =
-                    (0..32 * 32).map(|i| ((i * 17 + 11) % 256) as u8).collect();
-                ws_compat
-                    .write_rect(PlaneId::Y, visible, &init_plane, 32)
-                    .unwrap();
-                ws_typed
-                    .write_rect(PlaneId::Y, visible, &init_plane, 32)
-                    .unwrap();
-                let req = IntraSmoothFrameRequest {
-                    size: rect_size(3, 3),
-                    mode: IntraSmoothMode::Smooth,
-                    above: true,
-                    left: true,
-                    above_right: true,
-                    below_left: true,
-                    bit_depth: BitDepth::Eight,
-                };
-                assert!(
-                    ws_compat
-                        .predict_intra_smooth_in_frame(PlaneId::Y, 8, 8, req)
-                        .unwrap()
-                );
-                assert!(
-                    ws_typed
-                        .predict_intra_smooth_in_frame_with(backend, PlaneId::Y, 8, 8, req)
-                        .unwrap()
-                );
-                assert_eq!(
-                    ws_typed.plane(PlaneId::Y).unwrap().samples(),
-                    ws_compat.plane(PlaneId::Y).unwrap().samples()
-                );
             }
+
+            let coded = PlaneSize::new(32, 32).unwrap();
+            let visible = PlaneRect::new(0, 0, 32, 32).unwrap();
+            let info = DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Eight,
+                PixelFormat::Yuv420,
+                coded,
+                visible,
+            )
+            .unwrap();
+            let mut ws_compat = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
+            let mut ws_typed = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
+            let init_plane: Vec<u8> = (0..32 * 32).map(|i| ((i * 17 + 11) % 256) as u8).collect();
+            ws_compat
+                .write_rect(PlaneId::Y, visible, &init_plane, 32)
+                .unwrap();
+            ws_typed
+                .write_rect(PlaneId::Y, visible, &init_plane, 32)
+                .unwrap();
+            let req = IntraSmoothFrameRequest {
+                size: rect_size(3, 3),
+                mode: IntraSmoothMode::Smooth,
+                above: true,
+                left: true,
+                above_right: true,
+                below_left: true,
+                bit_depth: BitDepth::Eight,
+            };
+            assert!(
+                ws_compat
+                    .predict_intra_smooth_in_frame(PlaneId::Y, 8, 8, req)
+                    .unwrap()
+            );
+            assert!(
+                ws_typed
+                    .predict_intra_smooth_in_frame_with(backend, PlaneId::Y, 8, 8, req)
+                    .unwrap()
+            );
+            assert_eq!(
+                ws_typed.plane(PlaneId::Y).unwrap().samples(),
+                ws_compat.plane(PlaneId::Y).unwrap().samples()
+            );
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

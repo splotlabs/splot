@@ -12,8 +12,8 @@ use super::*;
 
 pub(super) trait CompoundAverageOutput: ReconSample {
     #[expect(clippy::too_many_arguments)]
-    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
-        backend: B,
+    fn predict_second<T: ReconSample>(
+        backend: splot_core::simd::SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -26,8 +26,8 @@ pub(super) trait CompoundAverageOutput: ReconSample {
     #[expect(clippy::too_many_arguments)]
     #[expect(clippy::inline_always, reason = "per-cell grid hot path")]
     #[inline(always)]
-    fn predict_fast<B: splot_core::simd::SimdBackend, T: ReconSample>(
-        backend: B,
+    fn predict_fast<T: ReconSample>(
+        backend: splot_core::simd::SimdBackend,
         reference0: &ReferencePlaneView<'_, T>,
         params0: &SubpelPredictParams,
         reference1: &ReferencePlaneView<'_, T>,
@@ -50,8 +50,8 @@ pub(super) trait CompoundAverageOutput: ReconSample {
 }
 
 impl CompoundAverageOutput for u16 {
-    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
-        backend: B,
+    fn predict_second<T: ReconSample>(
+        backend: splot_core::simd::SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -74,8 +74,8 @@ impl CompoundAverageOutput for u16 {
 }
 
 impl CompoundAverageOutput for u8 {
-    fn predict_second<B: splot_core::simd::SimdBackend, T: ReconSample>(
-        backend: B,
+    fn predict_second<T: ReconSample>(
+        backend: splot_core::simd::SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         params: &SubpelPredictParams,
         pred0: &[i32],
@@ -208,8 +208,8 @@ fn subblock_reference_area_size(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn tip_optflow_motion_cell_strided<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn tip_optflow_motion_cell_strided(
+    backend: splot_core::simd::SimdBackend,
     pred0: &[u16],
     start0: usize,
     pred1: &[u16],
@@ -226,7 +226,7 @@ pub(super) fn tip_optflow_motion_cell_strided<B: splot_core::simd::SimdBackend>(
             let (left, right) = (pred0.get(at(start0)), pred1.get(at(start1)));
             (left.unwrap_or_default(), right.unwrap_or_default())
         });
-        let sad = super::refinemv::sad_rows::<_, 8>(backend, rows, u16::MAX);
+        let sad = super::refinemv::sad_rows::<8>(backend, rows, u16::MAX);
         sad >> bit_depth.bits().saturating_sub(8) < threshold
     }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
@@ -242,8 +242,8 @@ pub(super) fn tip_optflow_motion_cell_strided<B: splot_core::simd::SimdBackend>(
 /// not take: an unsearched unit, or one whose § 7.13.3.6 search ends at once
 /// at its candidates (out of range). Its two initial predictions and
 /// § 7.13.3.9 delta stay on the stack.
-pub(super) fn tip_unit_motion_cell<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn tip_unit_motion_cell<'a, T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'a, T>,
     (rect, mvs): (McBlockRect, [MotionVector; 2]),
@@ -254,7 +254,7 @@ pub(super) fn tip_unit_motion_cell<'a, B: splot_core::simd::SimdBackend, T: Reco
     };
     let mut predictions = [[[0u16; 8]; 8]; 2];
     for (reference, (luma, prediction)) in luma.iter_mut().zip(&mut predictions).enumerate() {
-        initial_luma_prediction::<_, _, 0>(
+        initial_luma_prediction::<_, 0>(
             backend,
             luma,
             rect,
@@ -368,13 +368,8 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
 /// samples in from each edge. `tip_centre` holds the carry of the 12x12 TIP
 /// refine-MV centre, which then takes the dedicated kernel when it applies.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn initial_luma_prediction<
-    'a,
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    const INSET: usize,
->(
-    backend: B,
+pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut LumaReference<'a, T>,
     rect: McBlockRect,
     mv: MotionVector,
@@ -452,8 +447,8 @@ pub(super) fn initial_luma_prediction<
 /// [`search_windows`] builds holds the reference samples unclipped.
 /// `None` when a candidate is not full-pel or the byte kernel would not take
 /// its window.
-pub(super) fn fullpel_center_ends_search<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn fullpel_center_ends_search<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
     candidates: [MotionVector; 2],
@@ -506,8 +501,8 @@ pub(super) fn fullpel_center_ends_search<B: splot_core::simd::SimdBackend, T: Re
 /// for every searching block (§ 5.20.7.17 `is_refinemv_allowed_reference`,
 /// TIP `search_refinemv`), so a scaled one or a window the kernel rejects
 /// is a state error.
-pub(super) fn search_windows<B: splot_core::simd::SimdBackend, T: ReconSample, P: WindowSample>(
-    backend: B,
+pub(super) fn search_windows<T: ReconSample, P: WindowSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [LumaReference<'_, T>; 2],
     rect: McBlockRect,
     candidates: [MotionVector; 2],
@@ -555,8 +550,8 @@ type GridPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O],
 
 /// Runs a program of the uniform cells of a grid plane (or U and V) into
 /// each plane and predicts each cell it declines through [`predict_grid_cell`].
-fn run_cell_program<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
-    backend: B,
+fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
@@ -746,8 +741,8 @@ struct GridBlock<'a, 'b, T: ReconSample> {
 #[expect(clippy::too_many_arguments)]
 #[expect(clippy::inline_always, reason = "per-cell motion-grid hot path")]
 #[inline(always)]
-fn predict_grid_cell<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
-    backend: B,
+fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     views: &[ReferencePlaneView<'_, T>; 2],
     (params, uniform, [col, row, width, height]): GridCell<'_>,
     block: &GridBlock<'_, '_, T>,

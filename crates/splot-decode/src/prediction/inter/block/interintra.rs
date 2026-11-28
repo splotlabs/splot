@@ -127,8 +127,8 @@ impl<T> InterIntraScratch<T> {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn predict_interintra_planes<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn predict_interintra_planes<T: ReconSample>(
+    backend: SimdBackend,
     scratch: &mut InterIntraScratch<T>,
     workspace: &CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,

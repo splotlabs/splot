@@ -1792,263 +1792,258 @@ fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
 
 #[test]
 fn typed_backend_matches_compatibility_routes() {
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-    struct Check;
-    impl SimdScope<()> for Check {
-        fn run<B: SimdBackend>(self, backend: B) {
-            for (log2_w, log2_h) in [(2, 2), (4, 3), (4, 4)] {
-                let size = IntraRectBlockSize::new(log2_w, log2_h).unwrap();
-                let (w, h) = (size.width(), size.height());
-                let stride = w + 3;
-                let one_sided_len = w + h;
-                let idif_len = w + h + 4;
-                let mrl = 2usize;
-                let idif_mrl_len = w + h + 4 + (mrl << 1);
-                let mid_edge_len = w.max(h) + 1;
-                let mid_idif_len = w.max(h) + 4;
-                let mid_idif_mrl_len = w.max(h) + 4 + mrl;
+    fn check(backend: SimdBackend) {
+        for (log2_w, log2_h) in [(2, 2), (4, 3), (4, 4)] {
+            let size = IntraRectBlockSize::new(log2_w, log2_h).unwrap();
+            let (w, h) = (size.width(), size.height());
+            let stride = w + 3;
+            let one_sided_len = w + h;
+            let idif_len = w + h + 4;
+            let mrl = 2usize;
+            let idif_mrl_len = w + h + 4 + (mrl << 1);
+            let mid_edge_len = w.max(h) + 1;
+            let mid_idif_len = w.max(h) + 4;
+            let mid_idif_mrl_len = w.max(h) + 4 + mrl;
 
-                for angle in [
-                    IntraDirectionalAngle::D45,
-                    IntraDirectionalAngle::D67,
-                    IntraDirectionalAngle::D203,
-                ] {
-                    let edge8: Vec<u8> = (0..one_sided_len)
-                        .map(|i| ((i * 29 + 3) % 256) as u8)
-                        .collect();
-                    let edges8 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
-                        IntraDirectionalAngleEdges::left(&edge8)
-                    } else {
-                        IntraDirectionalAngleEdges::above(&edge8)
-                    };
-                    let mut compat8 = vec![7u8; stride * h];
-                    let mut typed8 = Vec::from(compat8.as_slice());
-                    predict_intra_directional_angle_rect_into(
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        edges8,
-                        &mut compat8,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_directional_angle_rect_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        edges8,
-                        &mut typed8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed8, compat8);
+            for angle in [
+                IntraDirectionalAngle::D45,
+                IntraDirectionalAngle::D67,
+                IntraDirectionalAngle::D203,
+            ] {
+                let edge8: Vec<u8> = (0..one_sided_len)
+                    .map(|i| ((i * 29 + 3) % 256) as u8)
+                    .collect();
+                let edges8 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
+                    IntraDirectionalAngleEdges::left(&edge8)
+                } else {
+                    IntraDirectionalAngleEdges::above(&edge8)
+                };
+                let mut compat8 = vec![7u8; stride * h];
+                let mut typed8 = Vec::from(compat8.as_slice());
+                predict_intra_directional_angle_rect_into(
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    edges8,
+                    &mut compat8,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_directional_angle_rect_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    edges8,
+                    &mut typed8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let edge10: Vec<u16> = (0..one_sided_len)
-                        .map(|i| ((i * 73 + 11) % 1024) as u16)
-                        .collect();
-                    let edges10 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
-                        IntraDirectionalAngleEdges::left(&edge10)
-                    } else {
-                        IntraDirectionalAngleEdges::above(&edge10)
-                    };
-                    let mut compat10 = vec![11u16; stride * h];
-                    let mut typed10 = Vec::from(compat10.as_slice());
-                    predict_intra_directional_angle_rect_into(
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        edges10,
-                        &mut compat10,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_directional_angle_rect_into_with(
-                        backend,
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        edges10,
-                        &mut typed10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed10, compat10);
+                let edge10: Vec<u16> = (0..one_sided_len)
+                    .map(|i| ((i * 73 + 11) % 1024) as u16)
+                    .collect();
+                let edges10 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
+                    IntraDirectionalAngleEdges::left(&edge10)
+                } else {
+                    IntraDirectionalAngleEdges::above(&edge10)
+                };
+                let mut compat10 = vec![11u16; stride * h];
+                let mut typed10 = Vec::from(compat10.as_slice());
+                predict_intra_directional_angle_rect_into(
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    edges10,
+                    &mut compat10,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_directional_angle_rect_into_with(
+                    backend,
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    edges10,
+                    &mut typed10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed10, compat10);
 
-                    let idif8: Vec<u8> =
-                        (0..idif_len).map(|i| ((i * 41 + 5) % 256) as u8).collect();
-                    let idif_edges8 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
-                        IntraDirectionalAngleIdifEdges::left(&idif8)
-                    } else {
-                        IntraDirectionalAngleIdifEdges::above(&idif8)
-                    };
-                    let mut icompat8 = vec![3u8; stride * h];
-                    let mut ityped8 = Vec::from(icompat8.as_slice());
-                    predict_intra_directional_angle_rect_one_sided_idif_into(
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        idif_edges8,
-                        &mut icompat8,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_directional_angle_rect_one_sided_idif_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        idif_edges8,
-                        &mut ityped8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(ityped8, icompat8);
+                let idif8: Vec<u8> = (0..idif_len).map(|i| ((i * 41 + 5) % 256) as u8).collect();
+                let idif_edges8 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
+                    IntraDirectionalAngleIdifEdges::left(&idif8)
+                } else {
+                    IntraDirectionalAngleIdifEdges::above(&idif8)
+                };
+                let mut icompat8 = vec![3u8; stride * h];
+                let mut ityped8 = Vec::from(icompat8.as_slice());
+                predict_intra_directional_angle_rect_one_sided_idif_into(
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    idif_edges8,
+                    &mut icompat8,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_directional_angle_rect_one_sided_idif_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    idif_edges8,
+                    &mut ityped8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(ityped8, icompat8);
 
-                    let mrl10: Vec<u16> = (0..idif_mrl_len)
-                        .map(|i| ((i * 97 + 19) % 1024) as u16)
-                        .collect();
-                    let mrl_edges10 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
-                        IntraDirectionalAngleIdifEdges::left(&mrl10)
-                    } else {
-                        IntraDirectionalAngleIdifEdges::above(&mrl10)
-                    };
-                    let mut mcompat10 = vec![9u16; stride * h];
-                    let mut mtyped10 = Vec::from(mcompat10.as_slice());
-                    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        mrl_edges10,
-                        mrl,
-                        &mut mcompat10,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
-                        backend,
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        mrl_edges10,
-                        mrl,
-                        &mut mtyped10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(mtyped10, mcompat10);
-                }
+                let mrl10: Vec<u16> = (0..idif_mrl_len)
+                    .map(|i| ((i * 97 + 19) % 1024) as u16)
+                    .collect();
+                let mrl_edges10 = if angle.required_edge() == IntraDirectionalAngleEdge::Left {
+                    IntraDirectionalAngleIdifEdges::left(&mrl10)
+                } else {
+                    IntraDirectionalAngleIdifEdges::above(&mrl10)
+                };
+                let mut mcompat10 = vec![9u16; stride * h];
+                let mut mtyped10 = Vec::from(mcompat10.as_slice());
+                predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    mrl_edges10,
+                    mrl,
+                    &mut mcompat10,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with(
+                    backend,
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    mrl_edges10,
+                    mrl,
+                    &mut mtyped10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(mtyped10, mcompat10);
+            }
 
-                for angle in [
-                    IntraMiddleDirectionalAngle::D113,
-                    IntraMiddleDirectionalAngle::D135,
-                    IntraMiddleDirectionalAngle::D157,
-                ] {
-                    let left8: Vec<u8> = (0..mid_edge_len)
-                        .map(|i| ((i * 31 + 1) % 256) as u8)
-                        .collect();
-                    let above8: Vec<u8> = (0..mid_edge_len)
-                        .map(|i| ((i * 47 + 9) % 256) as u8)
-                        .collect();
-                    let edges8 =
-                        IntraMiddleDirectionalAngleEdges::both(&left8[..=h], &above8[..=w]);
-                    let mut compat8 = vec![5u8; stride * h];
-                    let mut typed8 = Vec::from(compat8.as_slice());
-                    predict_intra_middle_directional_angle_rect_into(
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        edges8,
-                        &mut compat8,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_middle_directional_angle_rect_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        edges8,
-                        &mut typed8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed8, compat8);
+            for angle in [
+                IntraMiddleDirectionalAngle::D113,
+                IntraMiddleDirectionalAngle::D135,
+                IntraMiddleDirectionalAngle::D157,
+            ] {
+                let left8: Vec<u8> = (0..mid_edge_len)
+                    .map(|i| ((i * 31 + 1) % 256) as u8)
+                    .collect();
+                let above8: Vec<u8> = (0..mid_edge_len)
+                    .map(|i| ((i * 47 + 9) % 256) as u8)
+                    .collect();
+                let edges8 = IntraMiddleDirectionalAngleEdges::both(&left8[..=h], &above8[..=w]);
+                let mut compat8 = vec![5u8; stride * h];
+                let mut typed8 = Vec::from(compat8.as_slice());
+                predict_intra_middle_directional_angle_rect_into(
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    edges8,
+                    &mut compat8,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_middle_directional_angle_rect_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    edges8,
+                    &mut typed8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let left10: Vec<u16> = (0..mid_idif_len)
-                        .map(|i| ((i * 83 + 5) % 1024) as u16)
-                        .collect();
-                    let above10: Vec<u16> = (0..mid_idif_len)
-                        .map(|i| ((i * 101 + 13) % 1024) as u16)
-                        .collect();
-                    let idif_edges10 = IntraMiddleDirectionalAngleIdifEdges::both(
-                        &left10[..h + 4],
-                        &above10[..w + 4],
-                    );
-                    let mut icompat10 = vec![17u16; stride * h];
-                    let mut ityped10 = Vec::from(icompat10.as_slice());
-                    predict_intra_middle_directional_angle_rect_idif_into(
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        idif_edges10,
-                        &mut icompat10,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_middle_directional_angle_rect_idif_into_with(
-                        backend,
-                        BitDepth::Ten,
-                        size,
-                        angle,
-                        idif_edges10,
-                        &mut ityped10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(ityped10, icompat10);
+                let left10: Vec<u16> = (0..mid_idif_len)
+                    .map(|i| ((i * 83 + 5) % 1024) as u16)
+                    .collect();
+                let above10: Vec<u16> = (0..mid_idif_len)
+                    .map(|i| ((i * 101 + 13) % 1024) as u16)
+                    .collect();
+                let idif_edges10 =
+                    IntraMiddleDirectionalAngleIdifEdges::both(&left10[..h + 4], &above10[..w + 4]);
+                let mut icompat10 = vec![17u16; stride * h];
+                let mut ityped10 = Vec::from(icompat10.as_slice());
+                predict_intra_middle_directional_angle_rect_idif_into(
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    idif_edges10,
+                    &mut icompat10,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_middle_directional_angle_rect_idif_into_with(
+                    backend,
+                    BitDepth::Ten,
+                    size,
+                    angle,
+                    idif_edges10,
+                    &mut ityped10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(ityped10, icompat10);
 
-                    let left_mrl8: Vec<u8> = (0..mid_idif_mrl_len)
-                        .map(|i| ((i * 59 + 3) % 256) as u8)
-                        .collect();
-                    let above_mrl8: Vec<u8> = (0..mid_idif_mrl_len)
-                        .map(|i| ((i * 67 + 7) % 256) as u8)
-                        .collect();
-                    let mrl_edges8 = IntraMiddleDirectionalAngleIdifMrlEdges::both(
-                        &left_mrl8[..h + 4 + mrl],
-                        &above_mrl8[..w + 4 + mrl],
-                    );
-                    let mut mcompat8 = vec![13u8; stride * h];
-                    let mut mtyped8 = Vec::from(mcompat8.as_slice());
-                    predict_intra_middle_directional_angle_rect_idif_mrl_into(
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        mrl_edges8,
-                        mrl,
-                        &mut mcompat8,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_middle_directional_angle_rect_idif_mrl_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        angle,
-                        mrl_edges8,
-                        mrl,
-                        &mut mtyped8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(mtyped8, mcompat8);
-                }
+                let left_mrl8: Vec<u8> = (0..mid_idif_mrl_len)
+                    .map(|i| ((i * 59 + 3) % 256) as u8)
+                    .collect();
+                let above_mrl8: Vec<u8> = (0..mid_idif_mrl_len)
+                    .map(|i| ((i * 67 + 7) % 256) as u8)
+                    .collect();
+                let mrl_edges8 = IntraMiddleDirectionalAngleIdifMrlEdges::both(
+                    &left_mrl8[..h + 4 + mrl],
+                    &above_mrl8[..w + 4 + mrl],
+                );
+                let mut mcompat8 = vec![13u8; stride * h];
+                let mut mtyped8 = Vec::from(mcompat8.as_slice());
+                predict_intra_middle_directional_angle_rect_idif_mrl_into(
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    mrl_edges8,
+                    mrl,
+                    &mut mcompat8,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_middle_directional_angle_rect_idif_mrl_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    angle,
+                    mrl_edges8,
+                    mrl,
+                    &mut mtyped8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(mtyped8, mcompat8);
             }
         }
     }
 
-    resolve_backend(SimdPolicy::Auto)
-        .expect("auto backend")
-        .enter(Check);
+    check(
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .backend(),
+    );
 }

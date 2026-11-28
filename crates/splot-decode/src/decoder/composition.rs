@@ -13,7 +13,7 @@ use splot_core::headers::atlas_segment::{
     AtlasModeInfo, AtlasMultistreamInfo, AtlasMultistreamSegment,
 };
 use splot_core::headers::content_interpretation::{ColorPrimariesTriple, DerivedColorInfo};
-use splot_core::simd::{SimdBackend, SimdScope};
+use splot_core::simd::SimdBackend;
 use splot_core::types::GLOBAL_XLAYER_ID;
 use splot_recon::{PlaneRect, ReconError};
 
@@ -165,13 +165,43 @@ impl AtlasCompositor {
             self.limits,
             has_alpha,
         )?;
-        texture.backend.enter(Render {
-            compositor: self,
-            frames,
-            info,
+        let backend = texture.backend.backend();
+        let width = geometry.size[0] as usize;
+        let needed = geometry.samples + if has_alpha { width } else { 0 };
+        let mask_bytes = if has_alpha { 2 * width } else { 0 };
+        if self.alpha.capacity_bytes() > mask_bytes {
+            self.alpha = Storage::default();
+        }
+        let storage = &mut self.canvas;
+        if !self
+            .limits
+            .max_decoded_frame_bytes()
+            .allows((storage.capacity_bytes() as u64).saturating_add(mask_bytes as u64))
+        {
+            *storage = Storage::default();
+        }
+        let planes = match geometry.depth {
+            BitDepth::Eight => render::canvas(
+                backend,
+                storage.eight(needed)?,
+                &mut self.alpha,
+                info,
+                &frames,
+                geometry,
+            )?,
+            BitDepth::Ten => render::canvas(
+                backend,
+                storage.ten(needed)?,
+                &mut self.alpha,
+                info,
+                &frames,
+                geometry,
+            )?,
+        };
+        Ok(AtlasComposite {
             geometry,
             pts,
-            has_alpha,
+            planes,
         })
     }
 }
@@ -330,59 +360,6 @@ impl<'a> AtlasComposite<'a> {
             }
         }
         Ok(())
-    }
-}
-
-struct Render<'a, 'b> {
-    compositor: &'a mut AtlasCompositor,
-    frames: [Option<&'b Picture>; 31],
-    info: &'b AtlasMultistreamInfo,
-    geometry: Geometry,
-    pts: i64,
-    has_alpha: bool,
-}
-
-impl<'a> SimdScope<Result<AtlasComposite<'a>>> for Render<'a, '_> {
-    fn run<B: SimdBackend>(self, backend: B) -> Result<AtlasComposite<'a>> {
-        let width = self.geometry.size[0] as usize;
-        let needed = self.geometry.samples + if self.has_alpha { width } else { 0 };
-        let mask_bytes = if self.has_alpha { 2 * width } else { 0 };
-        if self.compositor.alpha.capacity_bytes() > mask_bytes {
-            self.compositor.alpha = Storage::default();
-        }
-        let storage = &mut self.compositor.canvas;
-        if !self
-            .compositor
-            .limits
-            .max_decoded_frame_bytes()
-            .allows((storage.capacity_bytes() as u64).saturating_add(mask_bytes as u64))
-        {
-            *storage = Storage::default();
-        }
-        let backend = backend.narrow();
-        let planes = match self.geometry.depth {
-            BitDepth::Eight => render::canvas(
-                backend,
-                storage.eight(needed)?,
-                &mut self.compositor.alpha,
-                self.info,
-                &self.frames,
-                self.geometry,
-            )?,
-            BitDepth::Ten => render::canvas(
-                backend,
-                storage.ten(needed)?,
-                &mut self.compositor.alpha,
-                self.info,
-                &self.frames,
-                self.geometry,
-            )?,
-        };
-        Ok(AtlasComposite {
-            geometry: self.geometry,
-            pts: self.pts,
-            planes,
-        })
     }
 }
 

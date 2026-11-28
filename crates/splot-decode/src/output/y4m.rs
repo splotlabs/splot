@@ -18,7 +18,7 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_y4m_stream_to_writer(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
@@ -30,8 +30,9 @@ pub(crate) fn write_y4m_stream_to_writer(
     let mut seen_xlayer = None;
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
+    let kernels = splot_recon::KernelSelection::of(session.backend());
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,
@@ -47,15 +48,25 @@ pub(crate) fn write_y4m_stream_to_writer(
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
-                    write_display(backend, frame.get(), grain, &mut spare.eight, |display| {
-                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
-                    })
+                    write_display(
+                        backend,
+                        kernels,
+                        frame.get(),
+                        grain,
+                        &mut spare.eight,
+                        |display| write_y4m_frame(&mut writer, &mut target, display, frame_rate),
+                    )
                 }
                 PipelineDecodedFrame::Ten(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Ten)?;
-                    write_display(backend, frame.get(), grain, &mut spare.ten, |display| {
-                        write_y4m_frame(&mut writer, &mut target, display, frame_rate)
-                    })
+                    write_display(
+                        backend,
+                        kernels,
+                        frame.get(),
+                        grain,
+                        &mut spare.ten,
+                        |display| write_y4m_frame(&mut writer, &mut target, display, frame_rate),
+                    )
                 }
             }
         },

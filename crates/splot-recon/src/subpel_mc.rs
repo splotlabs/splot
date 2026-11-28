@@ -235,7 +235,7 @@ trait SubpelRunner: Copy {
 struct BaselineSubpel;
 
 #[derive(Clone, Copy)]
-struct TypedSubpel<B>(B);
+struct TypedSubpel(SimdBackend);
 
 impl SubpelRunner for BaselineSubpel {
     #[cfg(target_arch = "x86_64")]
@@ -255,7 +255,7 @@ impl SubpelRunner for BaselineSubpel {
     subpel_methods!(self, baseline);
 }
 
-impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
+impl SubpelRunner for TypedSubpel {
     #[cfg(target_arch = "x86_64")]
     #[expect(clippy::inline_always, reason = "one check per kernel call")]
     #[inline(always)]
@@ -270,7 +270,7 @@ impl<B: SimdBackend> SubpelRunner for TypedSubpel<B> {
         self.0.neon_token()
     }
 
-    subpel_methods!(self, typed(with_simd, self.0.narrow()));
+    subpel_methods!(self, typed(with_simd, self.0));
 }
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
@@ -807,12 +807,12 @@ pub fn subpel_predict_block_into<T: ReconSample>(
     subpel_predict_block_strided_into(reference, params, output, params.w)
 }
 
-/// Typed [`subpel_predict_block_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_into`].
-pub fn subpel_predict_block_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_block_into_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
@@ -845,12 +845,12 @@ pub fn subpel_predict_block_strided_into<T: ReconSample>(
     )
 }
 
-/// Typed [`subpel_predict_block_strided_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_strided_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_strided_into`].
-pub fn subpel_predict_block_strided_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_block_strided_into_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
@@ -979,16 +979,15 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample, P: Compou
     )
 }
 
-/// Typed [`subpel_predict_block_compound_intermediate_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_compound_intermediate_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_compound_intermediate_into`].
 pub fn subpel_predict_block_compound_intermediate_into_with<
-    B: SimdBackend,
     T: ReconSample,
     P: CompoundPredictor,
 >(
-    backend: B,
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     scratch: Option<&mut [i16]>,
@@ -1170,13 +1169,13 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     )
 }
 
-/// Typed [`subpel_predict_block_compound_average_strided_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_compound_average_strided_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_compound_average_strided_into`].
 #[expect(clippy::too_many_arguments)]
-pub fn subpel_predict_block_compound_average_strided_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_block_compound_average_strided_into_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     pred0: &[i32],
@@ -1251,17 +1250,16 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<
     )
 }
 
-/// Typed [`subpel_predict_block_compound_average_strided_into_u8`] using caller-selected `backend`.
+/// [`subpel_predict_block_compound_average_strided_into_u8`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_compound_average_strided_into_u8`].
 #[expect(clippy::too_many_arguments)]
 pub fn subpel_predict_block_compound_average_strided_into_u8_with<
-    B: SimdBackend,
     T: ReconSample,
     P: CompoundPredictor,
 >(
-    backend: B,
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     pred0: &[P],
@@ -1382,17 +1380,16 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
     )
 }
 
-/// Typed [`subpel_predict_block_compound_average_unscaled_strided_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_compound_average_unscaled_strided_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_compound_average_unscaled_strided_into`].
 #[expect(clippy::too_many_arguments)]
 pub fn subpel_predict_block_compound_average_unscaled_strided_into_with<
-    B: SimdBackend,
     T: ReconSample,
     O: ReconSample,
 >(
-    backend: B,
+    backend: SimdBackend,
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,
@@ -1481,7 +1478,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     )
 }
 
-/// Typed [`subpel_predict_block_compound_average_fast_validated_strided_into`] using caller-selected `backend`.
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_compound_average_fast_validated_strided_into`].
@@ -1489,11 +1486,10 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
 #[inline]
 #[expect(clippy::too_many_arguments)]
 pub fn subpel_predict_block_compound_average_fast_validated_strided_into_with<
-    B: SimdBackend,
     T: ReconSample,
     O: ReconSample,
 >(
-    backend: B,
+    backend: SimdBackend,
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
     reference1: &ReferencePlaneView<'_, T>,

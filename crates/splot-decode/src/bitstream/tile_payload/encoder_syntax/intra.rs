@@ -1000,18 +1000,18 @@ impl IntraTileSyntax {
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
         let [u_index, v_index] = [leaf.plan_index(u_index)?, leaf.plan_index(v_index)?];
         let _quant = self.tools.quant_scopes();
-        self.backend
-            .enter(PairScope {
-                plan: &leaf.plan,
-                units: [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
-                tx_cctx: (u.tx_type as usize, usize::from(u.cctx)),
+        leaf.plan
+            .reconstruct_cctx_pair(
+                self.backend.backend(),
+                [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
+                (u.tx_type as usize, usize::from(u.cctx)),
                 scratch,
                 workspace,
                 block_decoded,
-                qindex: self.tools.qindex,
-                intra_edge: leaf.intra_edge,
-                luma_context: leaf.luma_context,
-            })
+                self.tools.qindex,
+                leaf.intra_edge,
+                leaf.luma_context,
+            )
             .map_err(rule("CCTX reconstruction"))
     }
 
@@ -1102,21 +1102,21 @@ impl IntraTileSyntax {
         };
         let _quant = self.tools.quant_scopes();
         let unit_index = leaf.plan_index(index)?;
-        self.backend
-            .enter(UnitScope {
-                plan: &leaf.plan,
+        leaf.plan
+            .reconstruct_unit(
+                self.backend.backend(),
                 unit_index,
                 quant,
                 eob,
-                block_meta: (tx_type as usize, use_tcq, ist),
+                (tx_type as usize, use_tcq, ist),
                 palette_map,
                 scratch,
                 workspace,
                 block_decoded,
-                quant_lossless: (self.tools.qindex, self.tools.lossless),
-                intra_edge: leaf.intra_edge,
-                luma_context: leaf.luma_context,
-            })
+                (self.tools.qindex, self.tools.lossless),
+                leaf.intra_edge,
+                leaf.luma_context,
+            )
             .map_err(rule("reconstruction"))
     }
 
@@ -1438,84 +1438,4 @@ fn plane_id(plane: usize) -> Result<PlaneId> {
         .get(plane)
         .copied()
         .ok_or(EncoderSyntaxError::Unsupported("plane index"))
-}
-
-struct PairScope<'a> {
-    plan: &'a crate::residual::pipeline::GeneralIntraResidualPlan,
-    units: [(usize, &'a [i32], usize); 2],
-    tx_cctx: (usize, usize),
-    scratch: &'a mut crate::pipeline::general_intra::GeneralIntraReconScratch<u16>,
-    workspace: &'a mut CurrentFrameWorkspace<u16>,
-    block_decoded: &'a crate::bitstream::tile_payload::TileBlockDecodedState,
-    qindex: u32,
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    luma_context: LumaTransformTypeContext,
-}
-
-impl
-    splot_core::simd::SimdScope<
-        core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError>,
-    > for PairScope<'_>
-{
-    fn run<B: splot_core::simd::SimdBackend>(
-        self,
-        backend: B,
-    ) -> core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError> {
-        self.plan.reconstruct_cctx_pair(
-            backend.narrow(),
-            self.units,
-            self.tx_cctx,
-            self.scratch,
-            self.workspace,
-            self.block_decoded,
-            self.qindex,
-            self.intra_edge,
-            self.luma_context,
-        )
-    }
-}
-
-struct UnitScope<'a> {
-    plan: &'a crate::residual::pipeline::GeneralIntraResidualPlan,
-    unit_index: usize,
-    quant: &'a [i32],
-    eob: usize,
-    block_meta: (
-        usize,
-        bool,
-        Option<crate::bitstream::tile_payload::IntraIstSyntax>,
-    ),
-    palette_map: Option<&'a [u8]>,
-    scratch: &'a mut crate::pipeline::general_intra::GeneralIntraReconScratch<u16>,
-    workspace: &'a mut CurrentFrameWorkspace<u16>,
-    block_decoded: &'a crate::bitstream::tile_payload::TileBlockDecodedState,
-    quant_lossless: (u32, bool),
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    luma_context: LumaTransformTypeContext,
-}
-
-impl
-    splot_core::simd::SimdScope<
-        core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError>,
-    > for UnitScope<'_>
-{
-    fn run<B: splot_core::simd::SimdBackend>(
-        self,
-        backend: B,
-    ) -> core::result::Result<(), crate::bitstream::tile_payload::GeneralIntraResidualError> {
-        self.plan.reconstruct_unit(
-            backend.narrow(),
-            self.unit_index,
-            self.quant,
-            self.eob,
-            self.block_meta,
-            self.palette_map,
-            self.scratch,
-            self.workspace,
-            self.block_decoded,
-            self.quant_lossless,
-            self.intra_edge,
-            self.luma_context,
-        )
-    }
 }

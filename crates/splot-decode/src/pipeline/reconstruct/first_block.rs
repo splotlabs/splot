@@ -26,8 +26,8 @@ const MI_SIZE: usize = 4;
 const MAX_DIP_EDGE_SAMPLES: usize = 80;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     dip_mode: u8,
@@ -145,8 +145,8 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<B: SimdBackend,
     )
 }
 
-pub(crate) fn predict_directional_noneighbour_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
+    backend: SimdBackend,
     mode: SupportedDirectionalLumaMode,
     block_size: IntraRectBlockSize,
     side: usize,
@@ -414,11 +414,8 @@ fn paeth_reference_edges_into<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
+    backend: SimdBackend,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,

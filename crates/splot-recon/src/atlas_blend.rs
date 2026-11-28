@@ -23,8 +23,8 @@ pub trait AtlasSample: ReconSample {
     ///
     /// # Errors
     /// Returns a length error if the required texture or alpha samples are missing.
-    fn blend_atlas_row<B: SimdBackend>(
-        backend: B,
+    fn blend_atlas_row(
+        backend: SimdBackend,
         canvas: &mut [Self],
         texture: &[Self],
         alpha: AtlasAlphaRow<'_>,
@@ -37,8 +37,8 @@ pub trait AtlasSample: ReconSample {
     ///
     /// # Errors
     /// Returns an error for an empty source, invalid target coordinates, or an overflowing index.
-    fn nearest_atlas_row<B: SimdBackend>(
-        backend: B,
+    fn nearest_atlas_row(
+        backend: SimdBackend,
         out: &mut [Self],
         source: &[Self],
         width: u32,
@@ -48,8 +48,8 @@ pub trait AtlasSample: ReconSample {
 }
 
 impl<T: IntraLaneSample> AtlasSample for T {
-    fn blend_atlas_row<B: SimdBackend>(
-        backend: B,
+    fn blend_atlas_row(
+        backend: SimdBackend,
         canvas: &mut [T],
         texture: &[T],
         alpha: AtlasAlphaRow<'_>,
@@ -68,16 +68,15 @@ impl<T: IntraLaneSample> AtlasSample for T {
                 });
             }
         }
-        let narrow = backend.narrow();
-        narrow.vectorize(|| match alpha {
-            AtlasAlphaRow::Eight(row) => blend(narrow.token(), canvas, texture, row, 8),
-            AtlasAlphaRow::Ten(row) => blend(narrow.token(), canvas, texture, row, 10),
+        splot_core::with_simd!(backend, simd => match alpha {
+            AtlasAlphaRow::Eight(row) => blend(simd, canvas, texture, row, 8),
+            AtlasAlphaRow::Ten(row) => blend(simd, canvas, texture, row, 10),
         });
         Ok(())
     }
 
-    fn nearest_atlas_row<B: SimdBackend>(
-        backend: B,
+    fn nearest_atlas_row(
+        backend: SimdBackend,
         out: &mut [T],
         source: &[T],
         width: u32,
@@ -108,9 +107,7 @@ impl<T: IntraLaneSample> AtlasSample for T {
             out.copy_from_slice(&source[first as usize..][..out.len()]); // splot-copy-ok: place a native row in the presentation canvas
             return Ok(());
         }
-        let narrow = backend.narrow();
-        narrow.vectorize(|| {
-            let simd = narrow.token();
+        splot_core::with_simd!(backend, simd => {
             for (group, out) in out.chunks_mut(8).enumerate() {
                 let mut indices = [0; 8];
                 for (lane, index) in indices.iter_mut().take(out.len()).enumerate() {

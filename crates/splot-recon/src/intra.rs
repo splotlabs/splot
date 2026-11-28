@@ -17,7 +17,9 @@ use crate::wide_kernels::{PaletteFn, WideKernels};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::Avx512;
-use fearless_simd::{Bytes as _, Simd, SimdBase, SimdCombine as _, u8x16, u8x64, u16x8};
+use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{SimdCombine as _, u8x64};
 use splot_core::simd::SimdBackend;
 
 const MIN_SQUARE_BLOCK_LOG2: u8 = 2;
@@ -419,7 +421,7 @@ pub fn predict_intra_dc_square<T: ReconSample>(
 struct BaselineIntra;
 
 #[derive(Clone, Copy)]
-struct TypedIntra<B: SimdBackend>(B, KernelSelection);
+struct TypedIntra(SimdBackend, KernelSelection);
 
 trait IntraRunner: Copy {
     fn palette<P: PaletteSample>(
@@ -450,7 +452,7 @@ impl IntraRunner for BaselineIntra {
     }
 }
 
-impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
+impl IntraRunner for TypedIntra {
     #[inline]
     fn palette<P: PaletteSample>(
         self,
@@ -465,14 +467,12 @@ impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
         {
             return P::wide_palette(wide)(low, high, map, output);
         }
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => palette_lanes(simd, low, high, map, output))
+        splot_core::with_simd!(self.0, simd => palette_lanes(simd, low, high, map, output))
     }
 
     #[inline]
     fn average<P: IntraLaneSample>(self, primary: &mut [P], secondary: &[P]) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => average_lanes(simd, primary, secondary));
+        splot_core::with_simd!(self.0, simd => average_lanes(simd, primary, secondary));
     }
 }
 
@@ -519,13 +519,13 @@ pub fn predict_intra_palette_into<T: ReconSample>(
     predict_intra_palette_into_with_runner(BaselineIntra, colors, map, output)
 }
 
-/// Typed [`predict_intra_palette_into`] using caller-selected `backend` and
+/// [`predict_intra_palette_into`] using caller-selected `backend` and
 /// the decoder's `kernels`.
 ///
 /// # Errors
 /// Returns [`ReconError::BufferLengthMismatch`] for non-matching or non-16-aligned lengths.
-pub fn predict_intra_palette_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_palette_into_with<T: ReconSample>(
+    backend: SimdBackend,
     kernels: KernelSelection,
     colors: &[u16; 8],
     map: &[u8],
@@ -538,6 +538,7 @@ pub fn predict_intra_palette_into_with<B: SimdBackend, T: ReconSample>(
 /// `u16` from the low and high byte tables.
 trait PaletteSample: Sized {
     fn store<S: Simd>(simd: S, low: u8x16<S>, high: Option<u8x16<S>>, out: &mut [Self; 16]);
+    #[cfg(target_arch = "x86_64")]
     fn store64<S: Simd>(simd: S, low: u8x64<S>, high: Option<u8x64<S>>, out: &mut [Self; 64]);
     /// The palette entry of `kernels` for this sample type.
     #[cfg(target_arch = "x86_64")]
@@ -551,6 +552,7 @@ impl PaletteSample for u8 {
     }
 
     #[inline]
+    #[cfg(target_arch = "x86_64")]
     fn store64<S: Simd>(_simd: S, low: u8x64<S>, _high: Option<u8x64<S>>, out: &mut [u8; 64]) {
         low.store_slice(out);
     }
@@ -573,6 +575,7 @@ impl PaletteSample for u16 {
     }
 
     #[inline]
+    #[cfg(target_arch = "x86_64")]
     fn store64<S: Simd>(simd: S, low: u8x64<S>, high: Option<u8x64<S>>, out: &mut [u16; 64]) {
         let high = high.unwrap_or(u8x64::splat(simd, 0));
         let (low0, low1) = simd.widen_u8x64(low);
@@ -620,6 +623,7 @@ fn palette_lanes<S: Simd, P: PaletteSample>(
 
 /// [`palette_lanes`] for a map of whole 64-sample groups, 64 lanes a step:
 /// the color bytes repeat in each 16-lane block of the table.
+#[cfg(target_arch = "x86_64")]
 #[expect(
     clippy::inline_always,
     reason = "must be compiled inside its caller's AVX-512 context"
@@ -708,12 +712,12 @@ pub fn average_intra_predictions<T: ReconSample>(primary: &mut [T], secondary: &
     average_intra_predictions_with_runner(BaselineIntra, primary, secondary)
 }
 
-/// Typed [`average_intra_predictions`] using caller-selected `backend`.
+/// [`average_intra_predictions`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns [`ReconError::BufferLengthMismatch`] for non-matching or non-16-aligned lengths.
-pub fn average_intra_predictions_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn average_intra_predictions_with<T: ReconSample>(
+    backend: SimdBackend,
     primary: &mut [T],
     secondary: &[T],
 ) -> Result<()> {
@@ -738,6 +742,7 @@ fn average_lanes<S: Simd, P: IntraLaneSample>(simd: S, primary: &mut [P], second
 }
 
 #[cfg(test)]
+#[cfg(target_arch = "x86_64")]
 #[path = "intra_wide_tests.rs"]
 mod wide_tests;
 
@@ -1212,65 +1217,64 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let colors8 = [10, 42, 99, 128, 200, 211, 240, 255];
-                let colors10 = [10, 310, 520, 610, 740, 880, 990, 1020];
-                let map: Vec<u8> = (0..64).map(|i| (i * 3) as u8 % 7).collect();
+        fn check(backend: SimdBackend) {
+            let colors8 = [10, 42, 99, 128, 200, 211, 240, 255];
+            let colors10 = [10, 310, 520, 610, 740, 880, 990, 1020];
+            let map: Vec<u8> = (0..64).map(|i| (i * 3) as u8 % 7).collect();
 
-                let (mut pal8_compat, mut pal8_typed) = (vec![0u8; 64], vec![0u8; 64]);
-                assert_eq!(
-                    predict_intra_palette_into_with(
-                        backend,
-                        KernelSelection::default(),
-                        &colors8,
-                        &map,
-                        &mut pal8_typed
-                    )
-                    .unwrap(),
-                    predict_intra_palette_into(&colors8, &map, &mut pal8_compat).unwrap()
-                );
-                assert_eq!(pal8_typed, pal8_compat);
+            let (mut pal8_compat, mut pal8_typed) = (vec![0u8; 64], vec![0u8; 64]);
+            assert_eq!(
+                predict_intra_palette_into_with(
+                    backend,
+                    KernelSelection::default(),
+                    &colors8,
+                    &map,
+                    &mut pal8_typed
+                )
+                .unwrap(),
+                predict_intra_palette_into(&colors8, &map, &mut pal8_compat).unwrap()
+            );
+            assert_eq!(pal8_typed, pal8_compat);
 
-                let (mut pal10_compat, mut pal10_typed) = (vec![0u16; 64], vec![0u16; 64]);
-                assert_eq!(
-                    predict_intra_palette_into_with(
-                        backend,
-                        KernelSelection::default(),
-                        &colors10,
-                        &map,
-                        &mut pal10_typed
-                    )
-                    .unwrap(),
-                    predict_intra_palette_into(&colors10, &map, &mut pal10_compat).unwrap()
-                );
-                assert_eq!(pal10_typed, pal10_compat);
+            let (mut pal10_compat, mut pal10_typed) = (vec![0u16; 64], vec![0u16; 64]);
+            assert_eq!(
+                predict_intra_palette_into_with(
+                    backend,
+                    KernelSelection::default(),
+                    &colors10,
+                    &map,
+                    &mut pal10_typed
+                )
+                .unwrap(),
+                predict_intra_palette_into(&colors10, &map, &mut pal10_compat).unwrap()
+            );
+            assert_eq!(pal10_typed, pal10_compat);
 
-                let sec8: Vec<u8> = (0..64).map(|i| ((i * 19 + 5) % 256) as u8).collect();
-                let (mut avg8_compat, mut avg8_typed) = (
-                    Vec::from(pal8_compat.as_slice()),
-                    Vec::from(pal8_compat.as_slice()),
-                );
-                average_intra_predictions(&mut avg8_compat, &sec8).unwrap();
-                average_intra_predictions_with(backend, &mut avg8_typed, &sec8).unwrap();
-                assert_eq!(avg8_typed, avg8_compat);
+            let sec8: Vec<u8> = (0..64).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+            let (mut avg8_compat, mut avg8_typed) = (
+                Vec::from(pal8_compat.as_slice()),
+                Vec::from(pal8_compat.as_slice()),
+            );
+            average_intra_predictions(&mut avg8_compat, &sec8).unwrap();
+            average_intra_predictions_with(backend, &mut avg8_typed, &sec8).unwrap();
+            assert_eq!(avg8_typed, avg8_compat);
 
-                let sec10: Vec<u16> = (0..64).map(|i| ((i * 71 + 9) % 1024) as u16).collect();
-                let (mut avg10_compat, mut avg10_typed) = (
-                    Vec::from(pal10_compat.as_slice()),
-                    Vec::from(pal10_compat.as_slice()),
-                );
-                average_intra_predictions(&mut avg10_compat, &sec10).unwrap();
-                average_intra_predictions_with(backend, &mut avg10_typed, &sec10).unwrap();
-                assert_eq!(avg10_typed, avg10_compat);
-            }
+            let sec10: Vec<u16> = (0..64).map(|i| ((i * 71 + 9) % 1024) as u16).collect();
+            let (mut avg10_compat, mut avg10_typed) = (
+                Vec::from(pal10_compat.as_slice()),
+                Vec::from(pal10_compat.as_slice()),
+            );
+            average_intra_predictions(&mut avg10_compat, &sec10).unwrap();
+            average_intra_predictions_with(backend, &mut avg10_typed, &sec10).unwrap();
+            assert_eq!(avg10_typed, avg10_compat);
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

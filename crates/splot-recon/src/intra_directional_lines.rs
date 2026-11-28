@@ -179,7 +179,7 @@ pub(super) trait LineRunner: Copy {
 pub(super) struct BaselineLines;
 
 #[derive(Clone, Copy)]
-pub(super) struct TypedLines<B>(pub(super) B);
+pub(super) struct TypedLines(pub(super) SimdBackend);
 
 #[inline]
 fn select_left_simd<S: Simd, P: LineSample>(
@@ -237,14 +237,14 @@ impl LineRunner for BaselineLines {
     line_methods!(self, baseline);
 }
 
-impl<B: SimdBackend> LineRunner for TypedLines<B> {
+impl LineRunner for TypedLines {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
-        self.0.narrow().avx2_token()
+        self.0.avx2_token()
     }
 
-    line_methods!(self, typed(with_simd, self.0.narrow()));
+    line_methods!(self, typed(with_simd, self.0));
 }
 
 /// A sample type with a directional line kernel and a column transpose.

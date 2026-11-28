@@ -198,12 +198,13 @@ pub fn secondary_inverse_transform(
     secondary_inverse_transform_prefix(dequant, coded, params).map(|_| ())
 }
 
-/// Typed [`secondary_inverse_transform`] using caller-selected `backend`.
+/// [`secondary_inverse_transform`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same shape, parameter, and buffer errors as [`secondary_inverse_transform`].
-pub fn secondary_inverse_transform_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn secondary_inverse_transform_with(
+    backend: SimdBackend,
     dequant: &mut [i32],
     params: &SecondaryInverseTransform,
 ) -> Result<()> {
@@ -222,19 +223,15 @@ pub(crate) fn secondary_inverse_transform_prefix(
     secondary_inverse_transform_prefix_with_runner(BaselineIst, dequant, coded, params)
 }
 
-/// Typed [`secondary_inverse_transform_prefix`] using caller-selected `backend`.
-pub(crate) fn secondary_inverse_transform_prefix_with<B: SimdBackend>(
-    backend: B,
+/// [`secondary_inverse_transform_prefix`] using caller-selected `backend`.
+#[inline]
+pub(crate) fn secondary_inverse_transform_prefix_with(
+    backend: SimdBackend,
     dequant: &mut [i32],
     coded: usize,
     params: &SecondaryInverseTransform,
 ) -> Result<usize> {
-    secondary_inverse_transform_prefix_with_runner(
-        TypedIst(backend.narrow()),
-        dequant,
-        coded,
-        params,
-    )
+    secondary_inverse_transform_prefix_with_runner(TypedIst(backend), dequant, coded, params)
 }
 
 fn secondary_inverse_transform_prefix_with_runner<R: IstRunner>(
@@ -286,16 +283,17 @@ pub(crate) fn secondary_inverse_transform_quant(
     secondary_inverse_transform_quant_with_runner(BaselineIst, quant, quantizers, params, dequant)
 }
 
-/// Typed [`secondary_inverse_transform_quant`] using caller-selected `backend`.
-pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
-    backend: B,
+/// [`secondary_inverse_transform_quant`] using caller-selected `backend`.
+#[inline]
+pub(crate) fn secondary_inverse_transform_quant_with(
+    backend: SimdBackend,
     quant: SecondaryQuant<'_>,
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
     dequant: SecondaryOutput<'_>,
 ) -> Result<usize> {
     secondary_inverse_transform_quant_with_runner(
-        TypedIst(backend.narrow()),
+        TypedIst(backend),
         quant,
         quantizers,
         params,
@@ -309,8 +307,9 @@ pub(crate) fn secondary_inverse_transform_quant_with<B: SimdBackend>(
 /// # Errors
 /// Returns the [`secondary_inverse_transform`] errors, or a buffer mismatch
 /// if `quant` contains more than `params.n` coefficients.
-pub fn secondary_inverse_transform_scan_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn secondary_inverse_transform_scan_with(
+    backend: SimdBackend,
     quant: &[i32],
     quantizers: (u32, u32, u32),
     params: &SecondaryInverseTransform,
@@ -411,10 +410,10 @@ impl IstRunner for BaselineIst {
 }
 
 #[derive(Clone, Copy)]
-struct TypedIst<B: SimdBackend>(B);
+struct TypedIst(SimdBackend);
 
-impl<B: SimdBackend> IstRunner for TypedIst<B> {
-    ist_runner_methods!(self, typed(with_simd, self.0.narrow()));
+impl IstRunner for TypedIst {
+    ist_runner_methods!(self, typed(with_simd, self.0));
 }
 
 #[inline]
@@ -1096,70 +1095,7 @@ mod tests {
 
     #[test]
     fn typed_backend_variants_match_compatibility_routes() {
-        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
-
-        struct Probe<'a> {
-            params: &'a SecondaryInverseTransform,
-            quant: &'a [i32],
-            dequant_init: &'a [i32],
-            coded: usize,
-            quantizers: (u32, u32, u32),
-        }
-        impl
-            SimdScope<(
-                Vec<i32>,
-                (usize, Vec<i32>),
-                (usize, Vec<i32>),
-                (usize, [i32; 64]),
-            )> for Probe<'_>
-        {
-            fn run<B: SimdBackend>(
-                self,
-                backend: B,
-            ) -> (
-                Vec<i32>,
-                (usize, Vec<i32>),
-                (usize, Vec<i32>),
-                (usize, [i32; 64]),
-            ) {
-                let mut full = Vec::from(self.dequant_init);
-                secondary_inverse_transform_with(backend, &mut full, self.params).unwrap();
-
-                let mut pref = Vec::from(self.dequant_init);
-                let pref_len = secondary_inverse_transform_prefix_with(
-                    backend,
-                    &mut pref,
-                    self.coded,
-                    self.params,
-                )
-                .unwrap();
-
-                let mut q_out = vec![0i32; self.dequant_init.len()];
-                let q_len = secondary_inverse_transform_quant_with(
-                    backend,
-                    SecondaryQuant::Raster(self.quant),
-                    self.quantizers,
-                    self.params,
-                    SecondaryOutput::Full(&mut q_out),
-                )
-                .unwrap();
-
-                let mut rows = [0i32; 64];
-                let r_len = if self.params.w >= 16 {
-                    secondary_inverse_transform_quant_with(
-                        backend,
-                        SecondaryQuant::Raster(self.quant),
-                        self.quantizers,
-                        self.params,
-                        SecondaryOutput::Rows8(&mut rows),
-                    )
-                    .unwrap()
-                } else {
-                    0
-                };
-                (full, (pref_len, pref), (q_len, q_out), (r_len, rows))
-            }
-        }
+        use splot_core::simd::{SimdPolicy, resolve_backend};
 
         let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
         for (w, h, n, kernel, transpose) in [
@@ -1200,14 +1136,37 @@ mod tests {
                 0
             };
 
-            let (t_full, (t_pref_len, t_pref), (t_q_len, t_q), (t_r_len, t_rows)) =
-                resolved.enter(Probe {
-                    params: &p,
-                    quant: &quant,
-                    dequant_init: &dequant_init,
-                    coded,
+            let backend = resolved.backend();
+            let mut t_full = dequant_init.clone();
+            secondary_inverse_transform_with(backend, &mut t_full, &p).unwrap();
+
+            let mut t_pref = dequant_init.clone();
+            let t_pref_len =
+                secondary_inverse_transform_prefix_with(backend, &mut t_pref, coded, &p).unwrap();
+
+            let mut t_q = vec![0i32; dequant_init.len()];
+            let t_q_len = secondary_inverse_transform_quant_with(
+                backend,
+                SecondaryQuant::Raster(&quant),
+                quantizers,
+                &p,
+                SecondaryOutput::Full(&mut t_q),
+            )
+            .unwrap();
+
+            let mut t_rows = [0i32; 64];
+            let t_r_len = if p.w >= 16 {
+                secondary_inverse_transform_quant_with(
+                    backend,
+                    SecondaryQuant::Raster(&quant),
                     quantizers,
-                });
+                    &p,
+                    SecondaryOutput::Rows8(&mut t_rows),
+                )
+                .unwrap()
+            } else {
+                0
+            };
             assert_eq!(t_full, c_full);
             assert_eq!((t_pref_len, t_pref), (c_pref_len, c_pref));
             assert_eq!((t_q_len, t_q), (c_q_len, c_q));

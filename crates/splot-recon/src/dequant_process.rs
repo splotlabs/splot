@@ -179,19 +179,19 @@ pub fn dequantize_block(
     Ok(written)
 }
 
-/// Typed [`dequantize_block`] using caller-selected `backend` without baseline re-probing.
+/// [`dequantize_block`] using caller-selected `backend` without baseline re-probing.
 ///
 /// # Errors
 /// Returns the same shape, buffer, and denominator errors as [`dequantize_block`].
-pub fn dequantize_block_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn dequantize_block_with(
+    backend: SimdBackend,
     params: &DequantBlockParams,
     quant: &[i32],
     out: &mut [i32],
 ) -> Result<usize> {
     let written = dequant_block_prefix(params, quant.len(), out.len())?;
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => dequantize_groups(simd, params, quant, &mut out[..written]))?;
+    splot_core::with_simd!(backend, simd => dequantize_groups(simd, params, quant, &mut out[..written]))?;
     Ok(written)
 }
 
@@ -934,21 +934,7 @@ mod tests {
 
     #[test]
     fn dequantize_block_with_matches_compatibility_route() {
-        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
-
-        struct Probe<'a> {
-            params: &'a DequantBlockParams,
-            quant: &'a [i32],
-        }
-        impl SimdScope<Result<Vec<i32>>> for Probe<'_> {
-            fn run<B: SimdBackend>(self, backend: B) -> Result<Vec<i32>> {
-                let len = self.params.tx_width * self.params.tx_height;
-                let mut out = vec![0i32; len];
-                let written = dequantize_block_with(backend, self.params, self.quant, &mut out)?;
-                out.truncate(written);
-                Ok(out)
-            }
-        }
+        use splot_core::simd::{SimdPolicy, resolve_backend};
 
         let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
@@ -983,12 +969,11 @@ mod tests {
                     let mut compat = vec![0i32; tx_width * tx_height];
                     let written = dequantize_block(&params, &quant, &mut compat).unwrap();
                     compat.truncate(written);
-                    let typed = resolved
-                        .enter(Probe {
-                            params: &params,
-                            quant: &quant,
-                        })
-                        .unwrap();
+                    let mut typed = vec![0i32; tx_width * tx_height];
+                    let written =
+                        dequantize_block_with(resolved.backend(), &params, &quant, &mut typed)
+                            .unwrap();
+                    typed.truncate(written);
                     assert_eq!(typed, compat);
                 }
             }

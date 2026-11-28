@@ -1997,11 +1997,8 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_block_rect_with_prediction_core<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,

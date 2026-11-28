@@ -207,7 +207,7 @@ const fn chunk_writes(reach: usize) -> usize {
 struct BaselineDeblock;
 
 #[derive(Clone, Copy)]
-struct TypedDeblock<B: SimdBackend>(B);
+struct TypedDeblock(SimdBackend);
 
 trait DeblockRunner: Copy {
     #[cfg(target_arch = "x86_64")]
@@ -245,7 +245,7 @@ impl DeblockRunner for BaselineDeblock {
     }
 }
 
-impl<B: SimdBackend> DeblockRunner for TypedDeblock<B> {
+impl DeblockRunner for TypedDeblock {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
@@ -261,8 +261,7 @@ impl<B: SimdBackend> DeblockRunner for TypedDeblock<B> {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => portable_chunk::<_, E, VERTICAL>(
+        splot_core::with_simd!(self.0, simd => portable_chunk::<_, E, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
     }
@@ -297,12 +296,12 @@ pub fn deblock_vertical_edges<T: ReconSample>(
 }
 
 /// Filters vertical edges like [`deblock_vertical_edges`] using the caller's
-/// startup-selected static SIMD backend `backend`.
+/// startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_vertical_edges`].
-pub fn deblock_vertical_edges_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_vertical_edges_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -355,13 +354,13 @@ pub fn deblock_vertical_edge_band<T: ReconSample>(
 }
 
 /// Filters a vertical edge band like [`deblock_vertical_edge_band`] using
-/// the caller's startup-selected static SIMD backend `backend`.
+/// the caller's startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_vertical_edge_band`].
 #[expect(clippy::too_many_arguments)]
-pub fn deblock_vertical_edge_band_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_vertical_edge_band_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -476,12 +475,12 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
 }
 
 /// Filters horizontal edges like [`deblock_horizontal_edges`] using the
-/// caller's startup-selected static SIMD backend `backend`.
+/// caller's startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_horizontal_edges`].
-pub fn deblock_horizontal_edges_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_horizontal_edges_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,

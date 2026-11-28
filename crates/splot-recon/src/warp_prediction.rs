@@ -141,7 +141,7 @@ pub(super) trait WarpRunner: Copy {
 struct BaselineWarp;
 
 #[derive(Clone, Copy)]
-struct TypedWarp<B>(B);
+struct TypedWarp(SimdBackend);
 
 impl WarpRunner for BaselineWarp {
     #[cfg(target_arch = "x86_64")]
@@ -202,17 +202,17 @@ impl WarpRunner for BaselineWarp {
     }
 }
 
-impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
+impl WarpRunner for TypedWarp {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<Avx2> {
-        self.0.narrow().avx2_token()
+        self.0.avx2_token()
     }
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
     fn neon_token(self) -> Option<fearless_simd::Neon> {
-        self.0.narrow().neon_token()
+        self.0.neon_token()
     }
 
     #[inline]
@@ -224,11 +224,10 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         out: (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             prepared.clipped_sections(
-                TypedWarp(narrow),
-                narrow.token(),
+                TypedWarp(self.0),
+                simd,
                 reference,
                 block,
                 out,
@@ -246,9 +245,7 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         [phase_x, phase_y]: [usize; 2],
         round1: u32,
     ) -> [i32; 16] {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            let simd = narrow.token();
+        splot_core::with_simd!(self.0, simd => {
             let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
             ext_unit::vertical(simd, &intermediate, phase_y, round1)
         })
@@ -263,12 +260,11 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         round1: u32,
         output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
     ) -> Result<()> {
-        let narrow = self.0.narrow();
         let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             warp_predict_section(
-                TypedWarp(narrow),
-                narrow.token(),
+                TypedWarp(self.0),
+                simd,
                 reference,
                 params,
                 shear,
@@ -370,13 +366,13 @@ impl PreparedWarpPrediction {
         )
     }
 
-    /// Typed [`Self::predict_block_into`] using caller-selected `backend`.
+    /// [`Self::predict_block_into`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same errors as [`Self::predict_block_into`].
-    pub fn predict_block_into_with<B: SimdBackend, T: ReconSample>(
+    pub fn predict_block_into_with<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         block_x: i32,
         block_y: i32,
@@ -384,7 +380,7 @@ impl PreparedWarpPrediction {
         output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
     ) -> Result<()> {
         self.predict_block_into_with_runner(
-            TypedWarp(backend.narrow()),
+            TypedWarp(backend),
             reference,
             block_x,
             block_y,
@@ -460,20 +456,20 @@ impl PreparedWarpPrediction {
         )
     }
 
-    /// Typed [`Self::predict_clipped_into`] using caller-selected `backend`.
+    /// [`Self::predict_clipped_into`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same errors as [`Self::predict_clipped_into`].
-    pub fn predict_clipped_into_with<B: SimdBackend, T: ReconSample>(
+    pub fn predict_clipped_into_with<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         [x, y, width, height]: [usize; 4],
         output: &mut [T],
         stride: usize,
     ) -> Result<()> {
         self.predict_clipped_into_with_runner(
-            TypedWarp(backend.narrow()),
+            TypedWarp(backend),
             reference,
             [x, y, width, height],
             output,
@@ -863,26 +859,19 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     ext_warp_predict_unit_with_runner(BaselineWarp, reference, params, i4, j4, is_compound)
 }
 
-/// Typed [`ext_warp_predict_unit`] using caller-selected `backend`.
+/// [`ext_warp_predict_unit`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`ext_warp_predict_unit`].
-pub fn ext_warp_predict_unit_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn ext_warp_predict_unit_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     i4: usize,
     j4: usize,
     is_compound: bool,
 ) -> Result<[i32; 16]> {
-    ext_warp_predict_unit_with_runner(
-        TypedWarp(backend.narrow()),
-        reference,
-        params,
-        i4,
-        j4,
-        is_compound,
-    )
+    ext_warp_predict_unit_with_runner(TypedWarp(backend), reference, params, i4, j4, is_compound)
 }
 
 #[inline]
@@ -1031,12 +1020,12 @@ pub fn warp_predict_block<T: ReconSample>(
     Ok(output.into())
 }
 
-/// Typed [`warp_predict_block`] using caller-selected `backend`.
+/// [`warp_predict_block`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`warp_predict_block`].
-pub fn warp_predict_block_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn warp_predict_block_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     is_compound: bool,
@@ -1070,12 +1059,12 @@ pub fn warp_predict_block_into<T: ReconSample>(
     )
 }
 
-/// Typed [`warp_predict_block_into`] using caller-selected `backend`.
+/// [`warp_predict_block_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`warp_predict_block_into`].
-pub fn warp_predict_block_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn warp_predict_block_into_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     is_compound: bool,

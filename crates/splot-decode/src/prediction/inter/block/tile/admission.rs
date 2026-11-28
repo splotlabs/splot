@@ -66,9 +66,9 @@ impl<T: ReconSample> TileCommit<T> {
         }
     }
 
-    pub(super) fn replay<B: splot_core::simd::SimdBackend>(
+    pub(super) fn replay(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         mut ready: ReadyReconRow<T>,
         motion: &MotionFieldUnits,
         temporal: &TemporalMvContext,
@@ -167,10 +167,8 @@ fn restore_active_commit<T: ReconSample>(
     Ok(())
 }
 
-pub(in crate::prediction::inter::block) fn project_temporal_band<
-    B: splot_core::simd::SimdBackend,
->(
-    backend: B,
+pub(in crate::prediction::inter::block) fn project_temporal_band(
+    backend: splot_core::simd::SimdBackend,
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
     reference_fields: &[Option<MotionFieldHandle>],
@@ -547,9 +545,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute<B: splot_core::simd::SimdBackend>(
+    fn precompute(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
         surfaces: &SurfaceSource<T>,
@@ -628,9 +626,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn commit_batch<B: splot_core::simd::SimdBackend>(
+    fn commit_batch(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         parse_progress: &super::ParseProgress,
         surfaces: &SurfaceSource<T>,
@@ -721,8 +719,8 @@ pub(super) const PARSE_AHEAD_ROWS: usize = 4;
 /// Parses one tile a few superblock rows at a time and replays each batch in
 /// order, once every reference row is settled.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn run_ordinary_tile<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     parser: &mut TileParser<'_>,
     tile: &mut DecodeTileWorkUnit,
     resolve: &mut TileResolveState,
@@ -856,9 +854,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Precomputes one admitted batch on scheduler worker `worker` without
     /// entering the ordered commit spine.
-    pub(crate) fn precompute<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn precompute(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
     ) -> Result<()> {
@@ -909,9 +907,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Projects temporal band `index`. A band reads only the same band of
     /// each reference field (§ 7.9.8), so it projects ahead of the resolve.
-    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn project(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
     ) -> Result<()> {
         project_temporal_band(
@@ -1210,9 +1208,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(crate) fn frontier<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn frontier(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         row: usize,
     ) -> Result<ScheduledFrameProgress<T>> {
         let mut frontier = self.frontier.lock();
@@ -1221,9 +1219,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok(progress)
     }
 
-    fn frontier_link<B: splot_core::simd::SimdBackend>(
+    fn frontier_link(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         row: usize,
         frontier: &mut ScheduledFrontier<T>,
     ) -> Result<ScheduledFrameProgress<T>> {
@@ -1395,9 +1393,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(crate) fn commit<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn commit(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
     ) -> Result<ScheduledCommitProgress> {

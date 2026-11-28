@@ -19,8 +19,8 @@ use crate::Result;
 /// are not uniform or one with a plane the frame edge clips, which the
 /// caller predicts through the general path. A declined block may have had
 /// planes written; the general path rewrites them.
-pub(super) fn predict_translational_direct<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn predict_translational_direct<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
@@ -63,8 +63,8 @@ pub(super) fn predict_translational_direct<B: splot_core::simd::SimdBackend, T: 
 /// both chroma planes resolved once and stored by one recon call. Returns
 /// which of luma and chroma it stored, or `None` without writing when the
 /// weights of a plane are not uniform.
-fn predict_unscaled<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_unscaled<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
@@ -134,8 +134,8 @@ fn predict_unscaled<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// Predicts the planes of `block` that `done` does not mark, each through
 /// its translational plane, when every one has uniform weights and a
 /// contiguous target; `false` without writing them otherwise.
-fn predict_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_planes<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     (implicit_mask, cwp_weight): (bool, i16),
@@ -192,12 +192,8 @@ fn predict_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
     Ok(true)
 }
 
-pub(super) fn predict_unscaled_or_two_call<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    O: CompoundAverageOutput,
->(
-    backend: B,
+pub(super) fn predict_unscaled_or_two_call<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     translation: &TranslationalCompoundPlane<'_, T>,
     cwp_weight: i16,
     output: &mut [O],

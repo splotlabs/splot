@@ -401,7 +401,7 @@ fn luma_reference_refetches_views_past_the_published_prefix() {
         let rect = McBlockRect::from_luma_rect(16, y, 8, 8);
         let mut output = [0u16; 64];
         crate::test_support::with_auto_backend!(backend => {
-            super::super::optflow::initial_luma_prediction::<_, _, 0>(
+            super::super::optflow::initial_luma_prediction::<_, 0>(
                 backend,
                 luma,
                 rect,
@@ -445,13 +445,13 @@ fn centre_predictions_match_the_whole_prediction<T: ReconSample>(bit_depth: BitD
             let (mut whole, mut centre) = ([0u16; 576], [u16::MAX; 576]);
             let mut luma = LumaReference::new(sink.info(), reference, offset);
             crate::test_support::with_auto_backend!(backend => {
-                super::super::optflow::initial_luma_prediction::<_, _, 0>(
+                super::super::optflow::initial_luma_prediction::<_, 0>(
                     backend, &mut luma, rect, mv, filter, area, None, &mut whole,
                 )
             })
             .expect("whole prediction");
             crate::test_support::with_auto_backend!(backend => {
-                super::super::optflow::initial_luma_prediction::<_, _, 2>(
+                super::super::optflow::initial_luma_prediction::<_, 2>(
                     backend,
                     &mut luma,
                     rect,

@@ -311,24 +311,14 @@ pub fn wiener_ns_filter_chroma_block_padded_into<O: ReconSample, T: ReconSample>
 /// # Errors
 /// Returns the same errors as [`wiener_ns_filter_chroma_block_padded_into`].
 #[inline]
-pub fn wiener_ns_filter_chroma_block_padded_into_with<
-    B: SimdBackend,
-    O: ReconSample,
-    T: ReconSample,
->(
-    backend: B,
+pub fn wiener_ns_filter_chroma_block_padded_into_with<O: ReconSample, T: ReconSample>(
+    backend: SimdBackend,
     output: &mut [O],
     params: &WienerNsChromaFilter<'_>,
     source: &WienerNsChromaPaddedSource<'_, T>,
     scratch: &mut WienerNsChromaScratch,
 ) -> Result<()> {
-    wiener_ns_filter_chroma_padded_with_backend(
-        TypedLr(backend.narrow()),
-        output,
-        params,
-        source,
-        scratch,
-    )
+    wiener_ns_filter_chroma_padded_with_backend(TypedLr(backend), output, params, source, scratch)
 }
 
 fn wiener_ns_filter_chroma_padded_with_backend<L: LrBackend, O: ReconSample, T: ReconSample>(

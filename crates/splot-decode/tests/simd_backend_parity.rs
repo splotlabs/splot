@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! End-to-end forced-backend parity, typed-session, lifecycle, and fail-closed
+//! End-to-end forced-backend parity, lifecycle, and fail-closed
 //! CPU-safety integration tests for startup SIMD backend selection.
 
 #![expect(clippy::unwrap_used)]
 
-use splot_core::simd::SimdBackend;
 use splot_core::stream_reader::{StreamUnit, TemporalUnitReader};
 use splot_decode::{
     DataProps, DecodeContext, DecodeError, DecodeHashReport, DecodeOptions, DecodeRuntimeConfig,
-    DecodeScope, Decoder, DecoderSettings, FrameDelay, Picture, PictureSamples, PlaneId,
-    SelectedBackend, SendStatus, SimdPolicy, ThreadCount, TypedDecodeContext,
+    Decoder, DecoderSettings, FrameDelay, Picture, PictureSamples, PlaneId, SelectedBackend,
+    SendStatus, SimdPolicy, ThreadCount,
 };
 
 const FIXTURES: &[(&str, &[u8])] = &[
@@ -87,37 +86,24 @@ struct ContextOutputs {
     y4m: Vec<u8>,
 }
 
-struct TypedParityCheck<'a> {
-    expected_backend: SelectedBackend,
-    bytes: &'a [u8],
-    expected: &'a ContextOutputs,
-    label: &'a str,
-}
-
-impl DecodeScope<()> for TypedParityCheck<'_> {
-    fn run<B: SimdBackend>(self, typed: &TypedDecodeContext<'_, B>) {
-        assert_eq!(B::KIND, self.expected_backend, "{}", self.label);
-        assert_eq!(
-            typed.selected_backend(),
-            self.expected_backend,
-            "{}",
-            self.label
-        );
-        let options = DecodeOptions::default();
-        let hash = typed.decode_hash_report_bytes(self.bytes, options).unwrap();
-        assert_eq!(hash, self.expected.hash, "typed hash {}", self.label);
-        let mut raw = Vec::new();
-        typed
-            .decode_raw_bytes(self.bytes, options, &mut raw)
-            .unwrap();
-        assert_eq!(raw, self.expected.raw, "typed raw {}", self.label);
-        let mut y4m = Vec::new();
-        typed
-            .decode_y4m_bytes(self.bytes, options, &mut y4m)
-            .unwrap();
-        assert_eq!(y4m, self.expected.y4m, "typed y4m {}", self.label);
-        typed.decode_discard_reader(self.bytes, options).unwrap();
-    }
+/// A second pass on a context that has decoded once: its retained state
+/// must give the same outputs, and the discard route must accept the stream.
+fn check_repeated_outputs(
+    ctx: &DecodeContext,
+    bytes: &[u8],
+    expected: &ContextOutputs,
+    label: &str,
+) {
+    let options = DecodeOptions::default();
+    let hash = ctx.decode_hash_report_bytes(bytes, options).unwrap();
+    assert_eq!(hash, expected.hash, "repeated hash {label}");
+    let mut raw = Vec::new();
+    ctx.decode_raw_bytes(bytes, options, &mut raw).unwrap();
+    assert_eq!(raw, expected.raw, "repeated raw {label}");
+    let mut y4m = Vec::new();
+    ctx.decode_y4m_bytes(bytes, options, &mut y4m).unwrap();
+    assert_eq!(y4m, expected.y4m, "repeated y4m {label}");
+    ctx.decode_discard_reader(bytes, options).unwrap();
 }
 
 fn forced_policies() -> [(SimdPolicy, SelectedBackend, bool); 4] {
@@ -412,12 +398,7 @@ fn forced_and_auto_policies_match_across_sync_streaming_and_worker_counts() {
                 });
                 assert_eq!(actual.hash, baseline.hash, "thread hash {label}");
 
-                ctx.with_typed_backend(TypedParityCheck {
-                    expected_backend,
-                    bytes,
-                    expected: baseline,
-                    label: &label,
-                });
+                check_repeated_outputs(&ctx, bytes, baseline, &label);
 
                 let mut decoder = Decoder::new(
                     DecoderSettings::default()

@@ -471,9 +471,9 @@ impl InverseTransformAdd {
     /// the block does not fit `dst`, or `T` does not hold `bit_depth`.
     /// Adds the transform of `coeffs` using `backend`.
     #[inline]
-    pub fn add_with<B: SimdBackend, T: ReconSample>(
+    pub fn add_with<T: ReconSample>(
         self,
-        backend: B,
+        backend: SimdBackend,
         coeffs: &[i32],
         dequant_depth: (Option<FlatDequant>, BitDepth),
         dst: &mut [T],
@@ -481,7 +481,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> bool {
         self.add_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend),
             coeffs,
             dequant_depth,
             dst,
@@ -572,9 +572,9 @@ impl InverseTransformAdd {
     /// `backend`; `false` with `dst` untouched where either would return it.
     #[expect(clippy::too_many_arguments)]
     #[inline]
-    pub fn add_onto_with<B: SimdBackend, T: ReconSample>(
+    pub fn add_onto_with<T: ReconSample>(
         self,
-        backend: B,
+        backend: SimdBackend,
         prediction: &[T],
         coeffs: &[i32],
         dequant_depth: (Option<FlatDequant>, BitDepth),
@@ -583,7 +583,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> bool {
         self.add_onto_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend),
             prediction,
             coeffs,
             dequant_depth,
@@ -636,16 +636,16 @@ impl InverseTransformAdd {
     /// Writes `prediction` into `dst` like [`Self::put_prediction`], checking
     /// sample range with `backend`.
     #[inline]
-    pub fn put_prediction_with<B: SimdBackend, T: ReconSample>(
+    pub fn put_prediction_with<T: ReconSample>(
         self,
-        backend: B,
+        backend: SimdBackend,
         prediction: &[T],
         bit_depth: BitDepth,
         dst: &mut [T],
         stride: usize,
     ) -> bool {
         self.put_prediction_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend),
             prediction,
             bit_depth,
             dst,
@@ -723,9 +723,9 @@ impl InverseTransformAdd {
     /// # Errors
     /// Returns the same secondary-transform validation errors as
     /// [`Self::add_secondary`].
-    pub fn add_secondary_with<B: SimdBackend, T: ReconSample>(
+    pub fn add_secondary_with<T: ReconSample>(
         self,
-        backend: B,
+        backend: SimdBackend,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: &[i32],
         dequant: &mut [i32],
@@ -747,9 +747,9 @@ impl InverseTransformAdd {
     ///
     /// # Errors
     /// As [`Self::add_secondary`], or if a scan prefix exceeds `secondary.n`.
-    pub fn add_secondary_quant_with<B: SimdBackend, T: ReconSample>(
+    pub fn add_secondary_quant_with<T: ReconSample>(
         self,
-        backend: B,
+        backend: SimdBackend,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: SecondaryQuant<'_>,
         dequant: &mut [i32],
@@ -757,7 +757,7 @@ impl InverseTransformAdd {
         scratch: &mut InverseTransformAddScratch,
     ) -> crate::Result<bool> {
         self.add_secondary_with_runner(
-            TypedTransformRunner(backend.narrow()),
+            TypedTransformRunner(backend),
             (quantizers, secondary),
             quant,
             dequant,
@@ -1062,9 +1062,9 @@ impl TransformRunner for BaselineTransformRunner {
 }
 
 #[derive(Clone, Copy)]
-struct TypedTransformRunner<B: SimdBackend>(B);
+struct TypedTransformRunner(SimdBackend);
 
-impl<B: SimdBackend> TransformRunner for TypedTransformRunner<B> {
+impl TransformRunner for TypedTransformRunner {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
@@ -1108,15 +1108,16 @@ pub(crate) fn inverse_transform_2d_8bit(
     inverse_transform_2d_8bit_with_runner(BaselineTransformRunner, t, dequant, residual, scratch)
 }
 
-pub(crate) fn inverse_transform_2d_8bit_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub(crate) fn inverse_transform_2d_8bit_with(
+    backend: SimdBackend,
     t: Transform8,
     dequant: &[i32],
     residual: &mut [i32],
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
     inverse_transform_2d_8bit_with_runner(
-        TypedTransformRunner(backend.narrow()),
+        TypedTransformRunner(backend),
         t,
         dequant,
         residual,
@@ -1852,213 +1853,211 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
         use crate::coefficient_scan::TransformClass;
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let dq = FlatDequant {
-                    dc: 12,
-                    ac: 9,
-                    denom_shift: 1,
-                };
-                for (w_log2, h_log2) in [(3, 3), (4, 3), (4, 4)] {
-                    let add = InverseTransformAdd::new(0, w_log2, h_log2, false).unwrap();
-                    let w = add.w();
-                    let h = add.h();
-                    let stride = w + 5;
-                    let len = (h - 1) * stride + w;
-                    let coeffs: Vec<i32> = (0..w * h)
-                        .map(|i| {
-                            if i < 12 {
-                                ((i as i32 * 17) % 91) - 45
-                            } else {
-                                0
-                            }
-                        })
-                        .collect();
-
-                    let pred_u8: Vec<u8> =
-                        (0..w * h).map(|i| ((i * 29 + 11) % 251) as u8).collect();
-                    let mut compat_u8 = vec![7u8; len];
-                    let mut typed_u8 = vec![7u8; len];
-                    let mut scratch_a = Box::new([[0i32; 32 * 32]; 2]);
-                    let mut scratch_b = Box::new([[0i32; 32 * 32]; 2]);
-                    assert!(add.add_onto(
-                        &pred_u8,
-                        &coeffs,
-                        (Some(dq), BitDepth::Eight),
-                        &mut compat_u8,
-                        stride,
-                        &mut scratch_a,
-                    ));
-                    assert!(add.add_onto_with(
-                        backend,
-                        &pred_u8,
-                        &coeffs,
-                        (Some(dq), BitDepth::Eight),
-                        &mut typed_u8,
-                        stride,
-                        &mut scratch_b,
-                    ));
-                    assert_eq!(typed_u8, compat_u8);
-
-                    let sec = SecondaryInverseTransform {
-                        w,
-                        h,
-                        n: 16,
-                        kernel: 0,
-                        sec_tx_type: 1,
-                        primary_scan_class: TransformClass::TwoD,
-                        transpose: false,
-                        bit_depth: BitDepth::Eight,
-                    };
-                    let scan = crate::coefficient_scan_slice(w, h, sec.primary_scan_class).unwrap();
-                    for (prefix, denom) in [(0, 1), (1, 2), (7, 3), (sec.n, 8)] {
-                        let compact: Vec<_> = (0..prefix).map(|i| i as i32 * 7 - 31).collect();
-                        let mut raster = vec![0; w * h];
-                        for (&value, &pos) in compact.iter().zip(scan) {
-                            raster[usize::from(pos)] = value;
+        fn check(backend: SimdBackend) {
+            let dq = FlatDequant {
+                dc: 12,
+                ac: 9,
+                denom_shift: 1,
+            };
+            for (w_log2, h_log2) in [(3, 3), (4, 3), (4, 4)] {
+                let add = InverseTransformAdd::new(0, w_log2, h_log2, false).unwrap();
+                let w = add.w();
+                let h = add.h();
+                let stride = w + 5;
+                let len = (h - 1) * stride + w;
+                let coeffs: Vec<i32> = (0..w * h)
+                    .map(|i| {
+                        if i < 12 {
+                            ((i as i32 * 17) % 91) - 45
+                        } else {
+                            0
                         }
-                        let (mut expected, mut actual) = (compat_u8.clone(), compat_u8.clone());
-                        let mut expected_dq = vec![99; w * h];
-                        let mut actual_dq = expected_dq.clone();
-                        let params = ((13, 29, denom), &sec);
-                        assert_eq!(
-                            add.add_secondary_with(
-                                backend,
-                                params,
-                                &raster,
-                                &mut expected_dq,
-                                (&mut expected, stride),
-                                &mut scratch_a
-                            )
-                            .unwrap(),
-                            add.add_secondary_quant_with(
-                                backend,
-                                params,
-                                SecondaryQuant::Scan(&compact),
-                                &mut actual_dq,
-                                (&mut actual, stride),
-                                &mut scratch_b
-                            )
-                            .unwrap(),
-                        );
-                        assert_eq!(actual_dq, expected_dq);
-                        assert_eq!(actual, expected);
+                    })
+                    .collect();
+
+                let pred_u8: Vec<u8> = (0..w * h).map(|i| ((i * 29 + 11) % 251) as u8).collect();
+                let mut compat_u8 = vec![7u8; len];
+                let mut typed_u8 = vec![7u8; len];
+                let mut scratch_a = Box::new([[0i32; 32 * 32]; 2]);
+                let mut scratch_b = Box::new([[0i32; 32 * 32]; 2]);
+                assert!(add.add_onto(
+                    &pred_u8,
+                    &coeffs,
+                    (Some(dq), BitDepth::Eight),
+                    &mut compat_u8,
+                    stride,
+                    &mut scratch_a,
+                ));
+                assert!(add.add_onto_with(
+                    backend,
+                    &pred_u8,
+                    &coeffs,
+                    (Some(dq), BitDepth::Eight),
+                    &mut typed_u8,
+                    stride,
+                    &mut scratch_b,
+                ));
+                assert_eq!(typed_u8, compat_u8);
+
+                let sec = SecondaryInverseTransform {
+                    w,
+                    h,
+                    n: 16,
+                    kernel: 0,
+                    sec_tx_type: 1,
+                    primary_scan_class: TransformClass::TwoD,
+                    transpose: false,
+                    bit_depth: BitDepth::Eight,
+                };
+                let scan = crate::coefficient_scan_slice(w, h, sec.primary_scan_class).unwrap();
+                for (prefix, denom) in [(0, 1), (1, 2), (7, 3), (sec.n, 8)] {
+                    let compact: Vec<_> = (0..prefix).map(|i| i as i32 * 7 - 31).collect();
+                    let mut raster = vec![0; w * h];
+                    for (&value, &pos) in compact.iter().zip(scan) {
+                        raster[usize::from(pos)] = value;
                     }
-                    let quant = vec![24i32; 16];
-                    let mut deq_a = vec![0i32; w * h];
-                    let mut deq_b = vec![0i32; w * h];
-                    assert!(
-                        add.add_secondary(
-                            ((8, 12, 2), &sec),
-                            &quant,
-                            &mut deq_a,
-                            (&mut compat_u8, stride),
-                            &mut scratch_a,
-                        )
-                        .unwrap()
-                    );
-                    assert!(
+                    let (mut expected, mut actual) = (compat_u8.clone(), compat_u8.clone());
+                    let mut expected_dq = vec![99; w * h];
+                    let mut actual_dq = expected_dq.clone();
+                    let params = ((13, 29, denom), &sec);
+                    assert_eq!(
                         add.add_secondary_with(
                             backend,
-                            ((8, 12, 2), &sec),
-                            &quant,
-                            &mut deq_b,
-                            (&mut typed_u8, stride),
-                            &mut scratch_b,
+                            params,
+                            &raster,
+                            &mut expected_dq,
+                            (&mut expected, stride),
+                            &mut scratch_a
                         )
-                        .unwrap()
+                        .unwrap(),
+                        add.add_secondary_quant_with(
+                            backend,
+                            params,
+                            SecondaryQuant::Scan(&compact),
+                            &mut actual_dq,
+                            (&mut actual, stride),
+                            &mut scratch_b
+                        )
+                        .unwrap(),
                     );
-                    assert_eq!(typed_u8, compat_u8);
-
-                    let pred_u16: Vec<u16> =
-                        (0..w * h).map(|i| ((i * 113 + 7) % 1020) as u16).collect();
-                    let dc_only = [37i32; 1];
-                    let mut compat_u16 = vec![3u16; len];
-                    let mut typed_u16 = vec![3u16; len];
-                    assert!(add.put_prediction(&pred_u16, BitDepth::Ten, &mut compat_u16, stride,));
-                    assert!(add.put_prediction_with(
-                        backend,
-                        &pred_u16,
-                        BitDepth::Ten,
-                        &mut typed_u16,
-                        stride,
-                    ));
-                    assert!(add.add(
-                        &dc_only,
-                        (Some(dq), BitDepth::Ten),
-                        &mut compat_u16,
-                        stride,
-                        &mut scratch_a,
-                    ));
-                    assert!(add.add_with(
-                        backend,
-                        &dc_only,
-                        (Some(dq), BitDepth::Ten),
-                        &mut typed_u16,
-                        stride,
-                        &mut scratch_b,
-                    ));
-                    assert_eq!(typed_u16, compat_u16);
-
-                    assert!(add.add_onto(
-                        &pred_u16,
-                        &coeffs,
-                        (Some(dq), BitDepth::Ten),
-                        &mut compat_u16,
-                        stride,
-                        &mut scratch_a,
-                    ));
-                    assert!(add.add_onto_with(
-                        backend,
-                        &pred_u16,
-                        &coeffs,
-                        (Some(dq), BitDepth::Ten),
-                        &mut typed_u16,
-                        stride,
-                        &mut scratch_b,
-                    ));
-                    assert_eq!(typed_u16, compat_u16);
-
-                    let t = Transform8 {
-                        bit_depth: BitDepth::Eight,
-                        row: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
-                        col: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
-                        w,
-                        h,
-                        rescale: w != h,
-                        row_shift: 7,
-                        col_shift: 10,
-                        dequant: Some(dq),
-                    };
-                    let mut res_a = vec![0i32; w * h];
-                    let mut res_b = vec![0i32; w * h];
-                    let mut scratch_r_a = [0i32; 32 * 32];
-                    let mut scratch_r_b = [0i32; 32 * 32];
-                    assert!(inverse_transform_2d_8bit(
-                        t,
-                        &coeffs,
-                        &mut res_a,
-                        &mut scratch_r_a,
-                    ));
-                    assert!(inverse_transform_2d_8bit_with(
-                        backend,
-                        t,
-                        &coeffs,
-                        &mut res_b,
-                        &mut scratch_r_b,
-                    ));
-                    assert_eq!(res_b, res_a);
+                    assert_eq!(actual_dq, expected_dq);
+                    assert_eq!(actual, expected);
                 }
+                let quant = vec![24i32; 16];
+                let mut deq_a = vec![0i32; w * h];
+                let mut deq_b = vec![0i32; w * h];
+                assert!(
+                    add.add_secondary(
+                        ((8, 12, 2), &sec),
+                        &quant,
+                        &mut deq_a,
+                        (&mut compat_u8, stride),
+                        &mut scratch_a,
+                    )
+                    .unwrap()
+                );
+                assert!(
+                    add.add_secondary_with(
+                        backend,
+                        ((8, 12, 2), &sec),
+                        &quant,
+                        &mut deq_b,
+                        (&mut typed_u8, stride),
+                        &mut scratch_b,
+                    )
+                    .unwrap()
+                );
+                assert_eq!(typed_u8, compat_u8);
+
+                let pred_u16: Vec<u16> =
+                    (0..w * h).map(|i| ((i * 113 + 7) % 1020) as u16).collect();
+                let dc_only = [37i32; 1];
+                let mut compat_u16 = vec![3u16; len];
+                let mut typed_u16 = vec![3u16; len];
+                assert!(add.put_prediction(&pred_u16, BitDepth::Ten, &mut compat_u16, stride,));
+                assert!(add.put_prediction_with(
+                    backend,
+                    &pred_u16,
+                    BitDepth::Ten,
+                    &mut typed_u16,
+                    stride,
+                ));
+                assert!(add.add(
+                    &dc_only,
+                    (Some(dq), BitDepth::Ten),
+                    &mut compat_u16,
+                    stride,
+                    &mut scratch_a,
+                ));
+                assert!(add.add_with(
+                    backend,
+                    &dc_only,
+                    (Some(dq), BitDepth::Ten),
+                    &mut typed_u16,
+                    stride,
+                    &mut scratch_b,
+                ));
+                assert_eq!(typed_u16, compat_u16);
+
+                assert!(add.add_onto(
+                    &pred_u16,
+                    &coeffs,
+                    (Some(dq), BitDepth::Ten),
+                    &mut compat_u16,
+                    stride,
+                    &mut scratch_a,
+                ));
+                assert!(add.add_onto_with(
+                    backend,
+                    &pred_u16,
+                    &coeffs,
+                    (Some(dq), BitDepth::Ten),
+                    &mut typed_u16,
+                    stride,
+                    &mut scratch_b,
+                ));
+                assert_eq!(typed_u16, compat_u16);
+
+                let t = Transform8 {
+                    bit_depth: BitDepth::Eight,
+                    row: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+                    col: InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+                    w,
+                    h,
+                    rescale: w != h,
+                    row_shift: 7,
+                    col_shift: 10,
+                    dequant: Some(dq),
+                };
+                let mut res_a = vec![0i32; w * h];
+                let mut res_b = vec![0i32; w * h];
+                let mut scratch_r_a = [0i32; 32 * 32];
+                let mut scratch_r_b = [0i32; 32 * 32];
+                assert!(inverse_transform_2d_8bit(
+                    t,
+                    &coeffs,
+                    &mut res_a,
+                    &mut scratch_r_a,
+                ));
+                assert!(inverse_transform_2d_8bit_with(
+                    backend,
+                    t,
+                    &coeffs,
+                    &mut res_b,
+                    &mut scratch_r_b,
+                ));
+                assert_eq!(res_b, res_a);
             }
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

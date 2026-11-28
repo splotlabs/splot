@@ -105,7 +105,7 @@ fn scalar<T: ReconSample>(
     let result = if matches!(blend, CompoundBlend::Average { .. }) {
         let ([s0, s1], (fw, fh)) = (at.scalings, at.frame);
         crate::test_support::with_auto_backend!(backend => {
-            blend_compound_average::<_, T>(
+            blend_compound_average::<T>(
                 backend,
                 pred0,
                 pred1,

@@ -132,9 +132,9 @@ impl BlockRunner for BaselineBlock {
 }
 
 #[derive(Clone, Copy)]
-struct TypedBlock<B: SimdBackend>(B);
+struct TypedBlock(SimdBackend);
 
-impl<B: SimdBackend> BlockRunner for TypedBlock<B> {
+impl BlockRunner for TypedBlock {
     #[inline]
     fn dequant(
         self,
@@ -291,8 +291,8 @@ pub fn reconstruct_transform_block_residual<T: ReconSample>(
 /// Returns the same validation and transform errors as
 /// [`reconstruct_transform_block_residual`].
 #[expect(clippy::too_many_arguments)]
-pub fn reconstruct_transform_block_residual_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn reconstruct_transform_block_residual_with<T: ReconSample>(
+    backend: SimdBackend,
     prediction: &[T],
     quant: &[i32],
     dequant_params: &DequantBlockParams,
@@ -357,11 +357,8 @@ pub fn reconstruct_transform_block_residual_with_secondary<T: ReconSample>(
 /// Returns the same validation and transform errors as
 /// [`reconstruct_transform_block_residual_with_secondary`].
 #[expect(clippy::too_many_arguments)]
-pub fn reconstruct_transform_block_residual_with_secondary_and_backend<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub fn reconstruct_transform_block_residual_with_secondary_and_backend<T: ReconSample>(
+    backend: SimdBackend,
     prediction: &[T],
     quant: &[i32],
     dequant_params: &DequantBlockParams,
@@ -372,7 +369,7 @@ pub fn reconstruct_transform_block_residual_with_secondary_and_backend<
     out: &mut [T],
 ) -> Result<()> {
     reconstruct_with_secondary_and_runner(
-        TypedBlock(backend.narrow()),
+        TypedBlock(backend),
         prediction,
         quant,
         dequant_params,
@@ -406,20 +403,15 @@ pub fn dequantize_with_secondary(
 /// # Errors
 /// Returns the same validation and transform errors as
 /// [`dequantize_with_secondary`].
-pub fn dequantize_with_secondary_and_backend<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn dequantize_with_secondary_and_backend(
+    backend: SimdBackend,
     params: &DequantBlockParams,
     quant: &[i32],
     secondary: Option<&SecondaryInverseTransform>,
     dequant: &mut [i32],
 ) -> Result<usize> {
-    dequantize_with_secondary_and_runner(
-        TypedBlock(backend.narrow()),
-        params,
-        quant,
-        secondary,
-        dequant,
-    )
+    dequantize_with_secondary_and_runner(TypedBlock(backend), params, quant, secondary, dequant)
 }
 
 #[cfg(test)]
@@ -695,93 +687,90 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let params = dct_dequant_params(8, 8, 140);
-                let transform =
-                    InverseTransform2dOuter::resolve(0, 3, 3, false, false, BitDepth::Eight, None)
-                        .unwrap();
-                let pred: Vec<u8> = (0..64).map(|i| ((i * 37 + 15) % 251) as u8).collect();
-                let quant: Vec<i32> = (0..64)
-                    .map(|i| if i < 16 { ((i * 23) % 61) - 30 } else { 0 })
-                    .collect();
+        fn check(backend: SimdBackend) {
+            let params = dct_dequant_params(8, 8, 140);
+            let transform =
+                InverseTransform2dOuter::resolve(0, 3, 3, false, false, BitDepth::Eight, None)
+                    .unwrap();
+            let pred: Vec<u8> = (0..64).map(|i| ((i * 37 + 15) % 251) as u8).collect();
+            let quant: Vec<i32> = (0..64)
+                .map(|i| if i < 16 { ((i * 23) % 61) - 30 } else { 0 })
+                .collect();
 
-                let (mut deq_a, mut res_a, mut out_a) =
-                    (vec![0i32; 64], vec![0i32; 64], vec![0u8; 64]);
-                let (mut deq_b, mut res_b, mut out_b) =
-                    (vec![0i32; 64], vec![0i32; 64], vec![0u8; 64]);
-                reconstruct_transform_block_residual(
-                    &pred, &quant, &params, &transform, &mut deq_a, &mut res_a, &mut out_a,
-                )
-                .unwrap();
-                reconstruct_transform_block_residual_with(
-                    backend, &pred, &quant, &params, &transform, &mut deq_b, &mut res_b, &mut out_b,
-                )
-                .unwrap();
-                assert_eq!(out_b, out_a);
+            let (mut deq_a, mut res_a, mut out_a) = (vec![0i32; 64], vec![0i32; 64], vec![0u8; 64]);
+            let (mut deq_b, mut res_b, mut out_b) = (vec![0i32; 64], vec![0i32; 64], vec![0u8; 64]);
+            reconstruct_transform_block_residual(
+                &pred, &quant, &params, &transform, &mut deq_a, &mut res_a, &mut out_a,
+            )
+            .unwrap();
+            reconstruct_transform_block_residual_with(
+                backend, &pred, &quant, &params, &transform, &mut deq_b, &mut res_b, &mut out_b,
+            )
+            .unwrap();
+            assert_eq!(out_b, out_a);
 
-                let sec = SecondaryInverseTransform {
-                    w: 8,
-                    h: 8,
-                    n: 16,
-                    kernel: 1,
-                    sec_tx_type: 2,
-                    primary_scan_class: crate::TransformClass::TwoD,
-                    transpose: false,
-                    bit_depth: BitDepth::Eight,
-                };
-                reconstruct_transform_block_residual_with_secondary(
-                    &pred,
-                    &quant,
-                    &params,
-                    &transform,
-                    Some(&sec),
-                    &mut deq_a,
-                    &mut res_a,
-                    &mut out_a,
-                )
-                .unwrap();
-                reconstruct_transform_block_residual_with_secondary_and_backend(
-                    backend,
-                    &pred,
-                    &quant,
-                    &params,
-                    &transform,
-                    Some(&sec),
-                    &mut deq_b,
-                    &mut res_b,
-                    &mut out_b,
-                )
-                .unwrap();
-                assert_eq!(out_b, out_a);
+            let sec = SecondaryInverseTransform {
+                w: 8,
+                h: 8,
+                n: 16,
+                kernel: 1,
+                sec_tx_type: 2,
+                primary_scan_class: crate::TransformClass::TwoD,
+                transpose: false,
+                bit_depth: BitDepth::Eight,
+            };
+            reconstruct_transform_block_residual_with_secondary(
+                &pred,
+                &quant,
+                &params,
+                &transform,
+                Some(&sec),
+                &mut deq_a,
+                &mut res_a,
+                &mut out_a,
+            )
+            .unwrap();
+            reconstruct_transform_block_residual_with_secondary_and_backend(
+                backend,
+                &pred,
+                &quant,
+                &params,
+                &transform,
+                Some(&sec),
+                &mut deq_b,
+                &mut res_b,
+                &mut out_b,
+            )
+            .unwrap();
+            assert_eq!(out_b, out_a);
 
-                let mut qm_params = dct_dequant_params(8, 8, 140);
-                qm_params.qm = Some(crate::QmDequant {
-                    seg_level: 1,
-                    plane_is_chroma: false,
-                    qm_offset: 0,
-                    user: None,
-                });
-                let len_a =
-                    dequantize_with_secondary(&qm_params, &quant, Some(&sec), &mut deq_a).unwrap();
-                let len_b = dequantize_with_secondary_and_backend(
-                    backend,
-                    &qm_params,
-                    &quant,
-                    Some(&sec),
-                    &mut deq_b,
-                )
-                .unwrap();
-                assert_eq!(len_b, len_a);
-                assert_eq!(deq_b[..len_b], deq_a[..len_a]);
-            }
+            let mut qm_params = dct_dequant_params(8, 8, 140);
+            qm_params.qm = Some(crate::QmDequant {
+                seg_level: 1,
+                plane_is_chroma: false,
+                qm_offset: 0,
+                user: None,
+            });
+            let len_a =
+                dequantize_with_secondary(&qm_params, &quant, Some(&sec), &mut deq_a).unwrap();
+            let len_b = dequantize_with_secondary_and_backend(
+                backend,
+                &qm_params,
+                &quant,
+                Some(&sec),
+                &mut deq_b,
+            )
+            .unwrap();
+            assert_eq!(len_b, len_a);
+            assert_eq!(deq_b[..len_b], deq_a[..len_a]);
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

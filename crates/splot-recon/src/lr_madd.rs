@@ -26,7 +26,7 @@ pub(crate) trait LrSimdOp<R> {
     fn run<S: Simd>(self, simd: S) -> R;
 }
 
-/// Loop-restoration backend abstraction unifying baseline and typed `SimdBackend` execution.
+/// Loop-restoration backend abstraction unifying baseline and startup-selected `SimdBackend` execution.
 pub(crate) trait LrBackend: Copy {
     /// Carried x86 AVX2 token, when guaranteed by this backend.
     #[cfg(target_arch = "x86_64")]
@@ -36,7 +36,7 @@ pub(crate) trait LrBackend: Copy {
     #[cfg(target_arch = "aarch64")]
     fn neon_token(self) -> Option<fearless_simd::Neon>;
 
-    /// Executes `op` under this backend's static SIMD scope.
+    /// Executes `op` under this backend's SIMD scope.
     fn run<R>(self, op: impl LrSimdOp<R>) -> R;
 
     /// Reports whether any `u16` sample exceeds `max_sample` using this backend.
@@ -100,11 +100,11 @@ impl LrBackend for BaselineLr {
     }
 }
 
-/// Typed startup-selected `SimdBackend` adapter for loop restoration kernels.
+/// Startup-selected `SimdBackend` adapter for loop restoration kernels.
 #[derive(Clone, Copy)]
-pub(crate) struct TypedLr<B: SimdBackend>(pub(crate) B);
+pub(crate) struct TypedLr(pub(crate) SimdBackend);
 
-impl<B: SimdBackend> LrBackend for TypedLr<B> {
+impl LrBackend for TypedLr {
     #[cfg(target_arch = "x86_64")]
     #[expect(
         clippy::inline_always,
@@ -131,8 +131,7 @@ impl<B: SimdBackend> LrBackend for TypedLr<B> {
     )]
     #[inline(always)]
     fn run<R>(self, op: impl LrSimdOp<R>) -> R {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => op.run(simd))
+        splot_core::with_simd!(self.0, simd => op.run(simd))
     }
 
     #[inline]
@@ -1173,7 +1172,7 @@ mod tests {
     use super::{
         BaselineLr, LaneClass, ScalarLr, TapPairs, TypedLr, in_lane_weights, pattern_weights,
     };
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
     struct Twelve;
     impl TapPairs for Twelve {
@@ -1195,8 +1194,8 @@ mod tests {
             [&'a LaneClass; 4],
             core::marker::PhantomData<F>,
         );
-        impl<F: TapPairs> SimdScope<()> for Scope<'_, F> {
-            fn run<B: SimdBackend>(self, backend: B) {
+        impl<F: TapPairs> Scope<'_, F> {
+            fn run(self, backend: SimdBackend) {
                 self.0
                     .push(pattern_weights::<_, F>(TypedLr(backend), self.1));
             }
@@ -1214,7 +1213,7 @@ mod tests {
             assert_eq!(in_lane, pattern_weights::<_, F>(BaselineLr, cells));
             if let Some(backend) = resolved {
                 let mut got = Vec::with_capacity(1);
-                backend.enter(Scope::<F>(&mut got, cells, core::marker::PhantomData));
+                Scope::<F>(&mut got, cells, core::marker::PhantomData).run(backend.backend());
                 assert_eq!(got[0], in_lane);
             }
             if cells[1] != cells[2] {
@@ -1249,7 +1248,7 @@ mod backend_tests {
         Classes, LaneClass, ScalarLr, TapPairs, TypedLr, filter_run, filter16, run_weights,
     };
     use crate::math::round2_i32;
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
     struct SmallTaps;
 
@@ -1366,18 +1365,14 @@ mod backend_tests {
 
     #[test]
     fn cell_order_and_lane_layout_match_scalar_across_backends() {
-        struct VerifyScope;
-        impl SimdScope<()> for VerifyScope {
-            fn run<B: SimdBackend>(self, backend: B) {
-                verify_run(TypedLr(backend));
-            }
+        fn verify_scope(backend: SimdBackend) {
+            verify_run(TypedLr(backend));
         }
         verify_run(ScalarLr);
-        resolve_backend(SimdPolicy::Auto)
-            .expect("supported host baseline")
-            .enter(VerifyScope);
-        if let Ok(avx512) = resolve_backend(SimdPolicy::Avx512) {
-            avx512.enter(VerifyScope);
-        }
+        verify_scope(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("supported host baseline")
+                .backend(),
+        );
     }
 }

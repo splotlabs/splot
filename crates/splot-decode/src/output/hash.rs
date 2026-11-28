@@ -17,7 +17,7 @@ use crate::hash_report::{DecodeHashEntry, DecodeHashFrame, DecodeHashReport};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn decode_hash_report_from_plan(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     resolved_threads: NonZeroUsize,
@@ -33,7 +33,7 @@ pub(crate) fn decode_hash_report_from_plan(
 
 /// Hashes each decoded frame as the driver emits it.
 fn decode_hash_frames(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,

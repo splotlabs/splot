@@ -527,7 +527,7 @@ fn flat_window_spans_exactly_the_tap_reach() {
         let workspace = flat_workspace(144, 60..132, spike.map(|(x, y)| (PlaneId::Y, x, y)));
         let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
         crate::test_support::with_auto_backend!(backend => {
-            flat_window::<_, u16, 64, 8>(backend, plane, (64, 8), start, tile.1)
+            flat_window::<u16, 64, 8>(backend, plane, (64, 8), start, tile.1)
         })
     };
     assert_eq!(window(None, tile.0), Some(512));
@@ -552,7 +552,7 @@ fn flat_window_spans_exactly_the_tap_reach() {
         let plane = FramePlane::new(&workspace, PlaneId::Y).unwrap();
         assert_eq!(
             crate::test_support::with_auto_backend!(backend => {
-                flat_window::<_, u8, 64, 8>(backend, plane, (64, 8), tile.0, tile.1)
+                flat_window::<u8, 64, 8>(backend, plane, (64, 8), tile.0, tile.1)
             }),
             expected,
             "{spike:?}"
@@ -735,7 +735,7 @@ fn run_segment(
             let Some(ctx) = lookup.at(2, c + 2 * block, Some(params), (0, 6)).unwrap() else {
                 continue;
             };
-            crate::test_support::with_auto_backend!(backend => compute_cdef_block::<_, u16>(
+            crate::test_support::with_auto_backend!(backend => compute_cdef_block::<u16>(
                 backend,
                 &ctx,
                 &mut pad,

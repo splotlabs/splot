@@ -30,7 +30,7 @@ pub(super) fn luma_token() -> Option<LumaToken> {
 /// The [`LumaToken`] carried by `backend`, if it has one.
 #[expect(clippy::inline_always, reason = "a token read in hot CfL paths")]
 #[inline(always)]
-pub(super) fn luma_token_for<B: splot_core::simd::SimdBackend>(backend: B) -> Option<LumaToken> {
+pub(super) fn luma_token_for(backend: splot_core::simd::SimdBackend) -> Option<LumaToken> {
     #[cfg(target_arch = "x86_64")]
     return backend.avx2_token();
     #[cfg(target_arch = "aarch64")]

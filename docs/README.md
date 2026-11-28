@@ -25,11 +25,9 @@ more. Other work uses AVX2. AArch64 uses NEON.
 
 Rust callers can request a backend through `SimdPolicy`. An unavailable
 request returns an error at startup. The C API uses Auto. A streaming decoder
-retains its selected backend across frames and flushes. For repeated
-synchronous decodes, `DecodeContext::with_typed_backend` selects once around
-the caller's loop. The ordinary synchronous methods enter that scope for each
-call. A deferred `Picture::apply_film_grain` uses the backend stored with the
-picture.
+retains its selected backend across frames and flushes, and a
+`DecodeContext` across its synchronous decodes. A deferred
+`Picture::apply_film_grain` uses the backend stored with the picture.
 
 Run the **AVX-512 correctness qualification** Actions workflow on native
 hardware to compare Auto and both forced policies against AVM. Its timing

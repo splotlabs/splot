@@ -17,7 +17,7 @@ use splot_core::headers::content_interpretation::ContentInterpretation;
 use splot_core::headers::frame::FrameType;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
-use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdBackend, SimdPolicy, SimdScope};
+use splot_core::simd::{ResolvedBackend, SelectedBackend, SimdBackend, SimdPolicy};
 use splot_core::span::ByteOffset;
 use splot_core::types::TemporalLayerId;
 use splot_parallel::{FrameDelay, ThreadCount};
@@ -358,16 +358,17 @@ impl Picture {
         frame: &PipelineFrame,
         pool: Option<Arc<PlanePool>>,
         options: &DecodeOptions,
-        backend: impl SimdBackend,
         resolved: ResolvedBackend,
     ) -> Result<Self> {
+        let backend = resolved.backend();
+        let kernels = splot_recon::KernelSelection::of(resolved);
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
-                Samples::Eight(display(backend, frame, grain, pool.as_ref())?)
+                Samples::Eight(display(backend, kernels, frame, grain, pool.as_ref())?)
             }
             PipelineDecodedFrame::Ten(frame) => {
-                Samples::Ten(display(backend, frame, grain, pool.as_ref())?)
+                Samples::Ten(display(backend, kernels, frame, grain, pool.as_ref())?)
             }
         };
         let metadata = &frame.output_effects.metadata;
@@ -411,28 +412,25 @@ impl Picture {
     /// # Errors
     /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
     pub fn apply_film_grain(&self) -> Result<Self> {
-        struct Apply<'a>(&'a Picture);
-        impl SimdScope<Result<Picture>> for Apply<'_> {
-            fn run<B: SimdBackend>(self, backend: B) -> Result<Picture> {
-                self.0.apply_film_grain_with(backend)
-            }
-        }
-        self.backend.enter(Apply(self))
-    }
-
-    fn apply_film_grain_with(&self, backend: impl SimdBackend) -> Result<Self> {
+        let backend = self.backend.backend();
+        let kernels = splot_recon::KernelSelection::of(self.backend);
         let grain = self.pending_grain.as_ref();
         let pool = self.pool.as_ref();
         let samples = match &self.samples {
             Some(Samples::Eight(frame)) => Some(Samples::Eight(display(
                 backend,
+                kernels,
                 frame.share(),
                 grain,
                 pool,
             )?)),
-            Some(Samples::Ten(frame)) => {
-                Some(Samples::Ten(display(backend, frame.share(), grain, pool)?))
-            }
+            Some(Samples::Ten(frame)) => Some(Samples::Ten(display(
+                backend,
+                kernels,
+                frame.share(),
+                grain,
+                pool,
+            )?)),
             None => None,
         };
         Ok(Self {
@@ -580,7 +578,8 @@ impl Drop for Picture {
 /// The displayed form of `frame`: grain goes into planes from the decoder's
 /// pool, which the picture gives them back to when the caller drops it.
 fn display<T: ReconSample>(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     frame: SharedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     pool: Option<&Arc<PlanePool>>,
@@ -589,7 +588,7 @@ fn display<T: ReconSample>(
         return Ok(frame);
     };
     let spare = FramePlaneSamples::default().with_pool(pool);
-    let grained = crate::output::film_grain::apply(backend, frame.get(), grain, spare)?;
+    let grained = crate::output::film_grain::apply(backend, kernels, frame.get(), grain, spare)?;
     Ok(SharedFrame::new(grained))
 }
 
@@ -756,16 +755,17 @@ struct DriverLaunch {
     resolved: ResolvedBackend,
 }
 
-impl SimdScope<Result<std::thread::JoinHandle<()>>> for DriverLaunch {
-    fn run<B: SimdBackend>(self, backend: B) -> Result<std::thread::JoinHandle<()>> {
+impl DriverLaunch {
+    fn run(self) -> Result<std::thread::JoinHandle<()>> {
         splot_parallel::spawn_thread("splot-driver", move || {
-            run_driver_session(backend, self);
+            run_driver_session(self);
         })
         .map_err(Into::into)
     }
 }
 
-fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
+fn run_driver_session(launch: DriverLaunch) {
+    let backend = launch.resolved.backend();
     let options = DecodeOptions::new(launch.limits)
         .with_skip_film_grain(launch.skip_film_grain)
         .with_temporal_layer_selection(launch.temporal_layer_selection)
@@ -784,7 +784,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
-            backend.narrow(),
+            backend,
             &mut units,
             &options,
             &session,
@@ -794,7 +794,6 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
                     frame,
                     session.planes(),
                     &options,
-                    backend,
                     session.backend(),
                 )?);
                 Ok(())
@@ -965,7 +964,7 @@ impl Decoder {
         });
         let driver = Arc::clone(&shared);
         let rows = crate::pipeline::row_scheduler(threads, resolved)?;
-        let driver = resolved.enter(DriverLaunch {
+        let driver = DriverLaunch {
             observer,
             #[cfg(feature = "block-evidence")]
             block_evidence,
@@ -980,7 +979,8 @@ impl Decoder {
             frame_delay,
             rows,
             resolved,
-        })?;
+        }
+        .run()?;
         Ok(Self {
             shared,
             limits: settings.limits,

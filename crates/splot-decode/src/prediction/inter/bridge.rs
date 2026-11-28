@@ -24,8 +24,8 @@ use super::reference::HeldFrameSamples;
 /// block to reference 0, zero motion vector, skip, and `EIGHTTAP_SHARP`. With bridge
 /// frame filters disabled by § 5.18.2, the resulting coded frame is a sharp-filtered,
 /// zero-motion prediction from the selected reference, including reference scaling.
-pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     held: &HeldFrameSamples<'_, T>,
     frame_size: FrameSize,
     visible: PlaneRect,

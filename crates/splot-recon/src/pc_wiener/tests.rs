@@ -1381,7 +1381,7 @@ fn classify_padded_source_rejects_origin_past_region() {
 #[test]
 fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
     use crate::lr_madd::ScalarLr;
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
     struct AutoPc<'a, T: ReconSample> {
         classify_params: &'a PcWienerClassifyParams,
@@ -1396,8 +1396,8 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
         filter_src: &'a PcWienerPaddedSource<'a, T>,
         expected_filtered: &'a [u16],
     }
-    impl<T: ReconSample> SimdScope<()> for AutoPc<'_, T> {
-        fn run<B: SimdBackend>(self, backend: B) {
+    impl<T: ReconSample> AutoPc<'_, T> {
+        fn run(self, backend: SimdBackend) {
             let mut cells = Vec::new();
             pc_wiener_classify_grid_padded_classes_into_with(
                 backend,
@@ -1497,7 +1497,7 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
         })
         .unwrap();
 
-        resolved.enter(AutoPc {
+        AutoPc {
             classify_params: &classify_params,
             cell_cols,
             cell_rows,
@@ -1509,7 +1509,8 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
             filter_params: &filter_params,
             filter_src: &filter_src_u16,
             expected_filtered: &expected_filtered,
-        });
+        }
+        .run(resolved.backend());
         let mut cells_scalar = Vec::new();
         classify_grid_padded_classes_with_backend(
             ScalarLr,
@@ -1533,7 +1534,7 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
         )
         .unwrap();
         assert_eq!(out_scalar, expected_filtered);
-        resolved.enter(AutoPc {
+        AutoPc {
             classify_params: &classify_params,
             cell_cols,
             cell_rows,
@@ -1545,7 +1546,8 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
             filter_params: &filter_params,
             filter_src: &filter_src_u16,
             expected_filtered: &expected_filtered,
-        });
+        }
+        .run(resolved.backend());
         if bit_depth == BitDepth::Eight {
             let padded_u8: Vec<u8> = padded_u16.iter().map(|&v| v as u8).collect();
             let rows_u8: Vec<_> = padded_u8.chunks(stride).collect();
@@ -1559,7 +1561,7 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
             .unwrap();
             let filter_src8 =
                 PcWienerPaddedSource::from_rows(&rows_u8[trim..], trim, width, height).unwrap();
-            resolved.enter(AutoPc {
+            AutoPc {
                 classify_params: &classify_params,
                 cell_cols,
                 cell_rows,
@@ -1571,7 +1573,8 @@ fn typed_pc_wiener_classify_and_filter_match_baseline_across_scratch_reuse() {
                 filter_params: &filter_params,
                 filter_src: &filter_src8,
                 expected_filtered: &expected_filtered,
-            });
+            }
+            .run(resolved.backend());
         }
     }
 }

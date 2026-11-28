@@ -865,8 +865,8 @@ pub(super) const fn compound_deblock_sub_pu_size(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn append_compound_temporal_motion<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn append_compound_temporal_motion(
+    backend: splot_core::simd::SimdBackend,
     records: &mut Vec<TemporalMotionBlock>,
     reference: &ReferenceMetadata,
     ref_frame_idx: &[u32],
@@ -946,8 +946,8 @@ pub(super) fn append_compound_temporal_motion<B: splot_core::simd::SimdBackend>(
     Ok(())
 }
 
-fn wedge_temporal_allowed_lists<B: splot_core::simd::SimdBackend>(
-    backend: B,
+fn wedge_temporal_allowed_lists(
+    backend: splot_core::simd::SimdBackend,
     blend: mc::CompoundBlend,
     luma_width: usize,
     luma_height: usize,
@@ -966,8 +966,8 @@ fn wedge_temporal_allowed_lists<B: splot_core::simd::SimdBackend>(
 /// most 64.
 #[cold]
 #[inline(never)]
-fn wedge_dominant_lists<B: splot_core::simd::SimdBackend>(
-    backend: B,
+fn wedge_dominant_lists(
+    backend: splot_core::simd::SimdBackend,
     luma_width: usize,
     luma_height: usize,
     (index, sign): (u8, bool),
@@ -976,8 +976,7 @@ fn wedge_dominant_lists<B: splot_core::simd::SimdBackend>(
 ) -> Result<[bool; 2]> {
     use fearless_simd::{prelude::*, u8x16};
     let unit = wedge_mask_unit(luma_width, luma_height, (usize::from(index), sign), (x, y))?;
-    let narrow = backend.narrow();
-    let dominant = splot_core::with_simd!(narrow, simd => {
+    let dominant = splot_core::with_simd!(backend, simd => {
         let (one, zero) = (u8x16::splat(simd, 1), u8x16::splat(simd, 0));
         let (mut first, mut second) = (zero, zero);
         for lanes in unit.as_chunks::<16>().0 {

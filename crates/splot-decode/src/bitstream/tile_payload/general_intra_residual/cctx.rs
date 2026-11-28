@@ -50,11 +50,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into_with<T: ReconSample>(
+    backend: SimdBackend,
     u_block: CoeffBlock<'_>,
     u_prediction: &[T],
     v_block: CoeffBlock<'_>,
@@ -68,7 +65,6 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into_with<
     u_out: &mut Vec<T>,
     v_out: &mut Vec<T>,
 ) -> Result<(), GeneralIntraResidualError> {
-    let backend = backend.narrow();
     let u_setup = reconstruct_block_setup(
         u_prediction.len(),
         qindex,
@@ -145,8 +141,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into_with<
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn add_cctx_pair_residual_in_place_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn add_cctx_pair_residual_in_place_with<T: ReconSample>(
+    backend: SimdBackend,
     surface: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
     [u_block, v_block]: [CoeffBlock<'_>; 2],
@@ -156,7 +152,6 @@ pub(crate) fn add_cctx_pair_residual_in_place_with<B: SimdBackend, T: ReconSampl
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    let backend = backend.narrow();
     let (log2_width, log2_height) = (size.log2_width().into(), size.log2_height().into());
     let setup = |plane, block: CoeffBlock<'_>| {
         reconstruct_block_setup(
@@ -226,8 +221,8 @@ pub(crate) fn add_cctx_pair_residual_in_place_with<B: SimdBackend, T: ReconSampl
 
 /// The § 7.14.6 dequantized pair: the whole rows that the longer block
 /// reaches.
-fn dequantize_cctx_pair<'a, B: SimdBackend>(
-    backend: B,
+fn dequantize_cctx_pair<'a>(
+    backend: SimdBackend,
     [u, v]: [CoeffBlock<'_>; 2],
     [u_setup, v_setup]: [&ReconstructBlockSetup; 2],
     [u_out, v_out]: [&'a mut [i32]; 2],

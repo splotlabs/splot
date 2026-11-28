@@ -75,10 +75,10 @@ impl CdefLumaSegment {
     }
 
     /// Variant of [`Self::gather`] using the caller's startup-selected
-    /// static SIMD backend `backend`.
-    pub fn gather_with<B: SimdBackend, T: crate::ReconSample>(
+    /// SIMD backend `backend`.
+    pub fn gather_with<T: crate::ReconSample>(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         samples: &[T],
         width: usize,
         stride: usize,
@@ -125,11 +125,11 @@ impl CdefLumaSegment {
     }
 
     /// Variant of [`Self::gather_bytes`] using the caller's startup-selected
-    /// static SIMD backend `backend`.
+    /// SIMD backend `backend`.
     #[inline]
-    pub fn gather_bytes_with<B: SimdBackend>(
+    pub fn gather_bytes_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         samples: &[u8],
         width: usize,
         stride: usize,
@@ -245,10 +245,10 @@ impl CdefPairSegment {
     }
 
     /// Variant of [`Self::gather`] using the caller's startup-selected
-    /// static SIMD backend `backend`.
-    pub fn gather_with<B: SimdBackend, T: crate::ReconSample>(
+    /// SIMD backend `backend`.
+    pub fn gather_with<T: crate::ReconSample>(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         u: &[T],
         v: &[T],
         width: usize,
@@ -404,7 +404,7 @@ trait SegmentSimd: Copy {
 struct BaselineSegment;
 
 #[derive(Clone, Copy)]
-struct TypedSegment<B: SimdBackend>(B);
+struct TypedSegment(SimdBackend);
 
 impl SegmentSimd for BaselineSegment {
     #[inline]
@@ -417,15 +417,14 @@ impl SegmentSimd for BaselineSegment {
     }
 }
 
-impl<B: SimdBackend> SegmentSimd for TypedSegment<B> {
+impl SegmentSimd for TypedSegment {
     #[inline]
     fn gather<O>(self, op: impl SegmentGather<O>) -> Option<O> {
         #[cfg(target_arch = "x86_64")]
         if let Some(avx2) = self.0.avx2_token() {
             return op.run(avx2, MinPos);
         }
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => op.run(simd, Reduced))
+        splot_core::with_simd!(self.0, simd => op.run(simd, Reduced))
     }
 }
 
@@ -1367,9 +1366,12 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
 }
 
 /// Variant of [`cdef_filter_segment`] using the caller's startup-selected
-/// static SIMD backend `backend`.
-pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
-    backend: B,
+/// SIMD backend `backend`. Kept out of line: inlined into its one caller, the
+/// block loop sits deep enough that LLVM rates the direction kernel's call
+/// cold and leaves the kernel out of line, 20 instructions a block more.
+#[inline(never)]
+pub fn cdef_filter_segment_with<T: crate::ReconSample>(
+    backend: SimdBackend,
     segment: &CdefLumaSegment,
     unit: &CdefUnitFilters,
     blocks: [CdefSegmentBlock; CDEF_SEGMENT_BLOCKS],
@@ -1380,8 +1382,7 @@ pub fn cdef_filter_segment_with<B: SimdBackend, T: crate::ReconSample>(
     if let Some(avx2) = backend.avx2_token() {
         return segment_with(avx2, InLane, segment, unit, blocks, fill_flat, output);
     }
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => segment_with(
+    splot_core::with_simd!(backend, simd => segment_with(
         simd, Ordered, segment, unit, blocks, fill_flat, output,
     ))
 }
@@ -1539,14 +1540,13 @@ pub fn cdef_publish_chroma_pair<T: crate::ReconSample>(
 }
 
 /// Variant of [`cdef_publish_chroma_pair`] using the caller's startup-selected
-/// static SIMD backend `backend`.
-pub fn cdef_publish_chroma_pair_with<B: SimdBackend, T: crate::ReconSample>(
-    backend: B,
+/// SIMD backend `backend`.
+pub fn cdef_publish_chroma_pair_with<T: crate::ReconSample>(
+    backend: SimdBackend,
     output: &[u16; CDEF_PAIR_OUTPUT],
     planes: [(&mut [T], usize); 2],
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => publish_pair(simd, output, planes)).is_some()
+    splot_core::with_simd!(backend, simd => publish_pair(simd, output, planes)).is_some()
 }
 
 /// Writes the interleaved chroma pair `output` into the four rows of the U

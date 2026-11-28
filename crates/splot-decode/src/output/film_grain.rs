@@ -16,15 +16,18 @@ pub(crate) struct GrainPlanes {
     pub(crate) ten: FramePlaneSamples<u16>,
 }
 
-/// Applies `grain` to `frame` into `spare` using `backend`.
+/// Applies `grain` to `frame` into `spare` using `backend` and the wider
+/// kernels of `kernels`.
 pub(crate) fn apply<T: ReconSample>(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     frame: &DecodedFrame<T>,
     grain: &ActiveFilmGrain,
     spare: FramePlaneSamples<T>,
 ) -> Result<DecodedFrame<T>> {
     Ok(splot_recon::apply_film_grain_into_with(
         backend,
+        kernels,
         frame,
         &grain.model,
         grain.grain_seed,
@@ -35,7 +38,8 @@ pub(crate) fn apply<T: ReconSample>(
 /// Gives `write` the displayed form of `frame`: the frame itself, or a grained
 /// copy in the `spare` planes, which keep its storage for the next frame.
 pub(crate) fn write_display<T: ReconSample>(
-    backend: impl SimdBackend,
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     frame: &DecodedFrame<T>,
     grain: Option<&ActiveFilmGrain>,
     spare: &mut FramePlaneSamples<T>,
@@ -44,7 +48,7 @@ pub(crate) fn write_display<T: ReconSample>(
     let Some(grain) = grain else {
         return write(frame);
     };
-    let grained = apply(backend, frame, grain, core::mem::take(spare))?;
+    let grained = apply(backend, kernels, frame, grain, core::mem::take(spare))?;
     let written = write(&grained);
     *spare = grained.into_plane_samples();
     written

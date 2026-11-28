@@ -18,10 +18,10 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
         && T::u16_slice(samples).is_some_and(|samples| u16_samples_exceed(samples, max_sample))
 }
 
-/// Typed [`samples_exceed`] using caller-selected `backend` with no baseline re-probe.
+/// [`samples_exceed`] using caller-selected `backend` with no baseline re-probe.
 #[inline]
-pub(crate) fn samples_exceed_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn samples_exceed_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &[T],
     max_sample: u16,
 ) -> bool {
@@ -40,14 +40,14 @@ pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
     baseline_simd!(simd => u16_peak_exceeds(simd, samples, max_sample))
 }
 
-/// Typed [`u16_samples_exceed`] using caller-selected `backend` with no baseline re-probe.
-pub(crate) fn u16_samples_exceed_with<B: SimdBackend>(
-    backend: B,
+/// [`u16_samples_exceed`] using caller-selected `backend` with no baseline re-probe.
+#[inline]
+pub(crate) fn u16_samples_exceed_with(
+    backend: SimdBackend,
     samples: &[u16],
     max_sample: u16,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => u16_peak_exceeds(simd, samples, max_sample))
+    splot_core::with_simd!(backend, simd => u16_peak_exceeds(simd, samples, max_sample))
 }
 
 #[inline]
@@ -122,14 +122,13 @@ pub fn sum_samples<T: SummedSample>(samples: &[T], every_second: bool) -> u32 {
     baseline_simd!(simd => sum_lanes(simd, samples, every_second))
 }
 
-/// Typed [`sum_samples`] using caller-selected `backend` with no baseline re-probe.
-pub fn sum_samples_with<B: SimdBackend, T: SummedSample>(
-    backend: B,
+/// [`sum_samples`] using caller-selected `backend` with no baseline re-probe.
+pub fn sum_samples_with<T: SummedSample>(
+    backend: SimdBackend,
     samples: &[T],
     every_second: bool,
 ) -> u32 {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => sum_lanes(simd, samples, every_second))
+    splot_core::with_simd!(backend, simd => sum_lanes(simd, samples, every_second))
 }
 
 #[inline]
@@ -201,11 +200,11 @@ mod tests {
 
     #[test]
     fn typed_backend_entry_matches_compatibility_scans() {
-        use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdPolicy, resolve_backend};
 
         struct ParityProbe<'a>(&'a [u16], &'a [u8], &'a [i16]);
-        impl SimdScope<()> for ParityProbe<'_> {
-            fn run<B: SimdBackend>(self, backend: B) {
+        impl ParityProbe<'_> {
+            fn run(self, backend: SimdBackend) {
                 for every_second in [false, true] {
                     assert_eq!(
                         sum_samples_with(backend, self.0, every_second),
@@ -237,10 +236,10 @@ mod tests {
             let mut wide: Vec<u16> = (0..len).map(|i| ((i * 7919 + 13) % 1024) as u16).collect();
             let narrow: Vec<u8> = wide.iter().map(|&v| (v >> 2) as u8).collect();
             let signed: Vec<i16> = wide.iter().map(|&v| (v * 8) as i16).collect();
-            resolved.enter(ParityProbe(&wide, &narrow, &signed));
+            ParityProbe(&wide, &narrow, &signed).run(resolved.backend());
             if let Some(last) = wide.last_mut() {
                 *last = 1001;
-                resolved.enter(ParityProbe(&wide, &narrow, &signed));
+                ParityProbe(&wide, &narrow, &signed).run(resolved.backend());
             }
         }
     }

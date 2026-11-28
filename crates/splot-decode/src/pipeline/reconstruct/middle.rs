@@ -41,11 +41,8 @@ pub(crate) struct TwoSidedMiddleEdgeFilters {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
@@ -141,11 +138,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -273,11 +267,8 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,
@@ -343,8 +334,8 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_two_sided_middle_luma_mrl_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
     x: usize,
@@ -649,8 +640,8 @@ fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     Ok(edge)
 }
 
-fn build_two_sided_middle_idif_edge<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn build_two_sided_middle_idif_edge<T: ReconSample>(
+    backend: SimdBackend,
     side: usize,
     edge_filter: OneSidedEdgeFilter,
     corner: T,
@@ -670,11 +661,8 @@ fn build_two_sided_middle_idif_edge<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     direction: IntraCardinalDirection,

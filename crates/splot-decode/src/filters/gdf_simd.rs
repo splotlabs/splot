@@ -750,8 +750,8 @@ impl RowSink for ErrorRows<'_> {
 
 /// [`sym_rows_with`] through the target's widest kernel.
 #[inline(never)]
-pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -767,8 +767,8 @@ pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
 }
 
 /// [`sym_rows_with`] through the portable kernel.
-pub(super) fn sym_rows_portable<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows_portable<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -788,8 +788,8 @@ pub(super) fn sym_rows_portable<B: splot_core::simd::SimdBackend, O: GdfSample>(
 /// Filters in place `width` samples (at most 16) from column `x` of a row
 /// pair through `sym_rows`, on copies padded to 16 lanes.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn sym_rows_narrow<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows_narrow<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     rows: &[&[u16]; WINDOW_ROWS],
     x: usize,
     width: usize,
@@ -828,8 +828,8 @@ pub(super) fn sym_rows_narrow<B: splot_core::simd::SimdBackend, O: GdfSample>(
 
 /// Writes `src << shift` into `dst`, as long as `src`, and returns the
 /// largest sample of `src`.
-pub(super) fn copy_shifted<B: splot_core::simd::SimdBackend, T: GdfSample>(
-    backend: B,
+pub(super) fn copy_shifted<T: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     src: &[T],
     dst: &mut [u16],
     shift: u32,
@@ -1119,8 +1119,8 @@ impl RunParams {
 /// `TAP_REACH` samples of halo on each side and `TILE_STRIDE` samples of
 /// storage per row.
 #[inline(never)]
-pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn filter_run<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     source: &[u16],
     run: (&GdfBlock, &RunParams),
     output: &mut [O],
@@ -1135,8 +1135,8 @@ pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
 
 #[expect(clippy::inline_always)]
 #[inline(always)]
-fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O: GdfSample>(
-    backend: B,
+fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     simd: S,
     pairs: P,
     source: &[u16],

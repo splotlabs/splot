@@ -49,8 +49,8 @@ pub(super) fn background(rgb: Option<(u8, u8, u8)>, depth: BitDepth) -> [u16; 3]
     ]
 }
 
-pub(super) fn canvas<'a, B: SimdBackend, T: CanvasSample>(
-    backend: B,
+pub(super) fn canvas<'a, T: CanvasSample>(
+    backend: SimdBackend,
     storage: &'a mut [T],
     alpha_scratch: &mut Storage,
     info: &AtlasMultistreamInfo,
@@ -137,8 +137,8 @@ fn row<T: splot_recon::ReconSample>(
     clippy::too_many_arguments,
     reason = "the plane, scratch, and two independent segment rectangles define Annex D.5"
 )]
-pub(super) fn paint<B: SimdBackend, T: AtlasSample>(
-    backend: B,
+pub(super) fn paint<T: AtlasSample>(
+    backend: SimdBackend,
     canvas: &mut [T],
     scratch: &mut [T],
     alpha_scratch: &mut Storage,

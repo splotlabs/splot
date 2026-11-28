@@ -440,13 +440,13 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
         )
     }
 
-    /// Typed [`Self::add_block_residual`] using caller-selected `backend`.
+    /// [`Self::add_block_residual`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::add_block_residual`].
-    pub fn add_block_residual_with<B: SimdBackend>(
+    pub fn add_block_residual_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         prediction: &[T],
         residual: &[i32],
     ) -> Result<()> {
@@ -653,14 +653,14 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
         crate::intra_ibp_dc::predict_dc_in_frame(self.samples, block)
     }
 
-    /// Typed [`Self::predict_dc`] using caller-selected `backend`.
+    /// [`Self::predict_dc`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns [`ReconError`] for a sample type that cannot hold `bit_depth`.
     #[inline]
-    pub fn predict_dc_with<B: SimdBackend>(
+    pub fn predict_dc_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         size: IntraRectBlockSize,
         bit_depth: BitDepth,
         edges: [bool; 2],
@@ -1047,74 +1047,73 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let info8 = DecodedFrameInfo::new(
-                    crate::OutputIndex::new(0),
-                    BitDepth::Eight,
-                    crate::PixelFormat::Monochrome,
-                    PlaneSize::new(32, 32).unwrap(),
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                )
-                .unwrap();
-                let mut ws_a = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
-                let mut ws_b = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
-                let init8: Vec<u8> = (0..32 * 32).map(|i| ((i * 19 + 5) % 256) as u8).collect();
-                ws_a.write_rect(
-                    PlaneId::Y,
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                    &init8,
-                    32,
-                )
-                .unwrap();
-                ws_b.write_rect(
-                    PlaneId::Y,
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                    &init8,
-                    32,
-                )
-                .unwrap();
+        fn check(backend: SimdBackend) {
+            let info8 = DecodedFrameInfo::new(
+                crate::OutputIndex::new(0),
+                BitDepth::Eight,
+                crate::PixelFormat::Monochrome,
+                PlaneSize::new(32, 32).unwrap(),
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+            )
+            .unwrap();
+            let mut ws_a = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+            let mut ws_b = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+            let init8: Vec<u8> = (0..32 * 32).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+            ws_a.write_rect(
+                PlaneId::Y,
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+                &init8,
+                32,
+            )
+            .unwrap();
+            ws_b.write_rect(
+                PlaneId::Y,
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+                &init8,
+                32,
+            )
+            .unwrap();
 
-                let size = IntraRectBlockSize::new(3, 3).unwrap();
-                let pred8 = vec![120u8; 64];
-                let res = vec![-15i32; 64];
-                ws_a.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
-                    row.add_block_residual(&pred8, &res)
-                })
-                .unwrap()
-                .unwrap();
-                ws_b.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
-                    row.add_block_residual_with(backend, &pred8, &res)
-                })
-                .unwrap()
-                .unwrap();
-                assert_eq!(
-                    ws_b.samples(PlaneId::Y).unwrap(),
-                    ws_a.samples(PlaneId::Y).unwrap()
-                );
+            let size = IntraRectBlockSize::new(3, 3).unwrap();
+            let pred8 = vec![120u8; 64];
+            let res = vec![-15i32; 64];
+            ws_a.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                row.add_block_residual(&pred8, &res)
+            })
+            .unwrap()
+            .unwrap();
+            ws_b.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                row.add_block_residual_with(backend, &pred8, &res)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                ws_b.samples(PlaneId::Y).unwrap(),
+                ws_a.samples(PlaneId::Y).unwrap()
+            );
 
-                ws_a.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
-                    f.predict_dc(size, BitDepth::Eight, [true, true], true)
-                })
-                .unwrap()
-                .unwrap();
-                ws_b.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
-                    f.predict_dc_with(backend, size, BitDepth::Eight, [true, true], true)
-                })
-                .unwrap()
-                .unwrap();
-                assert_eq!(
-                    ws_b.samples(PlaneId::Y).unwrap(),
-                    ws_a.samples(PlaneId::Y).unwrap()
-                );
-            }
+            ws_a.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                f.predict_dc(size, BitDepth::Eight, [true, true], true)
+            })
+            .unwrap()
+            .unwrap();
+            ws_b.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                f.predict_dc_with(backend, size, BitDepth::Eight, [true, true], true)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                ws_b.samples(PlaneId::Y).unwrap(),
+                ws_a.samples(PlaneId::Y).unwrap()
+            );
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

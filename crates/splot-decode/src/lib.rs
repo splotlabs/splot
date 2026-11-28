@@ -88,7 +88,7 @@ mod test_support;
 mod tile;
 
 pub use bitstream::stream_plan;
-pub use context::{DecodeContext, DecodeScope, TypedDecodeContext};
+pub use context::DecodeContext;
 use core::fmt;
 pub use decoder::{
     AtlasComposite, AtlasCompositionError, AtlasCompositor, BaseQuantizer, BaseQuantizerOrigin,

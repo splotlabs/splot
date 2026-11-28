@@ -247,30 +247,26 @@ impl PassEdges {
     }
 
     /// Decides every edge of `plane_pass` from the records on its two sides.
-    pub(super) fn build<B: splot_core::simd::SimdBackend>(
+    pub(super) fn build(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         grid: &MiGrid<'_>,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
     ) -> Result<(), DeblockError> {
         match (plane_pass.plane, plane_pass.pass) {
-            (0, 0) => self.build_specialized::<_, 0, 0>(backend, grid, plane_pass, geometry),
-            (0, _) => self.build_specialized::<_, 0, 1>(backend, grid, plane_pass, geometry),
-            (1, 0) => self.build_specialized::<_, 1, 0>(backend, grid, plane_pass, geometry),
-            (1, _) => self.build_specialized::<_, 1, 1>(backend, grid, plane_pass, geometry),
-            (2, 0) => self.build_specialized::<_, 2, 0>(backend, grid, plane_pass, geometry),
-            _ => self.build_specialized::<_, 2, 1>(backend, grid, plane_pass, geometry),
+            (0, 0) => self.build_specialized::<0, 0>(backend, grid, plane_pass, geometry),
+            (0, _) => self.build_specialized::<0, 1>(backend, grid, plane_pass, geometry),
+            (1, 0) => self.build_specialized::<1, 0>(backend, grid, plane_pass, geometry),
+            (1, _) => self.build_specialized::<1, 1>(backend, grid, plane_pass, geometry),
+            (2, 0) => self.build_specialized::<2, 0>(backend, grid, plane_pass, geometry),
+            _ => self.build_specialized::<2, 1>(backend, grid, plane_pass, geometry),
         }
     }
 
-    fn build_specialized<
-        B: splot_core::simd::SimdBackend,
-        const PLANE: usize,
-        const PASS: usize,
-    >(
+    fn build_specialized<const PLANE: usize, const PASS: usize>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         grid: &MiGrid<'_>,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
@@ -310,7 +306,7 @@ impl PassEdges {
         );
         if !plane_pass.allow_df_sub_pu {
             let facts = grid.facts.ok_or(DeblockError::Workspace)?;
-            return self.build_from_facts::<_, PLANE, PASS>(
+            return self.build_from_facts::<PLANE, PASS>(
                 backend, facts, plane_pass, geometry, first, &strengths,
             );
         }
@@ -490,9 +486,9 @@ impl PassEdges {
     /// vertical edges reuse the row above's decisions when all 17 cells match
     /// except for `EDGE_H`. The leftmost cell's match comes from the previous
     /// group after the first.
-    fn build_from_facts<B: splot_core::simd::SimdBackend, const PLANE: usize, const PASS: usize>(
+    fn build_from_facts<const PLANE: usize, const PASS: usize>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         facts: &PlaneFacts,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
@@ -704,9 +700,9 @@ impl PassEdges {
     /// through the batched kernels where their samples 8 either side of the
     /// edge lie in the band, and the rest in runs of [`LONE_RUN`] through
     /// padded copies of their samples.
-    pub(super) fn apply<B: splot_core::simd::SimdBackend, T: ReconSample, const PASS: usize>(
+    pub(super) fn apply<T: ReconSample, const PASS: usize>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -741,7 +737,7 @@ impl PassEdges {
                     .get(columns.start..)
                     .ok_or(DeblockError::Workspace)?;
                 let live = self.live.get(columns).ok_or(DeblockError::Workspace)?;
-                deblock_vertical_edge_band_with::<_, T>(
+                deblock_vertical_edge_band_with::<T>(
                     backend,
                     samples,
                     stride,
@@ -785,7 +781,7 @@ impl PassEdges {
                         .edges
                         .get(line * self.stride..line * self.stride + full)
                         .ok_or(DeblockError::Workspace)?;
-                    deblock_horizontal_edges_with::<_, T>(
+                    deblock_horizontal_edges_with::<T>(
                         backend, samples, stride, first, row, bit_depth,
                     )
                     .map_err(|_| DeblockError::SampleFilter)?;
@@ -815,7 +811,7 @@ impl PassEdges {
                     y_p,
                     edges: run,
                 }
-                .filter::<_, T, PASS>(backend, ctx, bit_depth)?;
+                .filter::<T, PASS>(backend, ctx, bit_depth)?;
             }
         }
         Ok(())
@@ -942,9 +938,9 @@ impl LoneRun<'_> {
     /// writes back the samples inside. A changed sample outside the plane or
     /// band is the error the per-line path gives; it is checked against the
     /// plane only when the widest `maxWidthPos` of the run reaches outside.
-    pub(super) fn filter<B: splot_core::simd::SimdBackend, T: ReconSample, const PASS: usize>(
+    pub(super) fn filter<T: ReconSample, const PASS: usize>(
         self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {

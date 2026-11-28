@@ -409,11 +409,11 @@ pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
     subpel_compound_cells_with_runner(super::BaselineSubpel, planes, interp, size, cells, clip)
 }
 
-/// Typed [`subpel_compound_cells`] using caller-selected `backend`.
+/// [`subpel_compound_cells`] using caller-selected `backend`.
 #[doc(hidden)]
 #[inline]
-pub fn subpel_compound_cells_with<B: SimdBackend, T: ReconSample, O: ReconSample>(
-    backend: B,
+pub fn subpel_compound_cells_with<T: ReconSample, O: ReconSample>(
+    backend: SimdBackend,
     planes: [Option<CellPlane<'_, '_, T, O>>; 2],
     interp: InterpolationFilter,
     size: usize,
@@ -421,7 +421,7 @@ pub fn subpel_compound_cells_with<B: SimdBackend, T: ReconSample, O: ReconSample
     clip: (i16, crate::format::BitDepth),
 ) -> Written {
     subpel_compound_cells_with_runner(
-        super::TypedSubpel(backend.narrow()),
+        super::TypedSubpel(backend),
         planes,
         interp,
         size,

@@ -23,6 +23,16 @@ pub(crate) type PaethFn<O> = fn(IntraRectBlockSize, (&[O], &[O], u16), &mut [O],
 #[cfg(target_arch = "x86_64")]
 pub(crate) type PaletteFn<O> = fn([u8; 16], Option<[u8; 16]>, &[u8], &mut [O]) -> u8;
 
+/// Scaled film-grain noise added to one row: the row, its scaling values and
+/// its noise.
+#[cfg(target_arch = "x86_64")]
+pub(crate) type GrainFn<O> =
+    fn(&mut [O], &[i16], &[i16], crate::film_grain::NoiseParams) -> crate::Result<()>;
+
+/// Luma film-grain noise of one 8-bit row through its packed scaling table.
+#[cfg(target_arch = "x86_64")]
+pub(crate) type LumaGrainFn = fn(&mut [u8], &[u8; 256], &[i16], crate::film_grain::NoiseParams);
+
 /// One entry per kernel and sample type. Each is made by a factory beside
 /// its kernel, which converts the kernel to a pointer where the AVX-512
 /// features are enabled.
@@ -32,6 +42,9 @@ pub(crate) struct WideKernels {
     pub(crate) paeth_u16: PaethFn<u16>,
     pub(crate) palette_u8: PaletteFn<u8>,
     pub(crate) palette_u16: PaletteFn<u16>,
+    pub(crate) grain_u8: GrainFn<u8>,
+    pub(crate) grain_u16: GrainFn<u16>,
+    pub(crate) luma_grain: LumaGrainFn,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -44,6 +57,9 @@ impl WideKernels {
             paeth_u16: crate::intra_basic::bind_paeth_u16(token),
             palette_u8: crate::intra::bind_palette_u8(token),
             palette_u16: crate::intra::bind_palette_u16(token),
+            grain_u8: crate::film_grain::bind_grain_u8(token),
+            grain_u16: crate::film_grain::bind_grain_u16(token),
+            luma_grain: crate::film_grain::bind_luma_grain(token),
         })
     }
 }

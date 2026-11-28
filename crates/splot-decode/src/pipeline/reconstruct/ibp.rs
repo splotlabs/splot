@@ -27,11 +27,8 @@ pub(crate) struct IbpSecondary {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     p_angle: u16,

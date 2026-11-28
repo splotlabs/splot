@@ -153,44 +153,41 @@ fn ibp_u16_lane_blend_matches_the_scalar_blend() {
 
 #[test]
 fn typed_backend_matches_compatibility_route() {
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-    struct Check;
-    impl SimdScope<()> for Check {
-        fn run<B: SimdBackend>(self, backend: B) {
-            for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 4)] {
-                let size = IntraRectBlockSize::new(log2_w, log2_h).unwrap();
-                let len = size.width() * size.height();
-                for p_angle in [40u16, 130] {
-                    let primary8: Vec<u8> = (0..len).map(|i| ((i * 37 + 11) % 256) as u8).collect();
-                    let second8: Vec<u8> = (0..len).map(|i| ((i * 53 + 29) % 256) as u8).collect();
-                    let (mut compat8, mut typed8) = (
-                        Vec::from(primary8.as_slice()),
-                        Vec::from(primary8.as_slice()),
-                    );
-                    apply_ibp_dr_blend_rect(size, p_angle, &mut compat8, &second8).unwrap();
-                    apply_ibp_dr_blend_rect_with(backend, size, p_angle, &mut typed8, &second8)
-                        .unwrap();
-                    assert_eq!(typed8, compat8);
+    fn check(backend: SimdBackend) {
+        for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 4)] {
+            let size = IntraRectBlockSize::new(log2_w, log2_h).unwrap();
+            let len = size.width() * size.height();
+            for p_angle in [40u16, 130] {
+                let primary8: Vec<u8> = (0..len).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+                let second8: Vec<u8> = (0..len).map(|i| ((i * 53 + 29) % 256) as u8).collect();
+                let (mut compat8, mut typed8) = (
+                    Vec::from(primary8.as_slice()),
+                    Vec::from(primary8.as_slice()),
+                );
+                apply_ibp_dr_blend_rect(size, p_angle, &mut compat8, &second8).unwrap();
+                apply_ibp_dr_blend_rect_with(backend, size, p_angle, &mut typed8, &second8)
+                    .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let primary10: Vec<u16> =
-                        (0..len).map(|i| ((i * 113 + 7) % 1024) as u16).collect();
-                    let second10: Vec<u16> =
-                        (0..len).map(|i| ((i * 149 + 19) % 1024) as u16).collect();
-                    let (mut compat10, mut typed10) = (
-                        Vec::from(primary10.as_slice()),
-                        Vec::from(primary10.as_slice()),
-                    );
-                    apply_ibp_dr_blend_rect(size, p_angle, &mut compat10, &second10).unwrap();
-                    apply_ibp_dr_blend_rect_with(backend, size, p_angle, &mut typed10, &second10)
-                        .unwrap();
-                    assert_eq!(typed10, compat10);
-                }
+                let primary10: Vec<u16> = (0..len).map(|i| ((i * 113 + 7) % 1024) as u16).collect();
+                let second10: Vec<u16> = (0..len).map(|i| ((i * 149 + 19) % 1024) as u16).collect();
+                let (mut compat10, mut typed10) = (
+                    Vec::from(primary10.as_slice()),
+                    Vec::from(primary10.as_slice()),
+                );
+                apply_ibp_dr_blend_rect(size, p_angle, &mut compat10, &second10).unwrap();
+                apply_ibp_dr_blend_rect_with(backend, size, p_angle, &mut typed10, &second10)
+                    .unwrap();
+                assert_eq!(typed10, compat10);
             }
         }
     }
 
-    resolve_backend(SimdPolicy::Auto)
-        .expect("auto backend")
-        .enter(Check);
+    check(
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .backend(),
+    );
 }

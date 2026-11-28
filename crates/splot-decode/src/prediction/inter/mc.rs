@@ -57,8 +57,8 @@ const MAX_MC_BLOCK_SAMPLES: usize = MAX_MC_BLOCK_DIM * MAX_MC_BLOCK_DIM;
 const MAX_REFINEMV_PREDICTION_DIM: usize = MAX_MC_BLOCK_DIM + 8;
 
 /// The warp samples clipped to `0..=max_sample`; `N` is 16 or 64.
-fn clip_and_pack_warp_samples<B: splot_core::simd::SimdBackend, T: ReconSample, const N: usize>(
-    backend: B,
+fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
+    backend: splot_core::simd::SimdBackend,
     samples: &[i32; N],
     max_sample: i32,
 ) -> [T; N] {
@@ -403,11 +403,8 @@ impl<T: Send + 'static> Drop for RecycledMcSamples<T> {
 
 /// Predicts `block` into `sink`; a compound block that refines its motion
 /// derives it first into a scratch of its own.
-pub(crate) fn motion_compensate_inter_block_into<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     offset: ByteOffset,
@@ -423,8 +420,8 @@ pub(crate) fn motion_compensate_inter_block_into<
 }
 
 /// Predicts a block that does not refine its motion into `sink`.
-pub(crate) fn predict_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_inter_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &InterBlockParams<'_, T>,
     offset: ByteOffset,
@@ -466,11 +463,8 @@ pub(crate) fn predict_inter_block<B: splot_core::simd::SimdBackend, T: ReconSamp
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn motion_compensate_single_block_into<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
@@ -588,8 +582,8 @@ fn motion_compensate_planes<T: ReconSample>(
 /// Predicts a compound block straight into `sink`; a block without warp
 /// goes to [`compound_mask::predict`]. Only a warp plane that the frame edge
 /// clips goes through a temporary first.
-pub(super) fn predict_compound_into<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn predict_compound_into<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     offset: ByteOffset,
@@ -639,8 +633,8 @@ pub(super) fn predict_compound_into<B: splot_core::simd::SimdBackend, T: ReconSa
     Ok(())
 }
 
-fn motion_compensate_single_warp_block_into<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn motion_compensate_single_warp_block_into<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     block: &InterBlockParams<'_, T>,
@@ -679,8 +673,8 @@ fn motion_compensate_single_warp_block_into<B: splot_core::simd::SimdBackend, T:
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_plane<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_plane<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
@@ -760,8 +754,8 @@ pub(crate) fn plane_prediction<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_warp_plane<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_warp_plane<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
@@ -915,8 +909,8 @@ fn predict_warp_plane<B: splot_core::simd::SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_compound_plane_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_compound_plane_output<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     info: DecodedFrameInfo,
     block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
@@ -954,7 +948,7 @@ fn predict_compound_plane_output<B: splot_core::simd::SimdBackend, T: ReconSampl
         )?;
         return Ok(());
     }
-    blend_compound_average::<_, T>(
+    blend_compound_average::<T>(
         backend,
         pred0,
         pred1,
@@ -973,12 +967,8 @@ fn predict_compound_plane_output<B: splot_core::simd::SimdBackend, T: ReconSampl
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_compound_average_into<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    O: CompoundAverageOutput,
->(
-    backend: B,
+fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     plane: &CompoundSubpelPlane<'_, T>,
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
@@ -1033,12 +1023,8 @@ fn predict_compound_average_into<
 }
 
 #[expect(clippy::too_many_arguments)]
-fn predict_compound_average_pred0_into<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    O: CompoundAverageOutput,
->(
-    backend: B,
+fn predict_compound_average_pred0_into<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     plane: &CompoundSubpelPlane<'_, T>,
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
@@ -1340,8 +1326,8 @@ fn translational_compound_plane<'a, T: ReconSample>(
 /// own § 7.13.3.23 model (§ 7.13.3.19 block warp, § 7.13.3.20 extended warp for
 /// invalid shear / sub-8x8, or translational when the list has no samples), then
 /// feed the two § 7.13.3.16 `Preds[refList]` intermediates to the compound blend.
-fn compound_warp_plane_prediction<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn compound_warp_plane_prediction<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     info: DecodedFrameInfo,
     block: &CompoundMcBlock<'_, T>,
     plane: PlaneId,
@@ -1395,8 +1381,8 @@ fn compound_warp_plane_prediction<B: splot_core::simd::SimdBackend, T: ReconSamp
 }
 
 #[expect(clippy::too_many_arguments)]
-fn compound_ref_intermediate<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn compound_ref_intermediate<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     info: DecodedFrameInfo,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
@@ -1702,11 +1688,8 @@ fn rows_view<T: ReconSample>(
     )?)
 }
 
-pub(crate) fn intrabc_predict_subpel_plane_into<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
     target: PlaneRect,

@@ -44,9 +44,7 @@ use crate::ReconSample;
 use splot_core::simd::SimdBackend;
 
 mod direction_backend;
-pub use direction_backend::{
-    CdefDirectionBackend, cdef_direction_padded_with, cdef_direction_padded_with_backend,
-};
+pub use direction_backend::cdef_direction_padded_with;
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
@@ -139,10 +137,27 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     };
     // 8-bit rows skip the shift: a register-count shift is two micro-ops.
     if coeff_shift == 0 {
-        core::array::from_fn(|i| row(i).bitcast::<i16x8<S>>() - 128)
+        eight_rows(|i| row(i).bitcast::<i16x8<S>>() - 128)
     } else {
-        core::array::from_fn(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
+        eight_rows(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
     }
+}
+
+/// `[row(0), .., row(7)]`, expanded in the caller: `core::array::from_fn`
+/// leaves the choice to the inliner, which took it out of the 10-bit path.
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn eight_rows<T>(row: impl Fn(usize) -> T) -> [T; 8] {
+    [
+        row(0),
+        row(1),
+        row(2),
+        row(3),
+        row(4),
+        row(5),
+        row(6),
+        row(7),
+    ]
 }
 
 #[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
@@ -1365,8 +1380,8 @@ pub fn cdef_filter_block_interior_to_valid_stride<T: ReconSample>(
 
 /// Variant of [`cdef_filter_block_interior_to_valid_stride`] using `backend`.
 #[doc(hidden)]
-pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn cdef_filter_block_interior_to_valid_stride_with<T: ReconSample>(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
@@ -1374,8 +1389,7 @@ pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_to_valid_stride_simd::<_, T, false>(
             simd, pad, w, h, filter, out, out_stride,
         )
@@ -1400,8 +1414,8 @@ pub fn cdef_filter_block_boundary_to_valid_stride<T: ReconSample>(
 
 /// Variant of [`cdef_filter_block_boundary_to_valid_stride`] using `backend`.
 #[doc(hidden)]
-pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn cdef_filter_block_boundary_to_valid_stride_with<T: ReconSample>(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
@@ -1409,8 +1423,7 @@ pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_to_valid_stride_simd::<_, T, true>(
             simd, pad, w, h, filter, out, out_stride,
         )
@@ -1546,16 +1559,16 @@ pub fn cdef_filter_block_chroma_pair(
 }
 
 /// Variant of [`cdef_filter_block_chroma_pair`] using the caller's
-/// startup-selected static SIMD backend `backend`.
-pub fn cdef_filter_block_chroma_pair_with<B: SimdBackend>(
-    backend: B,
+/// startup-selected SIMD backend `backend`.
+#[inline]
+pub fn cdef_filter_block_chroma_pair_with(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out)
     })
 }

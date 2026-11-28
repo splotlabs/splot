@@ -161,10 +161,9 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_with<
-    B: SimdBackend,
     T: ReconSample,
 >(
-    backend: B,
+    backend: SimdBackend,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
@@ -194,7 +193,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_wi
         (plane_id, dpcm, None)
     };
     super::reconstruct_general_intra_block_rect_with_prediction_core(
-        backend.narrow(),
+        backend,
         block,
         prediction,
         out,
@@ -227,11 +226,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_wi
 /// out-of-range samples only the buffered write can reject — leaving the caller
 /// to reconstruct it through the staging buffer.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     prediction: &[T],
@@ -245,7 +241,6 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<bool, GeneralIntraResidualError> {
-    let backend = backend.narrow();
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
@@ -396,8 +391,8 @@ fn has_secondary(block: CoeffBlock<'_>) -> bool {
 /// intra luma context, `None` for an inter block. `false` with `dst`
 /// untouched sends the block down the general path.
 #[inline(never)]
-fn add_secondary_fused<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn add_secondary_fused<T: ReconSample>(
+    backend: SimdBackend,
     block: CoeffBlock<'_>,
     (block_size, plane_id, bit_depth): (IntraRectBlockSize, PlaneId, BitDepth),
     (qindex, use_tcq, use_ddt): (u32, bool, bool),
@@ -477,11 +472,8 @@ fn dq_denom(pels: usize, use_tcq: bool, plane_tx_type: usize) -> u32 {
 /// Adds an intra block's residual onto the prediction already written into
 /// the frame rows, the destination inter residuals are added into as well.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -494,7 +486,6 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    let backend = backend.narrow();
     #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
     let fused = fused_intra_setup(
@@ -542,7 +533,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<
             && let Some((dst, stride)) = surface
                 .residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
-            && add_secondary_fused::<_, T>(
+            && add_secondary_fused::<T>(
                 backend,
                 block,
                 (block_size, PlaneId::Y, bit_depth),
@@ -649,8 +640,8 @@ fn raster_quant<'a>(
     Ok(raster)
 }
 
-fn dequantize_residual<B: SimdBackend>(
-    backend: B,
+fn dequantize_residual(
+    backend: SimdBackend,
     block: CoeffBlock<'_>,
     params: &DequantBlockParams,
     secondary: Option<&SecondaryInverseTransform>,
@@ -675,8 +666,8 @@ fn dequantize_residual<B: SimdBackend>(
 }
 
 /// Dequantizes and inverse-transforms one intra block into `scratch`.
-pub(super) fn intra_residual<'s, B: SimdBackend>(
-    backend: B,
+pub(super) fn intra_residual<'s>(
+    backend: SimdBackend,
     block: CoeffBlock<'_>,
     setup: &ReconstructBlockSetup,
     secondary: Option<&SecondaryInverseTransform>,
@@ -703,11 +694,8 @@ pub(super) fn intra_residual<'s, B: SimdBackend>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut super::ResidualScratch,
     block: CoeffBlock<'_>,
@@ -720,7 +708,6 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    let backend = backend.narrow();
     #[cfg(feature = "block-evidence")]
     let capture = capture_residual(plane_id, x, y, block_size);
     let log2_width = u32::from(block_size.log2_width());
@@ -761,7 +748,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<
     }
     if residual_capture_path!(has_secondary(block), !capture && has_secondary(block))
         && let Some((dst, stride)) = sink.residual_rect_mut(plane_id, x, y, block_size)?
-        && add_secondary_fused::<_, T>(
+        && add_secondary_fused::<T>(
             backend,
             block,
             (block_size, plane_id, bit_depth),

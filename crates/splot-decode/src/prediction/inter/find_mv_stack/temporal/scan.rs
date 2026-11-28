@@ -287,8 +287,8 @@ impl LaneGeometry {
 /// scan of a fresh band each source slot is visited before it is recorded,
 /// and every end record made by this scan already has a source vector.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn project_temporal_motion_field<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn project_temporal_motion_field(
+    backend: splot_core::simd::SimdBackend,
     lanes: &mut ChunkLanes,
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
@@ -315,8 +315,7 @@ pub(super) fn project_temporal_motion_field<B: splot_core::simd::SimdBackend>(
     };
     let refs = band.map_or(0, |band| band.reference_count);
     let rows = rows.start..rows.end.min(prepared.source_height8);
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         let tables = TargetTables::new(simd, prepared, refs);
         project_rows((&tables, lanes), prepared, source, rows, geometry, trajectories, output);
     });
