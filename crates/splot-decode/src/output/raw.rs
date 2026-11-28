@@ -26,7 +26,7 @@ pub(crate) fn write_raw_stream_from_plan(
     let mut spare = GrainPlanes::default();
     let mut seen_xlayer = None;
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,
@@ -80,7 +80,7 @@ pub(crate) fn discard_raw_stream_from_plan(
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,

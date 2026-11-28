@@ -784,7 +784,7 @@ fn run_driver_session(backend: impl SimdBackend, launch: DriverLaunch) {
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
-            backend.narrow(),
+            backend,
             &mut units,
             &options,
             &session,

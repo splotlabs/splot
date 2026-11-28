@@ -635,7 +635,7 @@ struct RowSchedulerLaunch {
 
 impl splot_core::simd::SimdScope<Result<Arc<DecoderRowScheduler>>> for RowSchedulerLaunch {
     fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<Arc<DecoderRowScheduler>> {
-        spawn_row_scheduler(self.threads, backend.narrow())
+        spawn_row_scheduler(self.threads, backend)
     }
 }
 

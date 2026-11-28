@@ -399,7 +399,7 @@ impl DecodeContext {
     ) -> Result<DecodeHashReport> {
         Self::run(reader, options, |source| {
             crate::output::hash::decode_hash_report_from_plan(
-                backend.narrow(),
+                backend,
                 source,
                 options,
                 self.threads(),

@@ -31,7 +31,7 @@ pub(crate) fn write_y4m_stream_to_writer(
     let frame_rate_override = options.y4m_frame_rate_override();
     let mut spare = GrainPlanes::default();
     crate::pipeline::emit_frames(
-        backend.narrow(),
+        backend,
         source,
         options,
         session,
