@@ -1242,7 +1242,13 @@ impl<T: ReconSample> TipOutputStages<T> {
                 (plane.samples_mut(), stride)
             })
         });
-        let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
+        let kernels = self.progress.buffers().map(|buffers| buffers.kernels());
+        let mut surface = splot_recon::CurrentFrameRect::from_bands(
+            self.info,
+            kernels.unwrap_or_default(),
+            rect,
+            [y, u, v],
+        )?;
         let mut sink = CurrentFrameSurface::Rect(&mut surface);
         self.predict_band(
             backend, &mut band, rect, &mut sink, sequence, core, reference,

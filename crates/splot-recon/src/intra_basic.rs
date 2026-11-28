@@ -15,11 +15,7 @@ use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
-#[cfg(target_arch = "x86_64")]
-use crate::wide_kernels::PaethFn;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx512;
 
 /// Edge identifier for PAETH intra prediction inputs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -339,7 +335,7 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
     reason = "must be compiled inside its caller's AVX-512 context"
 )]
 #[inline(always)]
-fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
+pub(crate) fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
     simd: S,
     size: IntraRectBlockSize,
     (left, above, top_left): (&[O], &[O], u16),
@@ -369,26 +365,6 @@ fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
         }
     }
 }
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`paeth_rows_wide`] on bytes as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_paeth_u8(_proof: Avx512) -> PaethFn<u8> {
-        |size, edges, output, stride| {
-            paeth_rows_wide(Avx512::assume_supported(), size, edges, output, stride);
-        }
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`paeth_rows_wide`] on words as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_paeth_u16(_proof: Avx512) -> PaethFn<u16> {
-        |size, edges, output, stride| {
-            paeth_rows_wide(Avx512::assume_supported(), size, edges, output, stride);
-        }
-    }
-);
 
 /// One lane group of [`predict_paeth_lanes`].
 #[inline]

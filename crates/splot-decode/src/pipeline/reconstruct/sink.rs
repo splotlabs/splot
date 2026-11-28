@@ -562,7 +562,7 @@ pub(crate) fn commit_intra_prediction<T: ReconSample>(
         block_size.sample_count(),
     )?;
     let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into_with(
-        backend,
+        (backend, workspace.kernels()),
         block,
         prediction,
         &mut out,

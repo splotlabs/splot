@@ -718,14 +718,16 @@ impl InverseTransformAdd {
     }
 
     /// Adds the § 7.15.3 secondary inverse transform plus primary transform onto
-    /// `dst` using `backend`.
+    /// `dst` using `backend` and the wider kernels of `kernels`.
     ///
     /// # Errors
     /// Returns the same secondary-transform validation errors as
     /// [`Self::add_secondary`].
+    #[expect(clippy::too_many_arguments)]
     pub fn add_secondary_with<T: ReconSample>(
         self,
         backend: SimdBackend,
+        kernels: crate::KernelSelection,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: &[i32],
         dequant: &mut [i32],
@@ -734,6 +736,7 @@ impl InverseTransformAdd {
     ) -> crate::Result<bool> {
         self.add_secondary_quant_with(
             backend,
+            kernels,
             (quantizers, secondary),
             SecondaryQuant::Raster(quant),
             dequant,
@@ -747,9 +750,11 @@ impl InverseTransformAdd {
     ///
     /// # Errors
     /// As [`Self::add_secondary`], or if a scan prefix exceeds `secondary.n`.
+    #[expect(clippy::too_many_arguments)]
     pub fn add_secondary_quant_with<T: ReconSample>(
         self,
         backend: SimdBackend,
+        kernels: crate::KernelSelection,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: SecondaryQuant<'_>,
         dequant: &mut [i32],
@@ -758,6 +763,7 @@ impl InverseTransformAdd {
     ) -> crate::Result<bool> {
         self.add_secondary_with_runner(
             TypedTransformRunner(backend),
+            kernels,
             (quantizers, secondary),
             quant,
             dequant,
@@ -789,6 +795,7 @@ impl InverseTransformAdd {
     ) -> crate::Result<bool> {
         self.add_secondary_with_runner(
             BaselineTransformRunner,
+            crate::KernelSelection::default(),
             (quantizers, secondary),
             SecondaryQuant::Raster(quant),
             dequant,
@@ -797,9 +804,11 @@ impl InverseTransformAdd {
         )
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn add_secondary_with_runner<R: TransformRunner, T: ReconSample>(
         self,
         runner: R,
+        kernels: crate::KernelSelection,
         (quantizers, secondary): ((u32, u32, u32), &SecondaryInverseTransform),
         quant: SecondaryQuant<'_>,
         dequant: &mut [i32],
@@ -812,6 +821,7 @@ impl InverseTransformAdd {
             && let Some(rows) = dequant.first_chunk_mut::<64>()
         {
             let len = runner.secondary_quant(
+                kernels,
                 quant,
                 quantizers,
                 secondary,
@@ -847,8 +857,13 @@ impl InverseTransformAdd {
             let t = self.transform8(None, bit_depth);
             return Ok(self.run_add(runner, t, (&rows[..len], 8), dst, stride, scratch));
         }
-        let coded =
-            runner.secondary_quant(quant, quantizers, secondary, SecondaryOutput::Full(dequant))?;
+        let coded = runner.secondary_quant(
+            kernels,
+            quant,
+            quantizers,
+            secondary,
+            SecondaryOutput::Full(dequant),
+        )?;
         Ok(self.add_with_runner(
             runner,
             &dequant[..coded],
@@ -1017,6 +1032,7 @@ trait TransformRunner: Copy {
 
     fn secondary_quant(
         self,
+        kernels: crate::KernelSelection,
         quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
@@ -1050,6 +1066,7 @@ impl TransformRunner for BaselineTransformRunner {
     #[inline]
     fn secondary_quant(
         self,
+        _kernels: crate::KernelSelection,
         quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
@@ -1085,12 +1102,15 @@ impl TransformRunner for TypedTransformRunner {
     #[inline]
     fn secondary_quant(
         self,
+        kernels: crate::KernelSelection,
         quant: SecondaryQuant<'_>,
         quantizers: (u32, u32, u32),
         secondary: &SecondaryInverseTransform,
         dequant: SecondaryOutput<'_>,
     ) -> crate::Result<usize> {
-        secondary_inverse_transform_quant_with(self.0, quant, quantizers, secondary, dequant)
+        secondary_inverse_transform_quant_with(
+            self.0, kernels, quant, quantizers, secondary, dequant,
+        )
     }
 
     transform_runner_methods!(self, typed(with_simd, self.0));
@@ -1857,7 +1877,7 @@ mod tests {
 
         use crate::coefficient_scan::TransformClass;
 
-        fn check(backend: SimdBackend) {
+        fn check(backend: SimdBackend, kernels: crate::KernelSelection) {
             let dq = FlatDequant {
                 dc: 12,
                 ac: 9,
@@ -1927,6 +1947,7 @@ mod tests {
                     assert_eq!(
                         add.add_secondary_with(
                             backend,
+                            kernels,
                             params,
                             &raster,
                             &mut expected_dq,
@@ -1936,6 +1957,7 @@ mod tests {
                         .unwrap(),
                         add.add_secondary_quant_with(
                             backend,
+                            kernels,
                             params,
                             SecondaryQuant::Scan(&compact),
                             &mut actual_dq,
@@ -1963,6 +1985,7 @@ mod tests {
                 assert!(
                     add.add_secondary_with(
                         backend,
+                        kernels,
                         ((8, 12, 2), &sec),
                         &quant,
                         &mut deq_b,
@@ -2054,10 +2077,7 @@ mod tests {
             }
         }
 
-        check(
-            resolve_backend(SimdPolicy::Auto)
-                .expect("auto backend")
-                .backend(),
-        );
+        let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        check(resolved.backend(), crate::KernelSelection::of(resolved));
     }
 }

@@ -3,6 +3,11 @@
 
 //! The kernels a decoder selects once, at its start, beyond those its backend
 //! runs. On x86-64 that is the AVX-512 set, bound to safe function pointers.
+//!
+//! Adding one: write the kernel generic over `S: Simd` and
+//! `#[inline(always)]`, add its entry to [`wide_kernels!`], branch on
+//! [`KernelSelection`] at the entry of the kernel it widens, and compare the
+//! two in a test.
 
 #[cfg(target_arch = "x86_64")]
 use std::sync::OnceLock;
@@ -33,35 +38,59 @@ pub(crate) type GrainFn<O> =
 #[cfg(target_arch = "x86_64")]
 pub(crate) type LumaGrainFn = fn(&mut [u8], &[u8; 256], &[i16], crate::film_grain::NoiseParams);
 
-/// One entry per kernel and sample type. Each is made by a factory beside
-/// its kernel, which converts the kernel to a pointer where the AVX-512
-/// features are enabled.
+/// The 8x8 secondary-transform sums of one kernel: its paired weight rows,
+/// the input coefficients and whether one exceeds `i16`.
 #[cfg(target_arch = "x86_64")]
-pub(crate) struct WideKernels {
-    pub(crate) paeth_u8: PaethFn<u8>,
-    pub(crate) paeth_u16: PaethFn<u16>,
-    pub(crate) palette_u8: PaletteFn<u8>,
-    pub(crate) palette_u16: PaletteFn<u16>,
-    pub(crate) grain_u8: GrainFn<u8>,
-    pub(crate) grain_u16: GrainFn<u16>,
-    pub(crate) luma_grain: LumaGrainFn,
+pub(crate) type IstSumsFn = fn(
+    &[[i16; 2 * crate::secondary_transform::IST_8X8_WIDTH];
+         crate::secondary_transform::IST_8X8_HEIGHT / 2],
+    &[i32],
+    bool,
+) -> [i32; crate::secondary_transform::IST_8X8_WIDTH];
+
+/// Declares [`WideKernels`]: each entry names a field, the arguments and
+/// pointer type of its kernel, and the generic kernel it runs. Each pointer
+/// is made by a `fearless_simd::kernel!` factory, so the kernel is compiled
+/// where the AVX-512 features are enabled.
+macro_rules! wide_kernels {
+    ($( $field:ident($($arg:ident),*): $pointer:ty => $kernel:expr; )*) => {
+        /// One entry per kernel and sample type.
+        #[cfg(target_arch = "x86_64")]
+        pub(crate) struct WideKernels {
+            $(pub(crate) $field: $pointer,)*
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        impl WideKernels {
+            /// The set for `token`, bound on first use.
+            pub(crate) fn of(token: Avx512) -> &'static Self {
+                static SET: OnceLock<WideKernels> = OnceLock::new();
+                SET.get_or_init(|| {
+                    $(
+                        fearless_simd::kernel!(
+                            fn $field(_proof: Avx512) -> $pointer {
+                                |$($arg),*| $kernel(Avx512::assume_supported(), $($arg),*)
+                            }
+                        );
+                    )*
+                    Self { $($field: $field(token),)* }
+                })
+            }
+        }
+    };
 }
 
-#[cfg(target_arch = "x86_64")]
-impl WideKernels {
-    /// The set for `token`, bound on first use.
-    pub(crate) fn of(token: Avx512) -> &'static Self {
-        static SET: OnceLock<WideKernels> = OnceLock::new();
-        SET.get_or_init(|| Self {
-            paeth_u8: crate::intra_basic::bind_paeth_u8(token),
-            paeth_u16: crate::intra_basic::bind_paeth_u16(token),
-            palette_u8: crate::intra::bind_palette_u8(token),
-            palette_u16: crate::intra::bind_palette_u16(token),
-            grain_u8: crate::film_grain::bind_grain_u8(token),
-            grain_u16: crate::film_grain::bind_grain_u16(token),
-            luma_grain: crate::film_grain::bind_luma_grain(token),
-        })
-    }
+wide_kernels! {
+    paeth_u8(size, edges, output, stride): PaethFn<u8> => crate::intra_basic::paeth_rows_wide;
+    paeth_u16(size, edges, output, stride): PaethFn<u16> => crate::intra_basic::paeth_rows_wide;
+    palette_u8(low, high, map, output): PaletteFn<u8> => crate::intra::palette_lanes_wide;
+    palette_u16(low, high, map, output): PaletteFn<u16> => crate::intra::palette_lanes_wide;
+    grain_u8(row, scale, noise, params): GrainFn<u8> =>
+        crate::film_grain::add_noise_row::<_, _, true>;
+    grain_u16(row, scale, noise, params): GrainFn<u16> =>
+        crate::film_grain::add_noise_row::<_, _, true>;
+    luma_grain(row, table, noise, params): LumaGrainFn => crate::film_grain::add_luma_noise;
+    ist_8x8_sums(pairs, coefs, wide): IstSumsFn => crate::secondary_transform::ist_8x8_sums_wide;
 }
 
 /// What a decoder selected beyond its backend: the AVX-512 kernels when it

@@ -10,7 +10,7 @@ use super::{NoiseParams, add_noise_vector};
     reason = "keep the complete row in its SIMD scope"
 )]
 #[inline(always)]
-pub(super) fn add_luma_noise<S: Simd>(
+pub(crate) fn add_luma_noise<S: Simd>(
     simd: S,
     row: &mut [u8],
     table: &[u8; 256],

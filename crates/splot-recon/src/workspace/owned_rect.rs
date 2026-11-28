@@ -173,6 +173,7 @@ fn publish_plane_into<T: ReconSample>(
 #[derive(Debug, Eq, PartialEq)]
 pub struct OwnedFrameRect<T: ReconSample> {
     info: DecodedFrameInfo,
+    kernels: crate::KernelSelection,
     samples: Vec<T>,
     y: OwnedFramePlaneRect,
     u: Option<OwnedFramePlaneRect>,
@@ -218,12 +219,18 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         Ok((y, u, v))
     }
 
-    /// Allocates one tightly packed rectangular reconstruction target.
+    /// Allocates one tightly packed rectangular reconstruction target for a
+    /// decode that selected `kernels`.
     ///
     /// # Errors
     /// Returns [`ReconError`] when the rectangle exceeds the frame or its
     /// storage cannot be allocated.
-    pub fn new(info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<Self> {
+    pub fn new(
+        info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
+        luma_rect: PlaneRect,
+        fill: T,
+    ) -> Result<Self> {
         let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
         let mut samples = Vec::new();
@@ -236,6 +243,7 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         samples.resize(total, fill);
         Ok(Self {
             info,
+            kernels,
             samples,
             y,
             u,
@@ -246,6 +254,11 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     /// Returns the decoded-frame metadata for this rectangle.
     pub const fn info(&self) -> DecodedFrameInfo {
         self.info
+    }
+
+    /// The kernels of the decode this rectangle reconstructs for.
+    pub const fn kernels(&self) -> crate::KernelSelection {
+        self.kernels
     }
 
     /// Points this rectangle's storage at another region of the same frame.
@@ -284,7 +297,13 @@ impl<T: ReconSample> OwnedFrameRect<T> {
     /// # Errors
     /// Returns [`ReconError`] when the rectangle exceeds the frame or the
     /// storage cannot grow to hold it.
-    pub fn reshape(&mut self, info: DecodedFrameInfo, luma_rect: PlaneRect, fill: T) -> Result<()> {
+    pub fn reshape(
+        &mut self,
+        info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
+        luma_rect: PlaneRect,
+        fill: T,
+    ) -> Result<()> {
         let (y, u, v) = Self::regions(info, luma_rect)?;
         let total = v.or(u).map_or_else(|| y.end(), |last| last.end());
         // Only the samples this rectangle gains are initialized. The ones it
@@ -300,6 +319,7 @@ impl<T: ReconSample> OwnedFrameRect<T> {
             })?;
         self.samples.resize(total, fill);
         self.info = info;
+        self.kernels = kernels;
         self.y = y;
         self.u = u;
         self.v = v;

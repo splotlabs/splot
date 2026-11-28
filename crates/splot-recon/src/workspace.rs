@@ -414,6 +414,7 @@ fn ensure_surface_rect(plane: PlaneId, band: PlaneRect, rect: PlaneRect) -> Resu
 #[derive(Debug)]
 pub struct CurrentFrameRect<'a, T: ReconSample> {
     info: DecodedFrameInfo,
+    kernels: crate::KernelSelection,
     y: CurrentFramePlaneRect<'a, T>,
     u: Option<CurrentFramePlaneRect<'a, T>>,
     v: Option<CurrentFramePlaneRect<'a, T>>,
@@ -482,6 +483,15 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             Self::Frame(workspace) => workspace.info(),
             Self::Rect(rect) => rect.info(),
             Self::OwnedRect(rect) => rect.info(),
+        }
+    }
+
+    /// The kernels of the decode this target reconstructs for.
+    pub fn kernels(&self) -> crate::KernelSelection {
+        match self {
+            Self::Frame(workspace) => workspace.kernels(),
+            Self::Rect(rect) => rect.kernels,
+            Self::OwnedRect(rect) => rect.kernels(),
         }
     }
 

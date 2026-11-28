@@ -16,8 +16,6 @@
 
 use fearless_simd::{Simd, i16x16, i16x32, i32x8, prelude::*, u8x16, u8x32, u16x16};
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx512;
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
 
 use crate::{
@@ -30,7 +28,7 @@ mod template;
 mod wide_luma;
 use template::{GrainTemplates, generate_grain};
 #[cfg(target_arch = "x86_64")]
-use wide_luma::add_luma_noise;
+pub(crate) use wide_luma::add_luma_noise;
 
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
@@ -123,36 +121,6 @@ pub fn apply_film_grain_into_with<T: ReconSample>(
         apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise, wide_luma)
     })
 }
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`add_noise_row`] on bytes in 32 lanes as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_grain_u8(_proof: Avx512) -> crate::wide_kernels::GrainFn<u8> {
-        |row, scale, noise, params| {
-            add_noise_row::<_, _, true>(Avx512::assume_supported(), row, scale, noise, params)
-        }
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`add_noise_row`] on words in 32 lanes as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_grain_u16(_proof: Avx512) -> crate::wide_kernels::GrainFn<u16> {
-        |row, scale, noise, params| {
-            add_noise_row::<_, _, true>(Avx512::assume_supported(), row, scale, noise, params)
-        }
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`add_luma_noise`] as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_luma_grain(_proof: Avx512) -> crate::wide_kernels::LumaGrainFn {
-        |row, table, noise, params| {
-            add_luma_noise(Avx512::assume_supported(), row, table, noise, params);
-        }
-    }
-);
 
 fn apply_film_grain_simd<S: Simd, T: ReconSample>(
     simd: S,
@@ -763,7 +731,7 @@ pub(crate) struct NoiseParams {
     reason = "keep the row in the selected SIMD scope"
 )]
 #[inline(always)]
-fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
+pub(crate) fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
     simd: S,
     row: &mut [T],
     scale: &[i16],

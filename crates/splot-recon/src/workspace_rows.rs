@@ -213,14 +213,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
     /// The rectangle over full-width plane bands `(samples, stride)` the
-    /// caller holds exclusively: each band holds exactly the plane rows of
-    /// `luma_rect` or of its chroma rectangle.
+    /// caller holds exclusively, for a decode that selected `kernels`: each
+    /// band holds exactly the plane rows of `luma_rect` or of its chroma
+    /// rectangle.
     ///
     /// # Errors
     /// Returns [`ReconError`] when a band does not span exactly the rows of
     /// `luma_rect` or its chroma rectangle, or `luma_rect` is not full width.
     pub fn from_bands(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         luma_rect: PlaneRect,
         [y, u, v]: [Option<(&'storage mut [T], usize)>; 3],
     ) -> Result<Self> {
@@ -279,7 +281,13 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
             ),
             _ => return Err(missing(PlaneId::U)),
         };
-        Ok(Self { info, y, u, v })
+        Ok(Self {
+            info,
+            kernels,
+            y,
+            u,
+            v,
+        })
     }
 }
 

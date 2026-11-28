@@ -395,6 +395,7 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
 /// surfaces are shared by every frame in flight, whose peaks do not coincide.
 pub(super) struct SurfaceSource<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
+    kernels: splot_recon::KernelSelection,
     rects: Vec<splot_recon::PlaneRect>,
     free: Arc<SpareSurfaces<T>>,
 }
@@ -427,10 +428,16 @@ impl<T: ReconSample> SpareSurfaces<T> {
 impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn new(
         info: splot_recon::DecodedFrameInfo,
+        kernels: splot_recon::KernelSelection,
         rects: Vec<splot_recon::PlaneRect>,
         free: Arc<SpareSurfaces<T>>,
     ) -> Self {
-        Self { info, rects, free }
+        Self {
+            info,
+            kernels,
+            rects,
+            free,
+        }
     }
 
     /// Lays this source out for another tile and lends its rectangle list,
@@ -438,9 +445,11 @@ impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
+        kernels: splot_recon::KernelSelection,
         free: Arc<SpareSurfaces<T>>,
     ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
+        self.kernels = kernels;
         self.free = free;
         &mut self.rects
     }
@@ -477,16 +486,18 @@ impl<T: ReconSample> SurfaceSource<T> {
         let Some(mut surface) = spare else {
             return Some(splot_recon::OwnedFrameRect::new(
                 self.info,
+                self.kernels,
                 rect,
                 T::default(),
             ));
         };
         let laid_out = if surface.info() == self.info
+            && surface.kernels() == self.kernels
             && (surface.luma_rect() == rect || surface.retarget(rect).is_ok())
         {
             Ok(())
         } else {
-            surface.reshape(self.info, rect, T::default())
+            surface.reshape(self.info, self.kernels, rect, T::default())
         };
         Some(laid_out.map(|()| {
             poison_reused_surface(&mut surface);
@@ -1665,13 +1676,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
         Arc::new(SurfaceSource::new(
             info,
+            workspace.kernels(),
             Vec::new(),
             workers.spare_surfaces(),
         ))
     });
     let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
-        .reset(info, workers.spare_surfaces());
+        .reset(info, workspace.kernels(), workers.spare_surfaces());
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
         &geometry.mi_cols,

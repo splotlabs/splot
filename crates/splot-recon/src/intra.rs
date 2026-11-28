@@ -15,8 +15,6 @@ use crate::intra_dc_math::{
 #[cfg(target_arch = "x86_64")]
 use crate::wide_kernels::{PaletteFn, WideKernels};
 use crate::{BitDepth, ReconError, ReconSample, Result};
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx512;
 use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdCombine as _, u8x64};
@@ -536,7 +534,7 @@ pub fn predict_intra_palette_into_with<T: ReconSample>(
 
 /// Sample storage a palette lookup writes: bytes from the low table, or
 /// `u16` from the low and high byte tables.
-trait PaletteSample: Sized {
+pub(crate) trait PaletteSample: Sized {
     fn store<S: Simd>(simd: S, low: u8x16<S>, high: Option<u8x16<S>>, out: &mut [Self; 16]);
     #[cfg(target_arch = "x86_64")]
     fn store64<S: Simd>(simd: S, low: u8x64<S>, high: Option<u8x64<S>>, out: &mut [Self; 64]);
@@ -629,7 +627,7 @@ fn palette_lanes<S: Simd, P: PaletteSample>(
     reason = "must be compiled inside its caller's AVX-512 context"
 )]
 #[inline(always)]
-fn palette_lanes_wide<S: Simd, P: PaletteSample>(
+pub(crate) fn palette_lanes_wide<S: Simd, P: PaletteSample>(
     simd: S,
     low: [u8; 16],
     high: Option<[u8; 16]>,
@@ -661,26 +659,6 @@ fn palette_lanes_wide<S: Simd, P: PaletteSample>(
     }
     simd.reduce_max_u8x64(max)
 }
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`palette_lanes_wide`] on bytes as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_palette_u8(_proof: Avx512) -> PaletteFn<u8> {
-        |low, high, map, output| {
-            palette_lanes_wide(Avx512::assume_supported(), low, high, map, output)
-        }
-    }
-);
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// [`palette_lanes_wide`] on words as a pointer, made where AVX-512 is enabled.
-    pub(crate) fn bind_palette_u16(_proof: Avx512) -> PaletteFn<u16> {
-        |low, high, map, output| {
-            palette_lanes_wide(Avx512::assume_supported(), low, high, map, output)
-        }
-    }
-);
 
 fn average_intra_predictions_with_runner<R: IntraRunner, T: ReconSample>(
     runner: R,

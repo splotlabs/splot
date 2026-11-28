@@ -37,7 +37,13 @@ fn workspace_keeps_mi_storage_separate_from_header_size_and_crop() {
     workspace
         .set_reconstructed_sample(PlaneId::U, 135, 135, 73)
         .unwrap();
-    let owned = OwnedFrameRect::<u8>::new(padded, rect(264, 264, 8, 8), 5).unwrap();
+    let owned = OwnedFrameRect::<u8>::new(
+        padded,
+        crate::KernelSelection::default(),
+        rect(264, 264, 8, 8),
+        5,
+    )
+    .unwrap();
     assert_eq!(owned.luma_rect(), rect(264, 264, 8, 8));
     let frame = workspace.freeze().unwrap();
     assert_eq!(frame.y().storage_size(), size(272, 272));
@@ -88,7 +94,13 @@ fn band_rect<T: ReconSample>(
     let (u, v) = (u.as_mut(), v.as_mut());
     let chroma = [u, v].map(|plane| plane.map(|c| band(c, rows, shift)));
     let [u, v] = chroma;
-    CurrentFrameRect::from_bands(*info, luma, [Some(band(y, rows, 0)), u, v]).unwrap()
+    CurrentFrameRect::from_bands(
+        *info,
+        crate::KernelSelection::default(),
+        luma,
+        [Some(band(y, rows, 0)), u, v],
+    )
+    .unwrap()
 }
 
 /// Predicts a DC-family block as the decoder does: the workspace edges, the
@@ -324,7 +336,9 @@ fn contiguous_u8_rect_writer_matches_u16_geometry_and_storage_rules() {
 #[test]
 fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
     let info = yuv420_info(8, 8);
-    let mut owned = OwnedFrameRect::<u8>::new(info, rect(4, 0, 4, 8), 0).unwrap();
+    let mut owned =
+        OwnedFrameRect::<u8>::new(info, crate::KernelSelection::default(), rect(4, 0, 4, 8), 0)
+            .unwrap();
     let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
     {
         let mut surface = CurrentFrameSurface::OwnedRect(&mut owned);
@@ -387,7 +401,12 @@ fn rectangular_surface_rejects_bands_that_are_not_its_rows() {
     for (luma, rows) in [(rect(0, 0, 4, 4), 4), (rect(0, 0, 8, 3), 2)] {
         let band = Some((&mut samples[..64 * rows], 64));
         assert!(matches!(
-            CurrentFrameRect::from_bands(info, luma, [band, None, None]),
+            CurrentFrameRect::from_bands(
+                info,
+                crate::KernelSelection::default(),
+                luma,
+                [band, None, None]
+            ),
             Err(ReconError::WorkspaceRectSurfaceNotABand { .. })
         ));
     }

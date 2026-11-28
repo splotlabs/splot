@@ -1607,7 +1607,13 @@ fn band_surface(
         u.map(|u| band(u, rows, shift)),
         v.map(|v| band(v, rows, shift)),
     ];
-    splot_recon::CurrentFrameRect::from_bands(info, luma, planes).expect("band surface")
+    splot_recon::CurrentFrameRect::from_bands(
+        info,
+        splot_recon::KernelSelection::default(),
+        luma,
+        planes,
+    )
+    .expect("band surface")
 }
 
 fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> Vec<T> {
