@@ -284,6 +284,14 @@ pub trait SimdBackend: sealed::Sealed + Copy + Send + Sync + 'static {
     }
 }
 
+/// Experiment: runs a kernel body as a real call, the way a kernel reached
+/// through a function pointer is called.
+#[doc(hidden)]
+#[inline(always)]
+pub fn call_out_of_line<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Runs `$body` with concrete `fearless_simd` token `$simd` derived from
 /// `$backend`, avoiding runtime `vectorize` closures when static target
 /// features already guarantee the backend's instruction set.
@@ -302,7 +310,10 @@ macro_rules! with_simd {
         ))]
         {
             if let Some($simd) = $crate::simd::SimdBackend::static_avx2_token(__backend) {
-                $body
+                $crate::simd::call_out_of_line(
+                    #[inline(never)]
+                    || $body,
+                )
             } else {
                 $crate::simd::SimdBackend::vectorize(__backend, || {
                     let $simd = $crate::simd::SimdBackend::token(__backend);
