@@ -11,8 +11,12 @@ use crate::intra_dc_math::{
     fill_validated_output_shape, predict_intra_dc_rect_value_from_sums, validate_dc_edge,
     validate_output_shape, validate_sample_type,
 };
+#[cfg(target_arch = "x86_64")]
+use crate::wide_kernels::{PaletteFn, WideKernels};
 use crate::{BitDepth, ReconError, ReconSample, Result};
-use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Avx512;
+use fearless_simd::{Bytes as _, Simd, SimdBase, SimdCombine as _, u8x16, u8x64, u16x8};
 use splot_core::simd::SimdBackend;
 
 const MIN_SQUARE_BLOCK_LOG2: u8 = 2;
@@ -454,6 +458,12 @@ impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
         map: &[u8],
         output: &mut [P],
     ) -> u8 {
+        #[cfg(target_arch = "x86_64")]
+        if map.len().is_multiple_of(64)
+            && let Some(wide) = self.0.avx512_token()
+        {
+            return P::wide_palette(WideKernels::of(wide))(low, high, map, output);
+        }
         let narrow = self.0.narrow();
         splot_core::with_simd!(narrow, simd => palette_lanes(simd, low, high, map, output))
     }
@@ -525,12 +535,27 @@ pub fn predict_intra_palette_into_with<B: SimdBackend, T: ReconSample>(
 /// `u16` from the low and high byte tables.
 trait PaletteSample: Sized {
     fn store<S: Simd>(simd: S, low: u8x16<S>, high: Option<u8x16<S>>, out: &mut [Self; 16]);
+    fn store64<S: Simd>(simd: S, low: u8x64<S>, high: Option<u8x64<S>>, out: &mut [Self; 64]);
+    /// The palette entry of `kernels` for this sample type.
+    #[cfg(target_arch = "x86_64")]
+    fn wide_palette(kernels: &WideKernels) -> PaletteFn<Self>;
 }
 
 impl PaletteSample for u8 {
     #[inline]
     fn store<S: Simd>(_simd: S, low: u8x16<S>, _high: Option<u8x16<S>>, out: &mut [u8; 16]) {
         low.store_slice(out);
+    }
+
+    #[inline]
+    fn store64<S: Simd>(_simd: S, low: u8x64<S>, _high: Option<u8x64<S>>, out: &mut [u8; 64]) {
+        low.store_slice(out);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn wide_palette(kernels: &WideKernels) -> PaletteFn<Self> {
+        kernels.palette_u8
     }
 }
 
@@ -542,6 +567,22 @@ impl PaletteSample for u16 {
         let hi: [u16; 8] = simd.zip_high_u8x16(low, high).bitcast::<u16x8<S>>().into();
         out[..8].copy_from_slice(&lo); // splot-copy-ok: publish eight palette lanes
         out[8..].copy_from_slice(&hi); // splot-copy-ok: publish eight palette lanes
+    }
+
+    #[inline]
+    fn store64<S: Simd>(simd: S, low: u8x64<S>, high: Option<u8x64<S>>, out: &mut [u16; 64]) {
+        let high = high.unwrap_or(u8x64::splat(simd, 0));
+        let (low0, low1) = simd.widen_u8x64(low);
+        let (high0, high1) = simd.widen_u8x64(high);
+        let (first, second) = out.split_at_mut(32);
+        (low0 | (high0 << 8)).store_slice(first);
+        (low1 | (high1 << 8)).store_slice(second);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn wide_palette(kernels: &WideKernels) -> PaletteFn<Self> {
+        kernels.palette_u16
     }
 }
 
@@ -573,6 +614,66 @@ fn palette_lanes<S: Simd, P: PaletteSample>(
     }
     simd.reduce_max_u8x16(max)
 }
+
+/// [`palette_lanes`] for a map of whole 64-sample groups, 64 lanes a step:
+/// the color bytes repeat in each 16-lane block of the table.
+#[expect(
+    clippy::inline_always,
+    reason = "must be compiled inside its caller's AVX-512 context"
+)]
+#[inline(always)]
+fn palette_lanes_wide<S: Simd, P: PaletteSample>(
+    simd: S,
+    low: [u8; 16],
+    high: Option<[u8; 16]>,
+    map: &[u8],
+    output: &mut [P],
+) -> u8 {
+    let table = |bytes: [u8; 16]| {
+        let quarter = u8x16::from_slice(simd, &bytes);
+        let half = quarter.combine(quarter);
+        half.combine(half)
+    };
+    let low = table(low);
+    let high = high.map(table);
+    let mut max = u8x64::splat(simd, 0);
+    for (indices, out) in map
+        .as_chunks::<64>()
+        .0
+        .iter()
+        .zip(output.as_chunks_mut::<64>().0)
+    {
+        let indices = u8x64::load_array_ref(simd, indices);
+        max = max.max(indices);
+        P::store64(
+            simd,
+            simd.swizzle_dyn_within_blocks_u8x64(low, indices),
+            high.map(|high| simd.swizzle_dyn_within_blocks_u8x64(high, indices)),
+            out,
+        );
+    }
+    simd.reduce_max_u8x64(max)
+}
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// [`palette_lanes_wide`] on bytes as a pointer, made where AVX-512 is enabled.
+    pub(crate) fn bind_palette_u8(_proof: Avx512) -> PaletteFn<u8> {
+        |low, high, map, output| {
+            palette_lanes_wide(Avx512::assume_supported(), low, high, map, output)
+        }
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// [`palette_lanes_wide`] on words as a pointer, made where AVX-512 is enabled.
+    pub(crate) fn bind_palette_u16(_proof: Avx512) -> PaletteFn<u16> {
+        |low, high, map, output| {
+            palette_lanes_wide(Avx512::assume_supported(), low, high, map, output)
+        }
+    }
+);
 
 fn average_intra_predictions_with_runner<R: IntraRunner, T: ReconSample>(
     runner: R,
@@ -628,6 +729,10 @@ fn average_lanes<S: Simd, P: IntraLaneSample>(simd: S, primary: &mut [P], second
         P::store16(simd, sum >> 1, a);
     }
 }
+
+#[cfg(test)]
+#[path = "intra_wide_tests.rs"]
+mod wide_tests;
 
 #[cfg(test)]
 mod tests {
