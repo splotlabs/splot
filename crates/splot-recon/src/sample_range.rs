@@ -202,33 +202,30 @@ mod tests {
     fn typed_backend_entry_matches_compatibility_scans() {
         use splot_core::simd::{SimdPolicy, resolve_backend};
 
-        struct ParityProbe<'a>(&'a [u16], &'a [u8], &'a [i16]);
-        impl ParityProbe<'_> {
-            fn run(self, backend: SimdBackend) {
-                for every_second in [false, true] {
-                    assert_eq!(
-                        sum_samples_with(backend, self.0, every_second),
-                        sum_samples(self.0, every_second)
-                    );
-                    assert_eq!(
-                        sum_samples_with(backend, self.1, every_second),
-                        sum_samples(self.1, every_second)
-                    );
-                    assert_eq!(
-                        sum_samples_with(backend, self.2, every_second),
-                        sum_samples(self.2, every_second)
-                    );
-                }
-                assert!(!samples_exceed_with(backend, self.1, 255));
+        fn check(backend: SimdBackend, wide: &[u16], narrow: &[u8], signed: &[i16]) {
+            for every_second in [false, true] {
                 assert_eq!(
-                    samples_exceed_with(backend, self.0, 1000),
-                    samples_exceed(self.0, 1000)
+                    sum_samples_with(backend, wide, every_second),
+                    sum_samples(wide, every_second)
                 );
                 assert_eq!(
-                    u16_samples_exceed_with(backend, self.0, 1000),
-                    u16_samples_exceed(self.0, 1000)
+                    sum_samples_with(backend, narrow, every_second),
+                    sum_samples(narrow, every_second)
+                );
+                assert_eq!(
+                    sum_samples_with(backend, signed, every_second),
+                    sum_samples(signed, every_second)
                 );
             }
+            assert!(!samples_exceed_with(backend, narrow, 255));
+            assert_eq!(
+                samples_exceed_with(backend, wide, 1000),
+                samples_exceed(wide, 1000)
+            );
+            assert_eq!(
+                u16_samples_exceed_with(backend, wide, 1000),
+                u16_samples_exceed(wide, 1000)
+            );
         }
 
         let resolved = resolve_backend(SimdPolicy::Auto).expect("auto backend");
@@ -236,10 +233,10 @@ mod tests {
             let mut wide: Vec<u16> = (0..len).map(|i| ((i * 7919 + 13) % 1024) as u16).collect();
             let narrow: Vec<u8> = wide.iter().map(|&v| (v >> 2) as u8).collect();
             let signed: Vec<i16> = wide.iter().map(|&v| (v * 8) as i16).collect();
-            ParityProbe(&wide, &narrow, &signed).run(resolved.backend());
+            check(resolved.backend(), &wide, &narrow, &signed);
             if let Some(last) = wide.last_mut() {
                 *last = 1001;
-                ParityProbe(&wide, &narrow, &signed).run(resolved.backend());
+                check(resolved.backend(), &wide, &narrow, &signed);
             }
         }
     }

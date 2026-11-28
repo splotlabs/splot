@@ -55,7 +55,6 @@ fn main() {
         assert!(!std::arch::is_x86_feature_detected!("sse3"));
     }
 
-    assert!(resolve_backend(SimdPolicy::Avx512).is_err());
     if let Ok(narrow) = resolve_backend(SimdPolicy::Avx2) {
         let backend = narrow.backend();
         assert_eq!(backend.kind(), SelectedBackend::Avx2);

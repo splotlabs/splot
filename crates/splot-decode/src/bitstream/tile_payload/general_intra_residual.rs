@@ -1998,7 +1998,8 @@ const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralInt
 
 #[expect(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
-    (backend, kernels): (splot_core::simd::SimdBackend, splot_recon::KernelSelection),
+    backend: splot_core::simd::SimdBackend,
+    kernels: splot_recon::KernelSelection,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
@@ -2037,7 +2038,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let residual =
-            reconstruct::intra_residual((backend, kernels), block, &setup, secondary, scratch)?;
+            reconstruct::intra_residual(backend, kernels, block, &setup, secondary, scratch)?;
         #[cfg(feature = "block-evidence")]
         if let Some((x, y)) = capture_origin {
             let size = splot_recon::IntraRectBlockSize::new(log2_width as u8, log2_height as u8)?;

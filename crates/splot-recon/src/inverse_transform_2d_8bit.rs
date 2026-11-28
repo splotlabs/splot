@@ -22,7 +22,7 @@ use fearless_simd::{
     Bytes as _, Simd, SimdBase as _, SimdInt, i16x8, i16x16, i32x4, i32x8, u8x16, u16x8, u16x16,
     u32x8, u64x2,
 };
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 use splot_tables::tables::transform_1d::{DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
 
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
@@ -1113,7 +1113,7 @@ impl TransformRunner for TypedTransformRunner {
         )
     }
 
-    transform_runner_methods!(self, typed(with_simd, self.0));
+    transform_runner_methods!(self, typed(self.0));
 }
 
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)

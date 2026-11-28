@@ -1221,7 +1221,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
     /// reconstruction luma size, chroma storage follows AV2 §6.4.1 subsampling,
     /// and monochrome workspaces allocate only Y. It selects no kernels; a
-    /// decode opens its workspaces with [`Self::new_recycled_from`].
+    /// decode opens its workspaces with the constructors that take its
+    /// [`KernelSelection`](crate::KernelSelection).
     ///
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit

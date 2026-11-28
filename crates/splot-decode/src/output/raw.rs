@@ -17,17 +17,15 @@ use crate::output::film_grain::{GrainPlanes, write_display};
 use crate::pipeline::PipelineDecodedFrame;
 
 pub(crate) fn write_raw_stream_from_plan(
-    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
     writer: &mut (dyn Write + Send),
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
-    let kernels = splot_recon::KernelSelection::of(session.backend());
+    let (backend, kernels) = (session.backend().backend(), session.kernels());
     let mut seen_xlayer = None;
     crate::pipeline::emit_frames(
-        backend,
         source,
         options,
         session,
@@ -78,15 +76,13 @@ fn write_display_frame(
 }
 
 pub(crate) fn discard_raw_stream_from_plan(
-    backend: SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<()> {
     let mut spare = GrainPlanes::default();
-    let kernels = splot_recon::KernelSelection::of(session.backend());
+    let (backend, kernels) = (session.backend().backend(), session.kernels());
     crate::pipeline::emit_frames(
-        backend,
         source,
         options,
         session,

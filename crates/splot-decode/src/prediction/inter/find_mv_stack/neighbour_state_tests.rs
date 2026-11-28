@@ -317,7 +317,7 @@ fn digest_line(name: &str) -> String {
         let mut source =
             crate::bitstream::byte_stream::ReaderUnits::new(bytes.as_slice(), options.limits());
         let decoded =
-            crate::test_support::with_auto_backend!(backend => crate::pipeline::emit_frames(backend, &mut source, &options, &session, |_| Ok(()), |_| Ok(())))
+            crate::pipeline::emit_frames(&mut source, &options, &session, |_| Ok(()), |_| Ok(()))
                 .is_ok();
         (RECORDER.take().unwrap(), decoded)
     })

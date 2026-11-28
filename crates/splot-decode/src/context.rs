@@ -32,11 +32,10 @@ pub struct DecodeContext {
     session: crate::pipeline::DecodeSession,
 }
 
-use splot_core::simd::{SelectedBackend, SimdBackend};
+use splot_core::simd::SelectedBackend;
 
 /// A raw or Y4M stream writer of the decode output paths.
 type StreamWriter = fn(
-    SimdBackend,
     &mut dyn UnitSource,
     &DecodeOptions,
     &crate::pipeline::DecodeSession,
@@ -113,20 +112,15 @@ impl DecodeContext {
     }
 
     /// Runs `decode` over the temporal units of `reader` on the calling
-    /// thread, which drives the row workers, with this context's backend and
-    /// session.
+    /// thread, which drives the row workers, with this context's session.
     fn run<T>(
         &self,
         reader: &mut (dyn Read + Send),
         options: &DecodeOptions,
-        decode: impl FnOnce(
-            SimdBackend,
-            &mut dyn UnitSource,
-            &crate::pipeline::DecodeSession,
-        ) -> Result<T>,
+        decode: impl FnOnce(&mut dyn UnitSource, &crate::pipeline::DecodeSession) -> Result<T>,
     ) -> Result<T> {
         let mut source = ReaderUnits::new(reader, options.limits());
-        decode(self.session.backend().backend(), &mut source, &self.session)
+        decode(&mut source, &self.session)
     }
 
     /// Streams the displayed frames of `reader` into `writer` through `write`.
@@ -137,8 +131,8 @@ impl DecodeContext {
         writer: &mut (dyn std::io::Write + Send),
         write: StreamWriter,
     ) -> Result<()> {
-        self.run(reader, options, |backend, source, session| {
-            write(backend, source, options, session, writer)
+        self.run(reader, options, |source, session| {
+            write(source, options, session, writer)
         })
     }
 
@@ -171,9 +165,8 @@ impl DecodeContext {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.run(&mut reader, &options, |backend, source, session| {
+        self.run(&mut reader, &options, |source, session| {
             crate::output::hash::decode_hash_report_from_plan(
-                backend,
                 source,
                 &options,
                 self.threads(),
@@ -197,8 +190,8 @@ impl DecodeContext {
         mut reader: R,
         options: DecodeOptions,
     ) -> Result<()> {
-        self.run(&mut reader, &options, |backend, source, session| {
-            crate::output::raw::discard_raw_stream_from_plan(backend, source, &options, session)
+        self.run(&mut reader, &options, |source, session| {
+            crate::output::raw::discard_raw_stream_from_plan(source, &options, session)
         })
     }
 

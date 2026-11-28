@@ -22,7 +22,7 @@
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
 use fearless_simd::{Simd, SimdBase as _, i32x4};
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
@@ -507,7 +507,7 @@ impl OuterRunner for TypedOuter {
         )
     }
 
-    outer_runner_methods!(self, typed(with_simd, self.0));
+    outer_runner_methods!(self, typed(self.0));
 }
 
 fn inverse_transform_2d_outer_adjusted_inner<R: OuterRunner>(

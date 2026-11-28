@@ -1242,10 +1242,9 @@ impl<T: ReconSample> TipOutputStages<T> {
                 (plane.samples_mut(), stride)
             })
         });
-        let kernels = self.progress.buffers().map(|buffers| buffers.kernels());
         let mut surface = splot_recon::CurrentFrameRect::from_bands(
             self.info,
-            kernels.unwrap_or_default(),
+            self.progress.kernels(),
             rect,
             [y, u, v],
         )?;

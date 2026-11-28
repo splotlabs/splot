@@ -3,18 +3,26 @@
 
 use super::*;
 use crate::wide_kernels::WideKernels;
+use crate::wide_kernels::test_support::{alternate, native_avx512};
 use fearless_simd::Level;
 use std::{hint::black_box, time::Instant};
 
-/// The first `count` of 32 coefficients set, near the `i16` limit or, for
-/// `wide`, past it.
-fn coefs(count: usize, wide: bool) -> [i32; IST_8X8_HEIGHT] {
-    let limit = if wide { 1 << 19 } else { 1 << 14 };
+/// The first `count` of 32 coefficients set from `seed`, inside `i16` or, for
+/// `wide`, up to the clamp bound of 10-bit input; every fourth one at a limit.
+fn coefs(count: usize, wide: bool, seed: u32) -> [i32; IST_8X8_HEIGHT] {
+    let (low, high) = if wide {
+        (-(1 << 17), (1 << 17) - 1)
+    } else {
+        (-32768, 32767)
+    };
+    let mut state = seed;
     core::array::from_fn(|i| {
-        if i < count {
-            ((i as i32 * 7919 + 13) % (2 * limit)) - limit
-        } else {
-            0
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        match (i < count, i % 4) {
+            (false, _) => 0,
+            (true, 0) if state & 1 == 0 => low,
+            (true, 0) => high,
+            (true, _) => low + (state >> 8) as i32 % (high - low + 1),
         }
     })
 }
@@ -39,12 +47,11 @@ fn narrow_sums<S: Simd>(
 /// through the bound kernel pointer.
 #[test]
 fn wide_secondary_sums_match_the_8_lane_sums() {
-    let native = Level::new().as_avx512();
-    assert!(native.is_some() || std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
+    let native = native_avx512();
     for kernel in IST_8X8_PACKED.iter().flatten().flatten() {
         for wide in [false, true] {
-            for count in [2, 8, 12, 16, 20, 24, 32] {
-                let coefs = coefs(count, wide);
+            for (count, seed) in [2, 8, 12, 16, 20, 24, 32].into_iter().zip(1..) {
+                let coefs = coefs(count, wide, seed);
                 let (narrow, wider) = baseline_simd!(simd => (
                     narrow_sums(simd, &kernel.pairs, &coefs, wide),
                     ist_8x8_sums_wide(simd, &kernel.pairs, &coefs, wide),
@@ -79,21 +86,12 @@ fn measure_wide_secondary_sums() {
     println!("inputs,coefficients,round,avx2_ns,avx512_ns");
     for wide in [false, true] {
         for count in [2, 8, 16, 24, 32] {
-            let coefs = coefs(count, wide);
+            let coefs = coefs(count, wide, 1);
             let narrow =
                 || ns(&|| avx2.vectorize(|| narrow_sums(avx2, pairs, black_box(&coefs), wide)));
             let wider = || ns(&|| sums(pairs, black_box(&coefs), wide));
-            let _ = (narrow(), wider());
-            for round in 0..12 {
-                let (a, b) = if round % 2 == 0 {
-                    (narrow(), wider())
-                } else {
-                    let b = wider();
-                    (narrow(), b)
-                };
-                let inputs = if wide { "wide" } else { "16-bit" };
-                println!("{inputs},{count},{},{a:.2},{b:.2}", round + 1);
-            }
+            let inputs = if wide { "wide" } else { "16-bit" };
+            alternate(&format!("{inputs},{count}"), narrow, wider);
         }
     }
 }

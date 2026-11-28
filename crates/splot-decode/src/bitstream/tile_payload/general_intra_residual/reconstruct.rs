@@ -141,7 +141,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 ) -> Result<(), GeneralIntraResidualError> {
     crate::test_support::with_auto_backend!(backend => {
         reconstruct_general_intra_coeff_block_rect_with_prediction_into_with(
-            (backend, splot_recon::KernelSelection::default()),
+            backend,
+            splot_recon::KernelSelection::default(),
             block,
             prediction,
             out,
@@ -163,7 +164,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_with<
     T: ReconSample,
 >(
-    (backend, kernels): (SimdBackend, splot_recon::KernelSelection),
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     block: CoeffBlock<'_>,
     prediction: &[T],
     out: &mut Vec<T>,
@@ -193,7 +195,8 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into_wi
         (plane_id, dpcm, None)
     };
     super::reconstruct_general_intra_block_rect_with_prediction_core(
-        (backend, kernels),
+        backend,
+        kernels,
         block,
         prediction,
         out,
@@ -308,14 +311,9 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame_with<T: Reco
                 return Ok(());
             }
             let (setup, secondary) = general()?;
-            let residual = intra_residual(
-                (backend, kernels),
-                block,
-                &setup,
-                secondary.as_ref(),
-                scratch,
-            )
-            .map_err(reconstruct_error)?;
+            let residual =
+                intra_residual(backend, kernels, block, &setup, secondary.as_ref(), scratch)
+                    .map_err(reconstruct_error)?;
             #[cfg(feature = "block-evidence")]
             if capture {
                 record_residual(plane_id, x, y, block_size, residual, false);
@@ -555,14 +553,8 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place_with<T: ReconSampl
             return Ok(());
         }
         let (setup, secondary) = general()?;
-        let residual = intra_residual(
-            (backend, kernels),
-            block,
-            &setup,
-            secondary.as_ref(),
-            scratch,
-        )
-        .map_err(reconstruct_error)?;
+        let residual = intra_residual(backend, kernels, block, &setup, secondary.as_ref(), scratch)
+            .map_err(reconstruct_error)?;
         #[cfg(feature = "block-evidence")]
         if capture {
             record_residual(plane_id, x, y, block_size, residual, false);
@@ -656,7 +648,8 @@ fn raster_quant<'a>(
 }
 
 fn dequantize_residual(
-    (backend, kernels): (SimdBackend, splot_recon::KernelSelection),
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     block: CoeffBlock<'_>,
     params: &DequantBlockParams,
     secondary: Option<&SecondaryInverseTransform>,
@@ -683,7 +676,8 @@ fn dequantize_residual(
 
 /// Dequantizes and inverse-transforms one intra block into `scratch`.
 pub(super) fn intra_residual<'s>(
-    (backend, kernels): (SimdBackend, splot_recon::KernelSelection),
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
     block: CoeffBlock<'_>,
     setup: &ReconstructBlockSetup,
     secondary: Option<&SecondaryInverseTransform>,
@@ -691,7 +685,8 @@ pub(super) fn intra_residual<'s>(
 ) -> splot_recon::Result<&'s [i32]> {
     let dequant = &mut scratch.dequant[..setup.adjusted];
     let coded = dequantize_residual(
-        (backend, kernels),
+        backend,
+        kernels,
         block,
         &setup.params,
         secondary,
@@ -819,7 +814,8 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into_with<T: ReconSamp
     }
     let dequant = &mut scratch.dequant[..setup.adjusted];
     let coded = dequantize_residual(
-        (backend, kernels),
+        backend,
+        kernels,
         block,
         &setup.params,
         secondary.as_ref(),

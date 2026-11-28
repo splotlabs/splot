@@ -281,13 +281,7 @@ impl SimdBackend {
     /// Executes `f` within the target-feature scope this backend guarantees.
     #[inline]
     pub fn vectorize<R>(self, f: impl FnOnce() -> R) -> R {
-        #[cfg(target_arch = "x86_64")]
-        match self.0 {
-            X86Simd::Avx2(token) => token.vectorize(f),
-            X86Simd::Sse2(floor) => floor.token().vectorize(f),
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        self.0.vectorize(f)
+        crate::with_simd!(self, _simd => f())
     }
 
     /// The `Avx2` token of an x86-64 backend that runs AVX2.
@@ -411,19 +405,32 @@ macro_rules! with_simd {
     }};
 }
 
+#[cfg(target_arch = "x86_64")]
+type WideToken = Option<fearless_simd::Avx512>;
+#[cfg(not(target_arch = "x86_64"))]
+type WideToken = Option<core::convert::Infallible>;
+
 /// Validated backend produced at session startup: the level the kernels run
 /// at, and the AVX-512 token when the policy selected AVX-512.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct ResolvedBackend {
     backend: SimdBackend,
-    wide: bool,
+    wide: WideToken,
 }
+
+impl PartialEq for ResolvedBackend {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind()
+    }
+}
+
+impl Eq for ResolvedBackend {}
 
 impl ResolvedBackend {
     /// Returns the coarse backend tag for observation outside hot loops.
     #[must_use]
     pub const fn kind(self) -> SelectedBackend {
-        if self.wide {
+        if self.wide.is_some() {
             SelectedBackend::Avx512
         } else {
             self.backend.kind()
@@ -448,12 +455,8 @@ impl ResolvedBackend {
     /// a wider form than [`Self::backend`] runs.
     #[cfg(target_arch = "x86_64")]
     #[must_use]
-    pub fn avx512_token(self) -> Option<fearless_simd::Avx512> {
-        if self.wide {
-            cached_level().as_avx512()
-        } else {
-            None
-        }
+    pub const fn avx512_token(self) -> Option<fearless_simd::Avx512> {
+        self.wide
     }
 }
 
@@ -573,10 +576,11 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
     match selected {
         SelectedBackend::Avx2 | SelectedBackend::Avx512 => level
             .as_avx2()
-            .filter(|_| selected == SelectedBackend::Avx2 || level.as_avx512().is_some())
             .map(|token| ResolvedBackend {
                 backend: SimdBackend(X86Simd::Avx2(token)),
-                wide: selected == SelectedBackend::Avx512,
+                wide: level
+                    .as_avx512()
+                    .filter(|_| selected == SelectedBackend::Avx512),
             })
             .ok_or_else(err),
         SelectedBackend::Sse2 => {
@@ -586,7 +590,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
                 .zip(sse2_floor::BuildFloor::AVAILABLE)
                 .map(|tokens| ResolvedBackend {
                     backend: SimdBackend(X86Simd::Sse2(Sse2Floor(tokens))),
-                    wide: false,
+                    wide: None,
                 })
                 .ok_or_else(err)
         }
@@ -598,7 +602,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             .as_neon()
             .map(|token| ResolvedBackend {
                 backend: SimdBackend(token),
-                wide: false,
+                wide: None,
             })
             .ok_or_else(err),
         SelectedBackend::Sse2
@@ -615,7 +619,7 @@ pub fn resolve_backend(policy: SimdPolicy) -> Result<ResolvedBackend, Unsupporte
             };
             Ok(ResolvedBackend {
                 backend: SimdBackend(token),
-                wide: false,
+                wide: None,
             })
         }
         SelectedBackend::Sse2

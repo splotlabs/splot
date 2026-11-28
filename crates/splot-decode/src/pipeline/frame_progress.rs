@@ -327,6 +327,11 @@ impl<T: ReconSample> FrameProgress<T> {
         self.buffers.as_ref()
     }
 
+    /// The kernels of the decode this frame belongs to.
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        crate::support::decode_buffers::DecodeBuffers::kernels_of(self.buffers.as_ref())
+    }
+
     /// Opens the workspace one pending frame's filter phase filters in place
     /// and publishes, before that phase is handed to a worker.
     pub(crate) fn from_workspace(
@@ -954,10 +959,9 @@ impl<T: ReconSample> FrontierRows<T> {
             })
         });
         self.commit_start = starts;
-        let kernels = self.progress.buffers().map(|buffers| buffers.kernels());
         let band = CurrentFrameWorkspace::lend_band(
             self.progress.info,
-            kernels.unwrap_or_default(),
+            self.progress.kernels(),
             planes,
             scratch,
         )?;

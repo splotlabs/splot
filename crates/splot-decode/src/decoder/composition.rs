@@ -165,7 +165,7 @@ impl AtlasCompositor {
             self.limits,
             has_alpha,
         )?;
-        let backend = texture.backend.backend();
+        let backend = texture.backend;
         let width = geometry.size[0] as usize;
         let needed = geometry.samples + if has_alpha { width } else { 0 };
         let mask_bytes = if has_alpha { 2 * width } else { 0 };

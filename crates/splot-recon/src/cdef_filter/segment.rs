@@ -1367,8 +1367,9 @@ pub fn cdef_filter_segment<T: crate::ReconSample>(
 
 /// Variant of [`cdef_filter_segment`] using the caller's startup-selected
 /// SIMD backend `backend`. Kept out of line: inlined into its one caller, the
-/// block loop sits deep enough that LLVM rates the direction kernel's call
-/// cold and leaves the kernel out of line, 20 instructions a block more.
+/// block loop sits deep enough that LLVM rates the call of the direction
+/// kernel, a `kernel!` body that can only be `#[inline]`, cold and leaves it
+/// out of line, 20 instructions a block more.
 #[inline(never)]
 pub fn cdef_filter_segment_with<T: crate::ReconSample>(
     backend: SimdBackend,

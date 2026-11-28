@@ -121,8 +121,7 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
     let mut collected = Vec::new();
     splot_parallel::run_on_thread("splot-driver", || {
         let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-        crate::test_support::with_auto_backend!(backend => emit_frames(
-            backend,
+        emit_frames(
             &mut source,
             options,
             &session,
@@ -131,7 +130,7 @@ pub(crate) fn collect_frames_from_plan<R: Send>(
                 collected.push(collect(frame)?);
                 Ok(())
             },
-        ))
+        )
     })??;
     Ok(collected)
 }
@@ -162,8 +161,7 @@ pub(crate) fn collect_bru_lr_audit(
             let mut source =
                 crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
             let mut frames = Vec::new();
-            crate::test_support::with_auto_backend!(backend => emit_frames(
-                backend,
+            emit_frames(
                 &mut source,
                 options,
                 &session,
@@ -178,7 +176,7 @@ pub(crate) fn collect_bru_lr_audit(
                     let _ = frame.ready_frame()?;
                     Ok(())
                 },
-            ))?;
+            )?;
             Result::Ok(frames)
         })
     })?;
@@ -188,7 +186,6 @@ pub(crate) fn collect_bru_lr_audit(
 /// Decodes every temporal unit of `source` and passes each displayed frame
 /// to `emit` in display order.
 pub(crate) fn emit_frames(
-    backend: splot_core::simd::SimdBackend,
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
     session: &DecodeSession,
@@ -210,7 +207,7 @@ pub(crate) fn emit_frames(
         options,
         &mut retained,
         session,
-        backend,
+        session.backend().backend(),
         &mut preflight,
         &mut emit,
     );

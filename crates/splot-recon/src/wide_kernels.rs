@@ -104,19 +104,7 @@ pub struct KernelSelection {
 
 impl PartialEq for KernelSelection {
     fn eq(&self, other: &Self) -> bool {
-        #[cfg(target_arch = "x86_64")]
-        {
-            match (self.wide, other.wide) {
-                (Some(a), Some(b)) => core::ptr::eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            let _ = other;
-            true
-        }
+        self.holds_avx512() == other.holds_avx512()
     }
 }
 
@@ -126,7 +114,8 @@ impl core::fmt::Debug for KernelSelection {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("KernelSelection")
-            .finish_non_exhaustive()
+            .field("avx512", &self.holds_avx512())
+            .finish()
     }
 }
 
@@ -151,6 +140,51 @@ impl KernelSelection {
     pub(crate) fn wide(self) -> Option<&'static WideKernels> {
         self.wide
     }
+
+    /// Whether the selection holds the AVX-512 kernels; there is one set.
+    const fn holds_avx512(self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.wide.is_some()
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            let _ = self;
+            false
+        }
+    }
+}
+
+/// What the comparison and timing tests of the AVX-512 kernels share.
+#[cfg(all(test, target_arch = "x86_64"))]
+pub(crate) mod test_support {
+    use fearless_simd::{Avx512, Level};
+
+    /// The host's AVX-512 token; a run with `SPLOT_REQUIRE_AVX512` set fails
+    /// on a host without one.
+    pub(crate) fn native_avx512() -> Option<Avx512> {
+        let native = Level::new().as_avx512();
+        assert!(
+            native.is_some() || std::env::var_os("SPLOT_REQUIRE_AVX512").is_none(),
+            "SPLOT_REQUIRE_AVX512 is set on a host without AVX-512"
+        );
+        native
+    }
+
+    /// Prints twelve alternating rounds of the two timings after one warm-up
+    /// of each, as `label,round,narrow,wide`.
+    pub(crate) fn alternate(label: &str, narrow: impl Fn() -> f64, wide: impl Fn() -> f64) {
+        let _ = (narrow(), wide());
+        for round in 0..12 {
+            let (narrow, wide) = if round % 2 == 0 {
+                (narrow(), wide())
+            } else {
+                let wide = wide();
+                (narrow(), wide)
+            };
+            println!("{label},{},{narrow:.2},{wide:.2}", round + 1);
+        }
+    }
 }
 
 #[cfg(all(test, target_arch = "x86_64"))]
@@ -170,8 +204,10 @@ mod tests {
         );
         if let Ok(wide) = resolve_backend(SimdPolicy::Avx512) {
             assert_ne!(KernelSelection::of(wide), KernelSelection::default());
-        } else {
-            assert!(std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
         }
+        assert_eq!(
+            resolve_backend(SimdPolicy::Avx512).is_ok(),
+            test_support::native_avx512().is_some()
+        );
     }
 }

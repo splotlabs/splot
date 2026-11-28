@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::wide_kernels::test_support::{alternate, native_avx512};
 use fearless_simd::Level;
 use std::{hint::black_box, time::Instant};
 
@@ -19,8 +20,7 @@ fn map(len: usize, colors: usize) -> Vec<u8> {
 }
 
 fn check<P: PaletteSample + Default + Clone + PartialEq + core::fmt::Debug>(wide_samples: bool) {
-    let native = Level::new().as_avx512();
-    assert!(native.is_some() || std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
+    let native = native_avx512();
     let (low, high) = tables(&COLORS);
     let high = wide_samples.then_some(high);
     for (len, colors) in [(64, 2), (128, 8), (256, 5), (4096, 8)] {
@@ -51,7 +51,6 @@ fn wide_palette_lookup_matches_the_16_lane_lookup() {
 }
 
 /// Run on one pinned core of an AVX-512 host. Each sample is one block.
-#[cfg(target_arch = "x86_64")]
 #[test]
 #[ignore = "native AVX-512 timing"]
 fn measure_wide_palette_blocks() {
@@ -76,16 +75,7 @@ fn measure_wide_palette_blocks() {
         let narrow = || ns(&|out| palette_lanes(avx2, low, high, black_box(&map), out));
         let palette = P::wide_palette(WideKernels::of(avx512));
         let wide = || ns(&|out| palette(low, high, black_box(&map), out));
-        let _ = (narrow(), wide());
-        for round in 0..12 {
-            let (avx2, avx512) = if round % 2 == 0 {
-                (narrow(), wide())
-            } else {
-                let avx512 = wide();
-                (narrow(), avx512)
-            };
-            println!("{depth},{len},{},{avx2:.2},{avx512:.2}", round + 1);
-        }
+        alternate(&format!("{depth},{len}"), narrow, wide);
     }
     println!("depth,samples,round,avx2_ns_per_block,avx512_ns_per_block");
     for len in [64, 256, 1024, 4096] {

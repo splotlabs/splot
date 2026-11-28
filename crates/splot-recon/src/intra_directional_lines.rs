@@ -19,7 +19,7 @@ use fearless_simd::{
 };
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdFrom, u8x32};
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 
 use super::{
     DR_INTERP_FILTER, DirectionalAngleBranch, IntraMiddleDirectionalAngle, directional_shift,
@@ -244,7 +244,7 @@ impl LineRunner for TypedLines {
         self.0.avx2_token()
     }
 
-    line_methods!(self, typed(with_simd, self.0));
+    line_methods!(self, typed(self.0));
 }
 
 /// A sample type with a directional line kernel and a column transpose.

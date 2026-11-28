@@ -1091,18 +1091,11 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_route() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
+        use splot_core::simd::{SimdPolicy, resolve_backend};
 
-        struct Check<'a>(&'a InverseTransform2d, &'a [i32], &'a [i32]);
-        impl Check<'_> {
-            fn run(self, backend: SimdBackend) {
-                let mut got = vec![0i32; self.2.len()];
-                inverse_transform_2d_with(backend, self.0, self.1, &mut got).unwrap();
-                assert_eq!(got, self.2);
-            }
-        }
-
-        let backend = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        let backend = resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .backend();
         let cases = [
             (
                 params(2, 2, true, dct(), dct(), 0, 0),
@@ -1118,7 +1111,9 @@ mod tests {
         for (tx, dequant, out_len) in cases {
             let mut expected = vec![0i32; out_len];
             inverse_transform_2d(&tx, &dequant, &mut expected).unwrap();
-            Check(&tx, &dequant, &expected).run(backend.backend());
+            let mut got = vec![0i32; out_len];
+            inverse_transform_2d_with(backend, &tx, &dequant, &mut got).unwrap();
+            assert_eq!(got, expected);
         }
     }
 }

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::wide_kernels::WideKernels;
+use crate::wide_kernels::test_support::{alternate, native_avx512};
 use fearless_simd::Level;
 use std::{hint::black_box, time::Instant};
 
@@ -18,8 +19,7 @@ fn inputs<T: ReconSample>(width: usize, max: u32) -> (Vec<T>, Vec<T>, u16) {
 }
 
 fn check<O: IntraLaneSample + PartialEq + core::fmt::Debug>(max: u32, extreme: bool) {
-    let native = Level::new().as_avx512();
-    assert!(native.is_some() || std::env::var_os("SPLOT_REQUIRE_AVX512").is_none());
+    let native = native_avx512();
     for (log2_width, log2_height) in [(5u8, 3u8), (5, 6), (6, 4), (6, 6)] {
         let (width, height) = (1usize << log2_width, 1usize << log2_height);
         let size = IntraRectBlockSize::new(log2_width, log2_height).unwrap();
@@ -65,7 +65,6 @@ fn wide_paeth_rows_match_the_16_lane_rows() {
 }
 
 /// Run on one pinned core of an AVX-512 host. Each sample is one block.
-#[cfg(target_arch = "x86_64")]
 #[test]
 #[ignore = "native AVX-512 timing"]
 fn measure_wide_paeth_blocks() {
@@ -99,19 +98,7 @@ fn measure_wide_paeth_blocks() {
                 );
             })
         };
-        let _ = (narrow(), wide());
-        for round in 0..12 {
-            let (avx2, avx512) = if round % 2 == 0 {
-                (narrow(), wide())
-            } else {
-                let avx512 = wide();
-                (narrow(), avx512)
-            };
-            println!(
-                "{depth},{width}x{height},{},{avx2:.2},{avx512:.2}",
-                round + 1
-            );
-        }
+        alternate(&format!("{depth},{width}x{height}"), narrow, wide);
     }
     println!("depth,block,round,avx2_ns_per_block,avx512_ns_per_block");
     for (log2_width, log2_height) in [(5, 3), (5, 5), (6, 4), (6, 6)] {

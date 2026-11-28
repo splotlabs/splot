@@ -145,26 +145,14 @@ mod tests {
             .map(|sum| round2_signed_i32(sum, CCTX_PREC_BITS).clamp(-bound, bound - 1))
     }
 
-    struct Pair<'a>(
-        [&'a DequantBlockParams; 2],
-        [&'a [i32]; 2],
-        [i32; 2],
-        [&'a mut [i32]; 2],
-    );
-
-    impl Pair<'_> {
-        fn run(self, backend: SimdBackend) -> Result<usize> {
-            dequantize_cctx_pair_with(backend, self.0, self.1, self.2, self.3)
-        }
-    }
-
     fn pair<'a>(
         params: [&'a DequantBlockParams; 2],
         quant: [&'a [i32]; 2],
         rotation: [i32; 2],
         out: [&'a mut [i32]; 2],
     ) -> Result<usize> {
-        Pair(params, quant, rotation, out).run(resolve_backend(SimdPolicy::Auto).unwrap().backend())
+        let backend = resolve_backend(SimdPolicy::Auto).unwrap().backend();
+        dequantize_cctx_pair_with(backend, params, quant, rotation, out)
     }
 
     /// The lane groups must reproduce the per-coefficient oracle exactly for

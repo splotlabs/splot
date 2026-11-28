@@ -19,7 +19,7 @@ use fearless_simd::{SimdCombine as _, i16x8, i32x4};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{i16x32, i32x16};
 
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
@@ -431,7 +431,7 @@ impl IstRunner for BaselineIst {
 struct TypedIst(SimdBackend, KernelSelection);
 
 impl IstRunner for TypedIst {
-    ist_runner_methods!(self, typed(with_simd, self.0));
+    ist_runner_methods!(self, typed(self.0));
 
     fn kernels(self) -> KernelSelection {
         self.1

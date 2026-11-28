@@ -58,6 +58,14 @@ impl DecodeBuffers {
         self.kernels
     }
 
+    /// The kernels of the decode behind `buffers`; work outside a decode,
+    /// which has none, selected none.
+    pub(crate) fn kernels_of(buffers: Option<&Arc<Self>>) -> splot_recon::KernelSelection {
+        buffers.map_or_else(splot_recon::KernelSelection::default, |buffers| {
+            buffers.kernels
+        })
+    }
+
     /// The frame-sized plane storage, which reconstruction workspaces name so
     /// their buffers come home whichever holder releases them last.
     pub(crate) fn planes(&self) -> &Arc<splot_recon::PlanePool> {

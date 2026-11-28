@@ -51,11 +51,11 @@ macro_rules! simd_runner_methods {
             }
         )*
     };
-    (typed($scope:ident, $backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+    (typed($backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
         $(
             $(#[$attr])*
             $($signature)* {
-                $scope!($backend, $simd => $body)
+                splot_core::with_simd!($backend, $simd => $body)
             }
         )*
     };

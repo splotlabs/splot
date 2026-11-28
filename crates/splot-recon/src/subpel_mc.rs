@@ -12,7 +12,7 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 
 /// Expands `$body` with `$row` bound to each listed index below `$rows`, a
 /// constant, so a kernel's rows or ring phases unroll.
@@ -270,7 +270,7 @@ impl SubpelRunner for TypedSubpel {
         self.0.neon_token()
     }
 
-    subpel_methods!(self, typed(with_simd, self.0));
+    subpel_methods!(self, typed(self.0));
 }
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample

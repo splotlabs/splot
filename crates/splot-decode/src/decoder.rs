@@ -317,7 +317,8 @@ pub struct Picture {
     extended_layer_id: ExtendedLayerId,
     embedded_layer_id: EmbeddedLayerId,
     temporal_layer_id: TemporalLayerId,
-    backend: splot_core::simd::ResolvedBackend,
+    backend: SimdBackend,
+    kernels: splot_recon::KernelSelection,
 }
 
 #[derive(Debug)]
@@ -356,12 +357,11 @@ pub enum PictureSamples<'a> {
 impl Picture {
     fn new(
         frame: &PipelineFrame,
-        pool: Option<Arc<PlanePool>>,
+        session: &DecodeSession,
         options: &DecodeOptions,
-        resolved: ResolvedBackend,
     ) -> Result<Self> {
-        let backend = resolved.backend();
-        let kernels = splot_recon::KernelSelection::of(resolved);
+        let (backend, kernels) = (session.backend().backend(), session.kernels());
+        let pool = session.planes();
         let grain = frame.output_grain(options);
         let samples = match frame.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
@@ -380,7 +380,8 @@ impl Picture {
             extended_layer_id: frame.extended_layer_id,
             embedded_layer_id: frame.embedded_layer_id,
             temporal_layer_id: frame.temporal_layer_id,
-            backend: resolved,
+            backend,
+            kernels,
             info: samples.info(),
             samples: Some(samples),
             props: frame.props,
@@ -412,8 +413,7 @@ impl Picture {
     /// # Errors
     /// Returns [`DecodeError::Reconstruction`] when the synthesis fails.
     pub fn apply_film_grain(&self) -> Result<Self> {
-        let backend = self.backend.backend();
-        let kernels = splot_recon::KernelSelection::of(self.backend);
+        let (backend, kernels) = (self.backend, self.kernels);
         let grain = self.pending_grain.as_ref();
         let pool = self.pool.as_ref();
         let samples = match &self.samples {
@@ -449,6 +449,7 @@ impl Picture {
             embedded_layer_id: self.embedded_layer_id,
             temporal_layer_id: self.temporal_layer_id,
             backend: self.backend,
+            kernels: self.kernels,
         })
     }
 
@@ -765,7 +766,6 @@ impl DriverLaunch {
 }
 
 fn run_driver_session(launch: DriverLaunch) {
-    let backend = launch.resolved.backend();
     let options = DecodeOptions::new(launch.limits)
         .with_skip_film_grain(launch.skip_film_grain)
         .with_temporal_layer_selection(launch.temporal_layer_selection)
@@ -784,18 +784,14 @@ fn run_driver_session(launch: DriverLaunch) {
     loop {
         let mut units = ChannelUnits(Arc::clone(&guard.0));
         let result = crate::pipeline::emit_frames(
-            backend,
             &mut units,
             &options,
             &session,
             |_| Ok(()),
             |frame| {
-                guard.0.push_picture(Picture::new(
-                    frame,
-                    session.planes(),
-                    &options,
-                    session.backend(),
-                )?);
+                guard
+                    .0
+                    .push_picture(Picture::new(frame, &session, &options)?);
                 Ok(())
             },
         );

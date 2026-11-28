@@ -327,8 +327,8 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
 }
 
 /// [`paeth_rows`] for a block 32 or 64 wide, 32 lanes a step. The above row
-/// and its distance to the corner are the same for every row, so they are
-/// widened and taken once per block.
+/// with its distance to the corner and `above - 2 * top_left` are the same
+/// for every row, so they are widened and taken once per block.
 #[cfg(target_arch = "x86_64")]
 #[expect(
     clippy::inline_always,
@@ -345,18 +345,20 @@ pub(crate) fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
     let (width, height) = (size.width(), size.height());
     debug_assert!(width <= 64);
     let top_left = i16x32::splat(simd, top_left as i16);
-    let mut columns = [(top_left, top_left); 2];
+    let mut columns = [(top_left, top_left, top_left); 2];
     for (column, above) in columns.iter_mut().zip(above.as_chunks::<32>().0) {
         let above = above.map(ReconSample::to_u16);
         let above = u16x32::load_array_ref(simd, &above).bitcast::<i16x32<S>>();
-        *column = (above, (above - top_left).abs());
+        *column = (above, (above - top_left).abs(), above - top_left - top_left);
     }
     for (row, &left) in left.iter().take(height).enumerate() {
         let left = i16x32::splat(simd, left.to_u16() as i16);
         let p_top = (left - top_left).abs();
         let target = &mut output[row * stride_samples..row * stride_samples + width];
-        for (target, &(above, p_left)) in target.as_chunks_mut::<32>().0.iter_mut().zip(&columns) {
-            let p_top_left = (above + left - top_left - top_left).abs();
+        for (target, &(above, p_left, base)) in
+            target.as_chunks_mut::<32>().0.iter_mut().zip(&columns)
+        {
+            let p_top_left = (base + left).abs();
             let take_left = p_left.simd_le(p_top) & p_left.simd_le(p_top_left);
             let take_top = p_top.simd_le(p_top_left);
             let value = take_left.select(left, take_top.select(above, top_left));

@@ -2001,10 +2001,7 @@ impl ParseProgress {
 
     /// The kernels this decode selected, for the bands it opens.
     pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
-        self.buffers
-            .as_ref()
-            .map(|buffers| buffers.kernels())
-            .unwrap_or_default()
+        crate::support::decode_buffers::DecodeBuffers::kernels_of(self.buffers.as_ref())
     }
 
     pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
