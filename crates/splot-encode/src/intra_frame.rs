@@ -117,6 +117,8 @@ pub(crate) struct IntraFrameCoder {
     pub(crate) cancel: crate::cancel::CancelToken,
     /// Counts the searched superblocks of the encoder's frames.
     pub(crate) progress: crate::progress::Progress,
+    /// What the next frames collect for the encoder's decision trace.
+    trace: Option<crate::trace::FrameSpec>,
 }
 
 /// One flag per 8x8 luma cell of a frame, in raster order: whether an
@@ -457,6 +459,7 @@ impl IntraFrameCoder {
             slot_hash: Default::default(),
             cancel: crate::cancel::CancelToken::default(),
             progress: crate::progress::Progress::default(),
+            trace: None,
         })
     }
 }
@@ -492,6 +495,10 @@ impl FrameCoder for IntraFrameCoder {
 
     fn pool(&self) -> Option<WorkerPool> {
         self.pool.clone()
+    }
+
+    fn set_decision_trace(&mut self, trace: Option<crate::trace::FrameSpec>) {
+        self.trace = trace;
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
@@ -1033,6 +1040,7 @@ impl IntraFrameCoder {
                 .set(crate::mode_decision::CHAINED_REFERENCES.get() + 1);
         }
         let intra = std::sync::Mutex::new(Vec::new());
+        let trace = crate::trace::FrameCollector::new(self.trace.as_ref(), plan.display_index);
         let wavefront = self.preset.wavefront && bv_search.is_none() && !self.preset.palette;
         let search = |writer: &mut KeyFrameTileWriter, coder: &mut SourceResidualCoder| {
             self.cancel.check()?;
@@ -1041,8 +1049,8 @@ impl IntraFrameCoder {
             })?;
             let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
             let segment = segments.get(index).copied();
-            let (lambda, target) = match (sb_quant.get(index), segment) {
-                (None, None) => (lambda, None),
+            let (lambda, target, block_qindex) = match (sb_quant.get(index), segment) {
+                (None, None) => (lambda, None, qindex),
                 (sb, segment) => {
                     let (offset, mut lambda_log2) = sb.map_or((0, 0), |&(o, l)| (o, i32::from(l)));
                     let mut block_qindex = qindex;
@@ -1078,9 +1086,12 @@ impl IntraFrameCoder {
                     );
                     let lambda = lambda.scaled(lambda_log2);
                     coder.set_quantizer(block_qindex, lambda);
-                    (lambda, target)
+                    (lambda, target, block_qindex)
                 }
             };
+            coder.trace = trace.as_ref().and_then(|trace| {
+                trace.superblock(writer.tile(), root, (block_qindex, lambda, segment))
+            });
             let tree = writer
                 .search_superblock(|syntax, root| {
                     two_pass_partition(
@@ -1092,6 +1103,10 @@ impl IntraFrameCoder {
                     )
                 })
                 .map_err(coding("superblock search"))?;
+            if let (Some(trace), Some(mut searched)) = (&trace, coder.trace.take()) {
+                searched.committed(writer.syntax(), root, &tree);
+                trace.collect(index, searched);
+            }
             if publishes {
                 let mut leaves = Vec::new();
                 intra_leaves(writer.syntax(), root, &tree, &mut leaves)
@@ -1199,6 +1214,7 @@ impl IntraFrameCoder {
             reference: Some((core, recon, initial, cdfs, ccso_blocks, plan.tlayer)),
             tip_output: None,
             intra_cells,
+            trace: trace.map(crate::trace::FrameCollector::finish),
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(
                 crate::warp::WarpUse {
                     layer: plan.layer,
@@ -1291,6 +1307,7 @@ impl IntraFrameCoder {
                     tip_output: Some(core),
                     warp: None,
                     intra_cells: None,
+                    trace: None,
                     global_leaves: 0,
                 }),
             );
@@ -1348,6 +1365,7 @@ impl IntraFrameCoder {
                 tip_output: Some(core),
                 warp: None,
                 intra_cells: None,
+                trace: None,
                 #[cfg(test)]
                 global_leaves: 0,
             }),
@@ -1631,6 +1649,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) context: PresetContext,
     /// Stops the block search of a cancelled encoder.
     pub(crate) cancel: Option<&'a crate::cancel::CancelToken>,
+    /// The decision trace of the superblock in search.
+    pub(crate) trace: Option<crate::trace::SearchTrace>,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -1665,6 +1685,7 @@ impl<'a> SourceResidualCoder<'a> {
             intrabc: None,
             context: PresetContext::default(),
             cancel: None,
+            trace: None,
         }
     }
 }

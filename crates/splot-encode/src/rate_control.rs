@@ -609,9 +609,7 @@ impl DecoderBuffer {
         bit_depth: BitDepth,
     ) -> Option<u16> {
         let &(qindex, bits) = tries.last()?;
-        let room = self.size.saturating_sub(self.level);
-        let reserve = hidden.saturating_mul(self.drain) + shown.saturating_mul(self.drain / 4);
-        let room = (room - reserve.min(room / 2)).max(1);
+        let room = self.room((hidden, shown));
         let max = max_qindex(bit_depth);
         if bits <= room || qindex >= max {
             return None;
@@ -638,6 +636,14 @@ impl DecoderBuffer {
         };
         let extra = tries.len().saturating_sub(MAX_RECODES).min(15);
         Some(next.max(qindex.saturating_add(1 << extra)).min(max))
+    }
+
+    /// The bits a frame coded before `later` hidden and shown frames of its
+    /// unit may take: see [`Self::coarser`].
+    pub(crate) fn room(&self, (hidden, shown): (u64, u64)) -> u64 {
+        let room = self.size.saturating_sub(self.level);
+        let reserve = hidden.saturating_mul(self.drain) + shown.saturating_mul(self.drain / 4);
+        (room - reserve.min(room / 2)).max(1)
     }
 
     /// Adds the bits of a coded or show-existing frame.

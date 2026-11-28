@@ -27,6 +27,10 @@ use crate::rate_control::{
 };
 use crate::stats::{FrameStats, psnr, ssim};
 use crate::tpl;
+use crate::trace::{
+    Capture, CommittedFrame, DecisionTrace, DecisionTraceRequest, DecisionTraceStop, FrameAttempt,
+    FrameOutcome, FrameSpec, FrameTrace,
+};
 
 /// One AV2 temporal unit.
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +84,8 @@ pub(crate) struct CodedFrame {
     /// A key frame whose temporal unit carries a film grain model; the
     /// frames after it apply grain.
     pub(crate) film_grain_model: bool,
+    /// The block events of the coding, when the decision trace selects them.
+    pub(crate) trace: Option<FrameTrace>,
     /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
     #[cfg(test)]
     pub(crate) global_leaves: usize,
@@ -128,6 +134,8 @@ pub(crate) trait FrameCoder {
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         None
     }
+    /// Receives what the next frames collect for the decision trace.
+    fn set_decision_trace(&mut self, _trace: Option<FrameSpec>) {}
 }
 
 /// A mini-GOP in coding: [`Encoder::receive_packet`] codes it one wave at a time.
@@ -197,6 +205,10 @@ pub struct Encoder {
     progress: Progress,
     /// The frames committed so far.
     frames_coded: u64,
+    /// The packets made so far.
+    packets: u64,
+    /// The decision capture in progress.
+    trace: Option<Capture>,
 }
 
 impl fmt::Debug for Encoder {
@@ -315,6 +327,8 @@ impl Encoder {
             cancel,
             progress,
             frames_coded: 0,
+            packets: 0,
+            trace: None,
         })
     }
 
@@ -341,6 +355,28 @@ impl Encoder {
     /// Calls `sink` with the statistics of every frame coded from now on.
     pub fn set_stats_sink(&mut self, sink: StatsSink) {
         self.stats_sink = Some(sink);
+    }
+
+    /// Starts a capture of the decisions of the frames coded from now on that
+    /// `request` selects; it replaces a capture in progress. A capture does
+    /// not change the packets. See [`crate::trace`].
+    pub fn start_decision_trace(&mut self, request: DecisionTraceRequest) {
+        self.trace = Some(Capture::new(request));
+    }
+
+    /// Ends the capture and returns its trace; `None` without a capture. The
+    /// encoder continues, and codes the next frames without a capture.
+    pub fn take_decision_trace(&mut self) -> Option<DecisionTrace> {
+        let capture = self.trace.take()?;
+        let coded = self.coding.is_none()
+            && (self.planner.next_display() >= capture.end()
+                || self.state == State::Flushed && self.pending.is_empty());
+        let failed = self.state == State::Failed || self.cancel.is_cancelled();
+        Some(capture.finish(match (failed, coded) {
+            (true, _) => Some(DecisionTraceStop::EncodeFailed),
+            (false, true) => None,
+            (false, false) => Some(DecisionTraceStop::Unfinished),
+        }))
     }
 
     /// Queues a frame for coding and analyses it in the lookahead; a scene cut
@@ -611,6 +647,8 @@ impl Encoder {
         if jobs.first().is_some_and(|(_, plan, _)| !plan.leading) {
             self.coder.end_leading_frames()?;
         }
+        self.coder
+            .set_decision_trace(self.trace.as_ref().and_then(Capture::spec));
         let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
         for step in wave {
             *position += 1;
@@ -621,10 +659,31 @@ impl Encoder {
                             what: "a wave with fewer coded frames than planned",
                         })?;
                     let later = frames_later_in_unit(steps.get(*position - 1..).unwrap_or(&[]));
+                    let room = self.buffer.as_ref().map(|buffer| buffer.room(later));
                     let (qp, mut coded) =
                         self.fit_buffer((coded_source, plan, qp), coded, later)?;
                     let frame = source(plan.display_index)?;
-                    stats.push(self.commit(frame, &plan, qp, &mut coded)?);
+                    let committed = FrameOutcome::Committed(CommittedFrame {
+                        frame_type: coded.frame_type,
+                        packet: self.packets,
+                        offset: data.len(),
+                        tip_output: coded.tip_output.is_some(),
+                    });
+                    let coded_stats = self.commit(frame, &plan, qp, &mut coded)?;
+                    if let Some(capture) = &mut self.trace {
+                        let attempt = |plan| FrameAttempt {
+                            plan,
+                            pts: frame.pts(),
+                            attempt: 0,
+                            qindex: u32::from(qp),
+                            bits: coded_stats.bits,
+                            buffer_room_bits: room,
+                            outcome: committed,
+                        };
+                        let info = plan_info(&self.window, &plan);
+                        capture.frame(info.map(attempt), coded.trace.take());
+                    }
+                    stats.push(coded_stats);
                     frame_types[(plan.display_index - first) as usize] = coded.frame_type;
                     data.extend(coded.temporal_unit);
                 }
@@ -665,6 +724,7 @@ impl Encoder {
                     }
                     buffer.drain();
                 }
+                self.packets += 1;
                 self.ready.push_back(Packet {
                     data: core::mem::take(data),
                     pts: source(display_index)?.pts(),
@@ -700,6 +760,19 @@ impl Encoder {
         };
         let mut tries = vec![(qp, coded.temporal_unit.len() as u64 * 8)];
         while let Some(coarser) = buffer.coarser(&tries, later, self.config.bit_depth) {
+            if let Some(capture) = &mut self.trace {
+                let attempt = |plan| FrameAttempt {
+                    plan,
+                    pts: source.pts(),
+                    attempt: 0,
+                    qindex: u32::from(qp),
+                    bits: coded.temporal_unit.len() as u64 * 8,
+                    buffer_room_bits: Some(buffer.room(later)),
+                    outcome: FrameOutcome::Recoded,
+                };
+                capture.frame(plan_info(&self.window, &plan).map(attempt), None);
+                self.coder.set_decision_trace(capture.spec());
+            }
             qp = coarser;
             self.progress.rewind_frame(self.frames_coded);
             coded =
@@ -762,14 +835,9 @@ impl Encoder {
     }
 
     fn frame_qp(&mut self, gop_frame: &GopFrame) -> Result<u16> {
-        let plan = self
-            .window
-            .iter()
-            .find(|info| info.display_index == gop_frame.display_index)
-            .copied()
-            .ok_or(Error::Unsupported {
-                what: "a frame outside its lookahead window",
-            })?;
+        let plan = plan_info(&self.window, gop_frame).ok_or(Error::Unsupported {
+            what: "a frame outside its lookahead window",
+        })?;
         let qindex = self.rate_control.frame_qp(&plan).clamp(
             u16::from(!self.config.is_lossless()),
             max_qindex(self.config.bit_depth),
@@ -847,6 +915,14 @@ fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
             config.frame_rate,
         )?),
     })
+}
+
+/// What `window` has planned about `frame`.
+fn plan_info(window: &[FramePlanInfo], frame: &GopFrame) -> Option<FramePlanInfo> {
+    window
+        .iter()
+        .find(|info| info.display_index == frame.display_index)
+        .copied()
 }
 
 /// The hidden and the shown frames coded after `steps[0]` in its temporal

@@ -36,6 +36,7 @@ use crate::tile_writer::{
     LeafChoice, MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk,
     snap_mv, snap_prediction,
 };
+use crate::trace::{ModeOutcome, PartitionOutcome, SearchTrace};
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
@@ -386,11 +387,18 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         let candidates = self.mds1(leaf, candidates, planes.clone(), start)?;
         let candidate = self.preset.full_trials == 0;
         let mut best: Option<(u128, LeafChoice)> = None;
-        for choice in candidates {
+        let traced = self.coder.trace.as_ref().map_or(0, SearchTrace::len);
+        let mut winner = 0;
+        for (index, choice) in candidates.into_iter().enumerate() {
             let j = self.staged_trial_cost(leaf, choice, planes.clone(), start, candidate)?;
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
+                winner = index;
             }
+        }
+        if let Some(trace) = &mut self.coder.trace {
+            let outcomes = (ModeOutcome::Selected, ModeOutcome::Rejected);
+            trace.settle(traced, [winner], outcomes);
         }
         self.syntax.restore(start)?;
         best.map(|(j, choice)| (Some(j), choice))
@@ -416,6 +424,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             return Ok(candidates);
         }
         let mut ranked = Vec::with_capacity(candidates.len());
+        let traced = self.coder.trace.as_ref().map_or(0, SearchTrace::len);
         for (index, &choice) in candidates.iter().enumerate() {
             let cost = self.staged_trial_cost(leaf, choice, planes.clone(), start, true)?;
             ranked.push((cost, index));
@@ -424,6 +433,10 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         #[cfg(test)]
         MDS1_PRUNED.set(MDS1_PRUNED.get() + ranked.len() - keep);
         ranked.truncate(keep);
+        if let Some(trace) = &mut self.coder.trace {
+            let kept = ranked.iter().map(|&(_, index)| index);
+            trace.settle(traced, kept, (ModeOutcome::Advanced, ModeOutcome::Pruned));
+        }
         ranked.sort_unstable_by_key(|&(_, index)| index);
         Ok(ranked
             .into_iter()
@@ -457,10 +470,15 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.syntax.restore(start)?;
         self.coder.candidate = candidate;
         self.coder.trial = true;
-        let cost = self.trial(leaf, choice, planes);
+        let cost = self.trial(leaf, choice, planes.clone());
         (self.coder.candidate, self.coder.trial) = (false, false);
         self.syntax.set_scalar_trial(false);
-        Ok(cost?.cost(self.lambda))
+        let cost = cost?;
+        let j = cost.cost(self.lambda);
+        if let Some(trace) = &mut self.coder.trace {
+            trace.mode_trial(leaf, choice, (planes, candidate), (cost, j));
+        }
+        Ok(j)
     }
 
     /// Every chroma mode, CFL with derived alphas, CFL with the explicit
@@ -1872,6 +1890,24 @@ impl PartitionSearch for TrialCoder<'_, '_> {
 
     fn leaf_coded(&self) -> bool {
         self.coded
+    }
+
+    fn trace_partition(
+        &mut self,
+        node: PartitionNode,
+        partition: Partition,
+        cost: Option<RdCost>,
+        outcome: PartitionOutcome,
+    ) -> Option<usize> {
+        let (lambda, trace) = (self.lambda, self.coder.trace.as_mut()?);
+        let cost = cost.map(|cost| (cost, cost.cost(lambda)));
+        trace.partition_trial(node, partition, cost, outcome)
+    }
+
+    fn trace_selected(&mut self, trial: usize) {
+        if let Some(trace) = &mut self.coder.trace {
+            trace.select_partition(trial);
+        }
     }
 }
 

@@ -6,7 +6,8 @@
 //! [`Encoder`] takes owned [`SourceFrame`]s built for a validated [`Config`]
 //! and returns one [`Packet`] (an AV2 Annex B temporal unit) per frame, with
 //! [`FrameStats`]; from another thread a [`CancelToken`] stops it and a
-//! [`Progress`] reads how far it has come.
+//! [`Progress`] reads how far it has come. [`trace`] captures a bounded
+//! record of its decisions.
 //! [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
 //! output. Speed presets are rows of [`PRESETS`]; rate control goes through
 //! [`RateController`], fed by a lookahead that detects scene cuts and models
@@ -51,6 +52,7 @@ mod temporal_filter;
 mod test_support;
 mod tile_writer;
 mod tpl;
+pub mod trace;
 mod tx_choice;
 mod warp;
 mod wavefront;
@@ -75,5 +77,9 @@ pub use rate_control::{
 };
 pub use splot_core::headers::sequence::{CroppingWindow, LevelIdx, ProfileIdc, Tier};
 pub use splot_parallel::ThreadCount;
-pub use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+pub use splot_recon::{BitDepth, PixelFormat, PlaneRect, PlaneSize};
 pub use stats::FrameStats;
+pub use trace::{
+    DecisionEvent, DecisionKind, DecisionTrace, DecisionTraceRequest, DecisionTraceStatus,
+    DecisionTraceStop,
+};

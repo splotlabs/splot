@@ -58,6 +58,7 @@ use super::partition_traversal::{
 };
 use super::tile_frontier::minimal_partition_frame_facts;
 
+mod block_id;
 mod cctx;
 mod coeff_walk;
 mod compound;
@@ -79,6 +80,7 @@ mod warp;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
 pub use crate::prediction::chroma::cfl::{CFL_FILTERS_420, CFL_FILTERS_422};
+pub use block_id::{BlockEvidenceId, BlockEvidenceTree};
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, CompoundType, CompoundTypes, InterPrediction,
     JMVD_AMVD_SCALE_MODES, JMVD_SCALE_MODES, MAX_CWP_NUM,
@@ -193,6 +195,13 @@ impl PartitionNode {
     #[must_use]
     pub fn is_chroma_part(self) -> bool {
         self.0.tree_type() == PartitionTreeType::ChromaPart
+    }
+
+    /// The identity that block evidence gives the node in tile `tile`, in
+    /// raster order; `None` for an invalid block size.
+    #[must_use]
+    pub fn block_id(self, tile: usize) -> Option<BlockEvidenceId> {
+        BlockEvidenceId::of_call(tile, self.0)
     }
 }
 
@@ -312,6 +321,12 @@ impl LeafBlock {
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
     pub fn dimensions(&self) -> Result<(usize, usize)> {
         PartitionNode(self.call, self.frontier.chroma_ref_geometry()).dimensions()
+    }
+
+    /// [`PartitionNode::block_id`] of the leaf's node.
+    #[must_use]
+    pub fn block_id(&self, tile: usize) -> Option<BlockEvidenceId> {
+        BlockEvidenceId::of_call(tile, self.call)
     }
 
     /// Whether `other` is the same § 5.20.4.1 `decode_block` call: the same

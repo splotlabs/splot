@@ -90,6 +90,7 @@ pub(crate) type Result<T> = core::result::Result<T, TileWriterError>;
 pub(crate) struct KeyFrameTileWriter {
     syntax: IntraTileSyntax,
     symbols: SymbolEncoder,
+    tile: usize,
     origin: (usize, usize),
     sb_cols: usize,
     superblocks: usize,
@@ -133,6 +134,7 @@ impl KeyFrameTileWriter {
         Ok(Self {
             syntax,
             symbols: SymbolEncoder::with_config(config),
+            tile,
             origin: (rows.start, cols.start),
             sb_cols: cols.len().div_ceil(sb4),
             superblocks: cols.len().div_ceil(sb4) * rows.len().div_ceil(sb4),
@@ -144,6 +146,11 @@ impl KeyFrameTileWriter {
     /// The facade, for planning decisions.
     pub(crate) const fn syntax(&self) -> &IntraTileSyntax {
         &self.syntax
+    }
+
+    /// The index of the tile in raster order.
+    pub(crate) const fn tile(&self) -> usize {
+        self.tile
     }
 
     /// The root node of the next superblock of the tile in raster order.
