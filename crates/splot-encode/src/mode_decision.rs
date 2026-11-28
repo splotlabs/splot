@@ -1909,6 +1909,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             trace.select_partition(trial);
         }
     }
+
+    fn traces(&self) -> bool {
+        self.coder.trace.is_some()
+    }
 }
 
 impl TrialCoder<'_, '_> {

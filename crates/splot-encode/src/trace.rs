@@ -36,9 +36,10 @@
 //! above. The first event that does not fit stops the capture: it and every
 //! later event are not recorded, and later frames are not traced. The result
 //! does not depend on [`crate::Config::threads`]. The budget limits the
-//! trace, not the working memory: while a selected frame codes, the encoder
-//! holds up to the remaining event budget for each superblock in search and
-//! twice that for each frame in coding, in vectors that grow by doubling.
+//! trace, not the working memory. While a selected frame codes, the encoder
+//! holds up to the remaining event budget for each superblock in search,
+//! twice that for each frame in coding, and one more copy while it merges a
+//! frame, in vectors that grow by doubling.
 
 use std::collections::BTreeMap;
 use std::ops::Range;

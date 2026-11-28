@@ -116,6 +116,10 @@ pub(crate) trait PartitionSearch {
     }
     /// Marks the record `trial` as the shape the search of its node returned.
     fn trace_selected(&mut self, _trial: usize) {}
+    /// Whether [`Self::trace_partition`] records anything.
+    fn traces(&self) -> bool {
+        false
+    }
 }
 
 /// Finds the partition tree of `node` with the lowest `J = D + lambda * R` and
@@ -546,7 +550,12 @@ fn search<S: PartitionSearch>(
                 #[cfg(test)]
                 BREAKOUTS.set(BREAKOUTS.get() + 1);
                 let breakout = PartitionOutcome::Pruned(PartitionPruning::NoneBreakout);
-                for (partition, _) in candidates.iter().skip(index + 1) {
+                let pruned = if coder.traces() {
+                    index + 1
+                } else {
+                    candidates.len()
+                };
+                for (partition, _) in candidates.iter().skip(pruned) {
                     coder.trace_partition(node, *partition, None, breakout);
                 }
                 break;
