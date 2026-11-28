@@ -137,33 +137,35 @@ fn window_range<S: Simd, W: WindowRows>(
     limit: u16,
     range: impl Fn(u16x16<S>, u16x16<S>) -> u16,
 ) -> u16 {
-    let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
-    macro_rules! rows_range {
-        ($($row:literal)*) => {
-            $({
-                const ROW: usize = $row;
-                const REACH: usize = {
-                    let (above, below) = (ROW.abs_diff(TAP_REACH), ROW.abs_diff(TAP_REACH + 1));
-                    TAP_COLUMN_REACH[if above < below { above } else { below }]
-                };
-                let row = window.row(ROW);
-                for col in [TAP_REACH - REACH, TAP_REACH + REACH] {
-                    let samples = u16x16::from_slice(simd, &row[col..col + 16]);
-                    low = low.min(samples);
-                    high = high.max(samples);
-                }
-            })*
-        };
-    }
-    rows_range!(6 7);
-    if range(low, high) > limit {
-        return ROUGH;
-    }
-    rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
-    match range(low, high) {
-        range if range > limit => ROUGH,
-        range => range,
-    }
+    splot_core::in_scope!(simd => {
+        let (mut low, mut high) = (u16x16::splat(simd, u16::MAX), u16x16::splat(simd, 0));
+        macro_rules! rows_range {
+            ($($row:literal)*) => {
+                $({
+                    const ROW: usize = $row;
+                    const REACH: usize = {
+                        let (above, below) = (ROW.abs_diff(TAP_REACH), ROW.abs_diff(TAP_REACH + 1));
+                        TAP_COLUMN_REACH[if above < below { above } else { below }]
+                    };
+                    let row = window.row(ROW);
+                    for col in [TAP_REACH - REACH, TAP_REACH + REACH] {
+                        let samples = u16x16::from_slice(simd, &row[col..col + 16]);
+                        low = low.min(samples);
+                        high = high.max(samples);
+                    }
+                })*
+            };
+        }
+        rows_range!(6 7);
+        if range(low, high) > limit {
+            return ROUGH;
+        }
+        rows_range!(0 1 2 3 4 5 8 9 10 11 12 13);
+        match range(low, high) {
+            range if range > limit => ROUGH,
+            range => range,
+        }
+    })
 }
 
 /// Bit `lane` in each lane.
@@ -397,64 +399,75 @@ fn rough_half<S: Simd, W: WindowRows, const HALF: usize, const CLIP: bool, const
     init: &HalfSums<S>,
     (pos, params): (&mut [[u16; 16]; 2], &GdfSymParams),
 ) {
-    let mut sums = [*init, *init];
-    let load = |row: usize, col: usize| -> i16x8<S> {
-        let row = window.row(row);
-        u16x8::from_slice(simd, &row[col + 8 * HALF..col + 8 * HALF + 8]).bitcast()
+    splot_core::in_scope!(simd => {
+        let mut sums = [*init, *init];
+        let load = {
+        #[inline(always)]
+        |row: usize, col: usize| -> i16x8<S> {
+            let row = window.row(row);
+            u16x8::from_slice(simd, &row[col + 8 * HALF..col + 8 * HALF + 8]).bitcast()
+        }
     };
-    let lookup = |table: &[u16; 8], odd: bool| -> i16x8<S> {
-        let table = u16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
-        let index = if odd { index + 8 } else { index };
-        simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+        let lookup = {
+        #[inline(always)]
+        |table: &[u16; 8], odd: bool| -> i16x8<S> {
+            let table = u16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
+            let index = if odd { index + 8 } else { index };
+            simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+        }
     };
-    let lookup_weight = |table: &[i16; 8], odd: bool| -> i16x8<S> {
-        let table = i16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
-        let index = if odd { index + 8 } else { index };
-        simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+        let lookup_weight = {
+        #[inline(always)]
+        |table: &[i16; 8], odd: bool| -> i16x8<S> {
+            let table = i16x8::from_slice(simd, table).bitcast::<u8x16<S>>();
+            let index = if odd { index + 8 } else { index };
+            simd.swizzle_dyn_within_blocks_u8x16(table, index).bitcast()
+        }
     };
-    let centers = [load(TAP_REACH, TAP_REACH), load(TAP_REACH + 1, TAP_REACH)];
-    let zero = i16x8::splat(simd, 0);
-    macro_rules! taps {
-        ($($k:literal)*) => {$({
-            const K: usize = $k;
-            let (dy, dx) = GDF_COORDS[K];
-            let alpha = lookup(&params.lane_alpha[K / 2], K & 1 != 0);
-            let low = zero - alpha;
-            let weights: [i16x8<S>; 3] = core::array::from_fn(|sum| {
-                if LANE_ZERO_WEIGHTS >> (sum * GDF_COORDS.len() + K) & 1 == 0 {
-                    lookup_weight(&params.lane_weights[sum][K / 2], K & 1 != 0)
-                } else {
-                    zero
-                }
-            });
-            for (row, (center, sums)) in centers.iter().zip(&mut sums).enumerate() {
-                let at = TAP_REACH + row;
-                let above = load(at - dy as usize, (TAP_REACH as isize - dx) as usize) - *center;
-                let below = load(at + dy as usize, (TAP_REACH as isize + dx) as usize) - *center;
-                let (above, below) = if CLIP {
-                    (above.max(low).min(alpha), below.max(low).min(alpha))
-                } else {
-                    (above, below)
-                };
-                let comb = above + below;
-                let comb = if COMB {
-                    comb.max(i16x8::splat(simd, -512)).min(i16x8::splat(simd, 511))
-                } else {
-                    comb
-                };
-                for (sum, (total, weight)) in sums.iter_mut().zip(weights).enumerate() {
+        let centers = [load(TAP_REACH, TAP_REACH), load(TAP_REACH + 1, TAP_REACH)];
+        let zero = i16x8::splat(simd, 0);
+        macro_rules! taps {
+            ($($k:literal)*) => {$({
+                const K: usize = $k;
+                let (dy, dx) = GDF_COORDS[K];
+                let alpha = lookup(&params.lane_alpha[K / 2], K & 1 != 0);
+                let low = zero - alpha;
+                let weights: [i16x8<S>; 3] = core::array::from_fn(|sum| {
                     if LANE_ZERO_WEIGHTS >> (sum * GDF_COORDS.len() + K) & 1 == 0 {
-                        let (first, second) = comb.widening_mul(weight);
-                        *total += simd.combine_i32x4(first, second);
+                        lookup_weight(&params.lane_weights[sum][K / 2], K & 1 != 0)
+                    } else {
+                        zero
+                    }
+                });
+                for (row, (center, sums)) in centers.iter().zip(&mut sums).enumerate() {
+                    let at = TAP_REACH + row;
+                    let above = load(at - dy as usize, (TAP_REACH as isize - dx) as usize) - *center;
+                    let below = load(at + dy as usize, (TAP_REACH as isize + dx) as usize) - *center;
+                    let (above, below) = if CLIP {
+                        (above.max(low).min(alpha), below.max(low).min(alpha))
+                    } else {
+                        (above, below)
+                    };
+                    let comb = above + below;
+                    let comb = if COMB {
+                        comb.max(i16x8::splat(simd, -512)).min(i16x8::splat(simd, 511))
+                    } else {
+                        comb
+                    };
+                    for (sum, (total, weight)) in sums.iter_mut().zip(weights).enumerate() {
+                        if LANE_ZERO_WEIGHTS >> (sum * GDF_COORDS.len() + K) & 1 == 0 {
+                            let (first, second) = comb.widening_mul(weight);
+                            *total += simd.combine_i32x4(first, second);
+                        }
                     }
                 }
-            }
-        })*};
-    }
-    taps!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17);
-    for (sums, pos) in sums.into_iter().zip(pos) {
-        rough_index(simd, sums, odd, params).store_slice(&mut pos[8 * HALF..8 * HALF + 8]);
-    }
+            })*};
+        }
+        taps!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17);
+        for (sums, pos) in sums.into_iter().zip(pos) {
+            rough_index(simd, sums, odd, params).store_slice(&mut pos[8 * HALF..8 * HALF + 8]);
+        }
+    });
 }
 
 /// The § 7.20.5 error indices of 8 samples from their [`rough_half`] sums,
@@ -496,61 +509,72 @@ fn rough_rows<S: Simd, W: WindowRows, R: RowSink>(
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
-    let factor = 2 * i32::from(params.scale);
-    let odd = (classes & 1).simd_ne(i32x8::splat(simd, 0));
-    let [b0, b1, b2] = params.bias.map(|bias| i32x8::splat(simd, bias * factor));
-    let spread = |blocks: i32x8<S>| simd.interleave_i32x8(blocks, blocks);
-    let (first, second, third) = (
-        spread(odd.select(b1, b0)),
-        spread(odd.select(b0, b1)),
-        spread((classes >> 2) * factor + b2),
-    );
-    let class = (classes & 3) * 0x202 + 0x100;
-    let (low, high) = simd.split_u8x32(class.bitcast::<u8x32<S>>());
-    let pattern = u8x16::from_slice(simd, &HALF_INDEX);
-    let index = [low, high].map(|blocks| simd.swizzle_dyn_within_blocks_u8x16(blocks, pattern));
-    let parity =
-        index.map(|index| (index.bitcast::<u16x8<S>>() & 2).simd_ne(u16x8::splat(simd, 0)));
-    let init = |half: usize| -> HalfSums<S> {
-        let half = |pair: (i32x8<S>, i32x8<S>)| if half == 0 { pair.0 } else { pair.1 };
-        [half(first), half(second), half(third)]
+    splot_core::in_scope!(simd => {
+        let factor = 2 * i32::from(params.scale);
+        let odd = (classes & 1).simd_ne(i32x8::splat(simd, 0));
+        let [b0, b1, b2] = params.bias.map(|bias| i32x8::splat(simd, bias * factor));
+        let spread = {
+        #[inline(always)]
+        |blocks: i32x8<S>| simd.interleave_i32x8(blocks, blocks)
     };
-    let mut pos = [[0; 16]; 2];
-    macro_rules! halves {
-        ($clip:literal, $comb:literal) => {{
-            let state = (&mut pos, params);
-            rough_half::<S, W, 0, $clip, $comb>(
-                simd,
-                window,
-                (index[0], parity[0]),
-                &init(0),
-                state,
-            );
-            let state = (&mut pos, params);
-            rough_half::<S, W, 1, $clip, $comb>(
-                simd,
-                window,
-                (index[1], parity[1]),
-                &init(1),
-                state,
-            );
-        }};
-    }
-    match (clipped != 0, range > LINEAR_RANGE) {
-        _ if range == 0 => {
-            for half in 0..2 {
-                let first = rough_index(simd, init(half), parity[half], params);
-                first.store_slice(&mut pos[0][8 * half..8 * half + 8]);
-            }
-            pos[1] = pos[0];
+        let (first, second, third) = (
+            spread(odd.select(b1, b0)),
+            spread(odd.select(b0, b1)),
+            spread((classes >> 2) * factor + b2),
+        );
+        let class = (classes & 3) * 0x202 + 0x100;
+        let (low, high) = simd.split_u8x32(class.bitcast::<u8x32<S>>());
+        let pattern = u8x16::from_slice(simd, &HALF_INDEX);
+        let index = [low, high].map(|blocks| simd.swizzle_dyn_within_blocks_u8x16(blocks, pattern));
+        let parity =
+            index.map(|index| (index.bitcast::<u16x8<S>>() & 2).simd_ne(u16x8::splat(simd, 0)));
+        let init = {
+        #[inline(always)]
+        |half: usize| -> HalfSums<S> {
+            let half = {
+        #[inline(always)]
+        |pair: (i32x8<S>, i32x8<S>)| if half == 0 { pair.0 } else { pair.1 }
+    };
+            [half(first), half(second), half(third)]
         }
-        (true, true) => halves!(true, true),
-        (true, false) => halves!(true, false),
-        (false, true) => halves!(false, true),
-        (false, false) => halves!(false, false),
-    }
-    sink.row(simd, 0, &pos[0], block);
-    sink.row(simd, 1, &pos[1], block);
+    };
+        let mut pos = [[0; 16]; 2];
+        macro_rules! halves {
+            ($clip:literal, $comb:literal) => {{
+                let state = (&mut pos, params);
+                rough_half::<S, W, 0, $clip, $comb>(
+                    simd,
+                    window,
+                    (index[0], parity[0]),
+                    &init(0),
+                    state,
+                );
+                let state = (&mut pos, params);
+                rough_half::<S, W, 1, $clip, $comb>(
+                    simd,
+                    window,
+                    (index[1], parity[1]),
+                    &init(1),
+                    state,
+                );
+            }};
+        }
+        match (clipped != 0, range > LINEAR_RANGE) {
+            _ if range == 0 => {
+                for half in 0..2 {
+                    let first = rough_index(simd, init(half), parity[half], params);
+                    first.store_slice(&mut pos[0][8 * half..8 * half + 8]);
+                }
+                pos[1] = pos[0];
+            }
+            (true, true) => halves!(true, true),
+            (true, false) => halves!(true, false),
+            (false, true) => halves!(false, true),
+            (false, false) => halves!(false, false),
+        }
+        sink.row(simd, 0, &pos[0], block);
+        sink.row(simd, 1, &pos[1], block);
+    });
 }
 
 /// Adds to the samples of `output` the § 7.20.5 residual of the error
@@ -621,12 +645,14 @@ impl GdfSample for u16 {
     }
 
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], block: &GdfBlock) {
-        let (residuals, _) = residuals.as_chunks::<16>();
-        let (output, _) = output.as_chunks_mut::<16>();
-        for (residuals, output) in residuals.iter().zip(output) {
-            let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
-            apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
-        }
+        splot_core::in_scope!(simd => {
+            let (residuals, _) = residuals.as_chunks::<16>();
+            let (output, _) = output.as_chunks_mut::<16>();
+            for (residuals, output) in residuals.iter().zip(output) {
+                let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
+                apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
+            }
+        });
     }
 }
 
@@ -646,20 +672,22 @@ impl GdfSample for u8 {
     }
 
     fn add_residuals<S: Simd>(simd: S, residuals: &[i8], output: &mut [Self], _block: &GdfBlock) {
-        let (residual_pairs, residuals) = residuals.as_chunks::<32>();
-        let (output_pairs, output) = output.as_chunks_mut::<32>();
-        for (residuals, output) in residual_pairs.iter().zip(output_pairs) {
-            let samples = (u8x32::from_slice(simd, output) ^ 0x80).bitcast::<i8x32<S>>();
-            let sum = samples.saturating_add(i8x32::from_slice(simd, residuals));
-            (sum.bitcast::<u8x32<S>>() ^ 0x80).store_slice(output);
-        }
-        if let (Some(residuals), Some(output)) =
-            (residuals.first_chunk::<16>(), output.first_chunk_mut())
-        {
-            let samples = (u8x16::from_slice(simd, output) ^ 0x80).bitcast::<i8x16<S>>();
-            let sum = samples.saturating_add(i8x16::from_slice(simd, residuals));
-            (sum.bitcast::<u8x16<S>>() ^ 0x80).store_array(output);
-        }
+        splot_core::in_scope!(simd => {
+            let (residual_pairs, residuals) = residuals.as_chunks::<32>();
+            let (output_pairs, output) = output.as_chunks_mut::<32>();
+            for (residuals, output) in residual_pairs.iter().zip(output_pairs) {
+                let samples = (u8x32::from_slice(simd, output) ^ 0x80).bitcast::<i8x32<S>>();
+                let sum = samples.saturating_add(i8x32::from_slice(simd, residuals));
+                (sum.bitcast::<u8x32<S>>() ^ 0x80).store_slice(output);
+            }
+            if let (Some(residuals), Some(output)) =
+                (residuals.first_chunk::<16>(), output.first_chunk_mut())
+            {
+                let samples = (u8x16::from_slice(simd, output) ^ 0x80).bitcast::<i8x16<S>>();
+                let sum = samples.saturating_add(i8x16::from_slice(simd, residuals));
+                (sum.bitcast::<u8x16<S>>() ^ 0x80).store_array(output);
+            }
+        });
     }
 }
 
@@ -750,8 +778,8 @@ impl RowSink for ErrorRows<'_> {
 
 /// [`sym_rows_with`] through the target's widest kernel.
 #[inline(never)]
-pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -760,15 +788,17 @@ pub(super) fn sym_rows<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
-        return inlane::InLane.rows(avx2, window, output, classes, (block, params));
+        return splot_core::in_scope!(avx2 => {
+            let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
+            inlane::InLane.rows(avx2, window, output, classes, (block, params));
+        });
     }
     sym_rows_portable(backend, window, output, classes, block, params);
 }
 
 /// [`sym_rows_with`] through the portable kernel.
-pub(super) fn sym_rows_portable<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows_portable<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     window: &Window<'_>,
     output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
@@ -788,8 +818,8 @@ pub(super) fn sym_rows_portable<B: splot_core::simd::SimdBackend, O: GdfSample>(
 /// Filters in place `width` samples (at most 16) from column `x` of a row
 /// pair through `sym_rows`, on copies padded to 16 lanes.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn sym_rows_narrow<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn sym_rows_narrow<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     rows: &[&[u16]; WINDOW_ROWS],
     x: usize,
     width: usize,
@@ -828,8 +858,8 @@ pub(super) fn sym_rows_narrow<B: splot_core::simd::SimdBackend, O: GdfSample>(
 
 /// Writes `src << shift` into `dst`, as long as `src`, and returns the
 /// largest sample of `src`.
-pub(super) fn copy_shifted<B: splot_core::simd::SimdBackend, T: GdfSample>(
-    backend: B,
+pub(super) fn copy_shifted<T: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     src: &[T],
     dst: &mut [u16],
     shift: u32,
@@ -945,14 +975,16 @@ fn padded_gradients<S: Simd>(
     start: usize,
     out: &mut GradChunk,
 ) -> Option<()> {
-    let mut padded = [[0; 18]; 4];
-    for (padded, row) in padded.iter_mut().zip(rows) {
-        let tail = row.get(start..).unwrap_or_default();
-        let tail = tail.get(..tail.len().min(18))?;
-        padded.get_mut(..tail.len())?.copy_from_slice(tail);
-    }
-    store_gradients(pair_gradients(simd, padded.each_ref()), out);
-    Some(())
+    splot_core::in_scope!(simd => {
+        let mut padded = [[0; 18]; 4];
+        for (padded, row) in padded.iter_mut().zip(rows) {
+            let tail = row.get(start..).unwrap_or_default();
+            let tail = tail.get(..tail.len().min(18))?;
+            padded.get_mut(..tail.len())?.copy_from_slice(tail);
+        }
+        store_gradients(pair_gradients(simd, padded.each_ref()), out);
+        Some(())
+    })
 }
 
 /// For the final gradient chunk only the lanes within the staged tap
@@ -1002,30 +1034,35 @@ fn classify_tiled_gradient_row<S: Simd>(
     classes: &mut [[i32; 8]],
     tables: &[[i16; 16]; 4],
 ) -> Option<()> {
-    let scan = |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
-        let start = TAP_REACH - 2 + 16 * chunk;
-        let rows = rows.each_ref().map(|row| {
-            row.get(start..)
-                .and_then(<[u16]>::first_chunk::<18>)
-                .unwrap_or(&[0; 18])
-        });
-        let grad = pair_gradients(simd, rows);
-        store_gradients(grad, out);
-        core::array::from_fn(|d| {
-            grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
-        })
-    };
-    let (first, current) = current.split_first_mut()?;
-    let (prior, previous) = previous.split_first()?;
-    let mut sum = scan(0, first, prior);
-    for (i, ((classes, current), previous)) in
-        classes.iter_mut().zip(current).zip(previous).enumerate()
-    {
-        let next = scan(i + 1, current, previous);
-        *classes = classify_chunk(simd, sum, next, tables).to_array();
-        sum = next;
-    }
-    Some(())
+    splot_core::in_scope!(simd => {
+        let scan = {
+            #[inline(always)]
+            |chunk: usize, out: &mut GradChunk, previous: &GradChunk| {
+            let start = TAP_REACH - 2 + 16 * chunk;
+            let rows = rows.each_ref().map(|row| {
+                row.get(start..)
+                    .and_then(<[u16]>::first_chunk::<18>)
+                    .unwrap_or(&[0; 18])
+            });
+            let grad = pair_gradients(simd, rows);
+            store_gradients(grad, out);
+            core::array::from_fn(|d| {
+                grad[d] + u16x16::from_slice(simd, &previous[d]).bitcast::<i16x16<S>>()
+            })
+        }
+        };
+        let (first, current) = current.split_first_mut()?;
+        let (prior, previous) = previous.split_first()?;
+        let mut sum = scan(0, first, prior);
+        for (i, ((classes, current), previous)) in
+            classes.iter_mut().zip(current).zip(previous).enumerate()
+        {
+            let next = scan(i + 1, current, previous);
+            *classes = classify_chunk(simd, sum, next, tables).to_array();
+            sum = next;
+        }
+        Some(())
+    })
 }
 
 /// The classes and gradient biases of the 8 class columns of a chunk from
@@ -1119,8 +1156,8 @@ impl RunParams {
 /// `TAP_REACH` samples of halo on each side and `TILE_STRIDE` samples of
 /// storage per row.
 #[inline(never)]
-pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
-    backend: B,
+pub(super) fn filter_run<O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     source: &[u16],
     run: (&GdfBlock, &RunParams),
     output: &mut [O],
@@ -1128,15 +1165,17 @@ pub(super) fn filter_run<B: splot_core::simd::SimdBackend, O: GdfSample>(
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = backend.avx2_token() {
-        return filter_run_with(backend, avx2, inlane::InLane, source, run, output, scratch);
+        return splot_core::in_scope!(avx2 => {
+            filter_run_with(backend, avx2, inlane::InLane, source, run, output, scratch)
+        });
     }
     splot_core::with_simd!(backend, simd => filter_run_with(backend, simd, Rough, source, run, output, scratch))
 }
 
 #[expect(clippy::inline_always)]
 #[inline(always)]
-fn filter_run_with<B: splot_core::simd::SimdBackend, S: Simd, P: RowPairs<S>, O: GdfSample>(
-    backend: B,
+fn filter_run_with<S: Simd, P: RowPairs<S>, O: GdfSample>(
+    backend: splot_core::simd::SimdBackend,
     simd: S,
     pairs: P,
     source: &[u16],

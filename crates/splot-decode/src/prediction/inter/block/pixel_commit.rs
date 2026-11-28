@@ -28,8 +28,8 @@ use crate::bitstream::tile_payload::TileBlockDecodedState;
 
 /// Commits one parsed row into the frame, in tile order.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn replay_recon_row<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn replay_recon_row<T: ReconSample>(
+    backend: SimdBackend,
     mut row: ReconRow,
     tile_offset: splot_core::span::ByteOffset,
     expected_ordinal: &mut usize,

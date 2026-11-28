@@ -69,8 +69,8 @@ pub(crate) fn new_general_intra_workspace<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_block_rect_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -166,8 +166,8 @@ pub(crate) fn reconstruct_general_intra_block_rect_into<B: SimdBackend, T: Recon
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_palette_block_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     palette: LumaPalette,
@@ -199,6 +199,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<B: SimdBackend, 
     )?;
     let fill_result = splot_recon::predict_intra_palette_into_with(
         backend,
+        workspace.kernels(),
         &palette.colors(),
         color_map,
         &mut prediction,
@@ -295,8 +296,8 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
     T::try_from_u16(value).unwrap_or_default()
 }
 
-pub(super) fn build_mrl_luma_prediction<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_size: IntraRectBlockSize,
     blend_secondary: bool,
@@ -330,8 +331,8 @@ pub(super) fn build_mrl_luma_prediction<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn write_intra_prediction_block<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn write_intra_prediction_block<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     prediction: Vec<T>,
@@ -369,8 +370,8 @@ pub(crate) fn write_intra_prediction_block<B: SimdBackend, T: ReconSample>(
 ///
 /// Returns `false` without predicting when the block overhangs the frame edge.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_intra_in_frame<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -439,8 +440,8 @@ pub(crate) fn predict_intra_in_frame<B: SimdBackend, T: ReconSample>(
 /// [`predict_intra_in_frame`], or for a block it declines, `predict` into a
 /// staging buffer that [`write_intra_prediction_block`] commits.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn predict_intra_block<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_intra_block<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -501,8 +502,8 @@ pub(crate) fn predict_intra_block<B: SimdBackend, T: ReconSample>(
 /// [`reconstruct_general_intra_coeff_block_rect_into_frame_with`] declines falls back
 /// to reconstructing through a staging buffer and copying that into the frame.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn commit_intra_prediction<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     prediction: &[T],
@@ -562,6 +563,7 @@ pub(crate) fn commit_intra_prediction<B: SimdBackend, T: ReconSample>(
     )?;
     let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into_with(
         backend,
+        workspace.kernels(),
         block,
         prediction,
         &mut out,

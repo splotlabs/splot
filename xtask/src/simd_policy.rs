@@ -4,7 +4,7 @@
 //! Startup-only SIMD policy check.
 //!
 //! Decoder runtime crates must resolve CPU SIMD capabilities once at session or
-//! decoder startup and propagate the chosen concrete `SimdBackend` statically.
+//! decoder startup and hand the chosen `SimdBackend` to their kernels by value.
 //! Runtime ISA probing (`Level::new`, `is_x86_feature_detected!`,
 //! `is_aarch64_feature_detected!`) is restricted to `crates/splot-core/src/simd.rs`
 //! in decoder crates. Shared reconstruction kernels cannot select a new `Level`.
@@ -157,7 +157,7 @@ mod tests {
             src(
                 "crates/splot-decode/src/filters/gdf_simd.rs",
                 10,
-                "fn run<B: SimdBackend>(backend: B) {}",
+                "fn run(backend: SimdBackend) {}",
                 false,
             ),
             src(

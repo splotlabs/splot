@@ -66,9 +66,9 @@ impl<T: ReconSample> TileCommit<T> {
         }
     }
 
-    pub(super) fn replay<B: splot_core::simd::SimdBackend>(
+    pub(super) fn replay(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         mut ready: ReadyReconRow<T>,
         motion: &MotionFieldUnits,
         temporal: &TemporalMvContext,
@@ -167,10 +167,8 @@ fn restore_active_commit<T: ReconSample>(
     Ok(())
 }
 
-pub(in crate::prediction::inter::block) fn project_temporal_band<
-    B: splot_core::simd::SimdBackend,
->(
-    backend: B,
+pub(in crate::prediction::inter::block) fn project_temporal_band(
+    backend: splot_core::simd::SimdBackend,
     plan: &TemporalBandPlan,
     temporal: &TemporalMvContext,
     reference_fields: &[Option<MotionFieldHandle>],
@@ -397,6 +395,7 @@ impl<T: ReconSample> ScheduledTileWorkspace<T> {
 /// surfaces are shared by every frame in flight, whose peaks do not coincide.
 pub(super) struct SurfaceSource<T: ReconSample> {
     info: splot_recon::DecodedFrameInfo,
+    kernels: splot_recon::KernelSelection,
     rects: Vec<splot_recon::PlaneRect>,
     free: Arc<SpareSurfaces<T>>,
 }
@@ -429,10 +428,16 @@ impl<T: ReconSample> SpareSurfaces<T> {
 impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn new(
         info: splot_recon::DecodedFrameInfo,
+        kernels: splot_recon::KernelSelection,
         rects: Vec<splot_recon::PlaneRect>,
         free: Arc<SpareSurfaces<T>>,
     ) -> Self {
-        Self { info, rects, free }
+        Self {
+            info,
+            kernels,
+            rects,
+            free,
+        }
     }
 
     /// Lays this source out for another tile and lends its rectangle list,
@@ -440,9 +445,11 @@ impl<T: ReconSample> SurfaceSource<T> {
     pub(super) fn reset(
         &mut self,
         info: splot_recon::DecodedFrameInfo,
+        kernels: splot_recon::KernelSelection,
         free: Arc<SpareSurfaces<T>>,
     ) -> &mut Vec<splot_recon::PlaneRect> {
         self.info = info;
+        self.kernels = kernels;
         self.free = free;
         &mut self.rects
     }
@@ -479,16 +486,18 @@ impl<T: ReconSample> SurfaceSource<T> {
         let Some(mut surface) = spare else {
             return Some(splot_recon::OwnedFrameRect::new(
                 self.info,
+                self.kernels,
                 rect,
                 T::default(),
             ));
         };
         let laid_out = if surface.info() == self.info
+            && surface.kernels() == self.kernels
             && (surface.luma_rect() == rect || surface.retarget(rect).is_ok())
         {
             Ok(())
         } else {
-            surface.reshape(self.info, rect, T::default())
+            surface.reshape(self.info, self.kernels, rect, T::default())
         };
         Some(laid_out.map(|()| {
             poison_reused_surface(&mut surface);
@@ -547,9 +556,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn precompute<B: splot_core::simd::SimdBackend>(
+    fn precompute(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
         surfaces: &SurfaceSource<T>,
@@ -628,9 +637,9 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn commit_batch<B: splot_core::simd::SimdBackend>(
+    fn commit_batch(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         parse_progress: &super::ParseProgress,
         surfaces: &SurfaceSource<T>,
@@ -721,8 +730,8 @@ pub(super) const PARSE_AHEAD_ROWS: usize = 4;
 /// Parses one tile a few superblock rows at a time and replays each batch in
 /// order, once every reference row is settled.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn run_ordinary_tile<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn run_ordinary_tile<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     parser: &mut TileParser<'_>,
     tile: &mut DecodeTileWorkUnit,
     resolve: &mut TileResolveState,
@@ -856,9 +865,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Precomputes one admitted batch on scheduler worker `worker` without
     /// entering the ordered commit spine.
-    pub(crate) fn precompute<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn precompute(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
     ) -> Result<()> {
@@ -909,9 +918,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Projects temporal band `index`. A band reads only the same band of
     /// each reference field (§ 7.9.8), so it projects ahead of the resolve.
-    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn project(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
     ) -> Result<()> {
         project_temporal_band(
@@ -1210,9 +1219,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// row `row` and takes the filter stripes that frontier releases.
     ///
     /// The one caller that runs the final link receives the completed tile.
-    pub(crate) fn frontier<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn frontier(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         row: usize,
     ) -> Result<ScheduledFrameProgress<T>> {
         let mut frontier = self.frontier.lock();
@@ -1221,9 +1230,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok(progress)
     }
 
-    fn frontier_link<B: splot_core::simd::SimdBackend>(
+    fn frontier_link(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         row: usize,
         frontier: &mut ScheduledFrontier<T>,
     ) -> Result<ScheduledFrameProgress<T>> {
@@ -1395,9 +1404,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
-    pub(crate) fn commit<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn commit(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         worker: usize,
     ) -> Result<ScheduledCommitProgress> {
@@ -1667,13 +1676,14 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let mut surface_source = reusable.surfaces.take().unwrap_or_else(|| {
         Arc::new(SurfaceSource::new(
             info,
+            workspace.kernels(),
             Vec::new(),
             workers.spare_surfaces(),
         ))
     });
     let rects = Arc::get_mut(&mut surface_source)
         .ok_or_else(invalid_inter_tile_scheduling_state)?
-        .reset(info, workers.spare_surfaces());
+        .reset(info, workspace.kernels(), workers.spare_surfaces());
     super::superblock_luma_rects_into(
         &geometry.mi_rows,
         &geometry.mi_cols,

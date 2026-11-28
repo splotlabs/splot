@@ -96,15 +96,15 @@ pub(super) fn unscaled_area_bounds(
 /// axis, where the clamped outer column and row read their inner neighbour
 /// twice. Every source row is filtered horizontally once and serves two
 /// output rows.
-pub(super) fn bilinear_search_window<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn bilinear_search_window<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
 ) -> bool {
     let window = match params.w {
-        16 => search_window::<_, T, 16, 2, 15>(backend, view, params, output),
-        24 => search_window::<_, T, 24, 3, 23>(backend, view, params, output),
+        16 => search_window::<T, 16, 2, 15>(backend, view, params, output),
+        24 => search_window::<T, 24, 3, 23>(backend, view, params, output),
         _ => false,
     };
     window
@@ -116,8 +116,8 @@ pub(super) fn bilinear_search_window<B: splot_core::simd::SimdBackend, T: ReconS
 /// published plane: one horizontal pass per source row, shared by two
 /// output rows.
 #[inline(never)]
-fn unclamped_8x8<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn unclamped_8x8<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
@@ -150,8 +150,7 @@ fn unclamped_8x8<B: splot_core::simd::SimdBackend, T: ReconSample>(
     let h = ((params.start_x >> 6) & 15) as u16;
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         let horizontal = |span: &[T; 9]| {
             let lanes = |at: usize| sample_lanes(simd, span, at);
             lanes(0) * (16 - h) + lanes(1) * h
@@ -171,14 +170,8 @@ fn unclamped_8x8<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// [`bilinear_search_window`] of an `N`-sample window: `G = N / 8` lane
 /// groups per row over the `M = N - 1` inner samples.
 #[inline(never)]
-fn search_window<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    const N: usize,
-    const G: usize,
-    const M: usize,
->(
-    backend: B,
+fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>(
+    backend: splot_core::simd::SimdBackend,
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
@@ -207,8 +200,7 @@ fn search_window<
     let h = ((params.start_x >> 6) & 15) as u16;
     let v = ((params.start_y >> 6) & 15) as u16;
     let max_sample = params.bit_depth.max_sample();
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         let horizontal = |span: &[T; M]| -> [u16x8<_>; G] {
             let mut lanes = [u16x8::splat(simd, 0); G];
             for (group, lanes) in lanes.iter_mut().enumerate() {
@@ -277,7 +269,11 @@ fn sample_lanes<S: Simd, T: ReconSample>(simd: S, span: &[T], at: usize) -> u16x
 }
 
 /// `Min(Round2(top * (16 - v) + bottom * v, 8), max)` of two horizontal rows.
-#[inline]
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn vertical_blend<S: Simd>(simd: S, top: u16x8<S>, bottom: u16x8<S>, v: u16, max: u16) -> u16x8<S> {
     let (top_low, top_high) = top.widening_mul(u16x8::splat(simd, 16 - v));
     let (bottom_low, bottom_high) = bottom.widening_mul(u16x8::splat(simd, v));
@@ -303,8 +299,8 @@ pub(super) enum SearchArea {
 }
 
 #[inline(never)]
-pub(super) fn search_refinemv<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn search_refinemv<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     block: &CompoundMcBlock<'_, T>,
     (rect, candidates): (McBlockRect, [MotionVector; 2]),
@@ -337,8 +333,8 @@ pub(super) fn search_refinemv<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// The § 7.13.3.6 search of the refine-MV unit `rect` (at most 16x16) from
 /// `candidates`: the refined motion vectors and which of `bytes` and
 /// `samples` holds the search area they were chosen from.
-pub(super) fn search_unit<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn search_unit<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     (rect, candidates, allow_center): (McBlockRect, [MotionVector; 2], bool),
     bytes: &mut SearchBytes,
@@ -378,8 +374,8 @@ const fn search_rect(rect: McBlockRect) -> McBlockRect {
 /// The eight-bit search: the candidates when both are full-pel and the
 /// centre SAD read from the references keeps them, else the search of the
 /// byte windows.
-fn search_bytes<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn search_bytes<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [super::optflow::LumaReference<'_, T>; 2],
     (prediction_rect, candidates, allow_center): (McBlockRect, [MotionVector; 2], bool),
     windows: &mut SearchBytes,
@@ -492,9 +488,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
 
     /// The motion cell of an 8x8 full-pel unit when the SADs on the
     /// references decide it, or `None` to build the initial predictions.
-    pub(super) fn motion_cell<B: splot_core::simd::SimdBackend>(
+    pub(super) fn motion_cell(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         (rect, mvs): (McBlockRect, [MotionVector; 2]),
@@ -515,9 +511,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// candidates. Only units whose SAD columns no bound clamps take this
     /// path. The SAD rows `Y - 2..=Y + 8` lie inside the refine window, so the
     /// copy clamps them to the plane alone, as in [`Self::unsearched_cell`].
-    fn searched_cell<B: splot_core::simd::SimdBackend>(
+    fn searched_cell(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
@@ -554,9 +550,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// rows `Y..Y + 8` lie inside the refine window `Y - 3..=Y + 11`, so the
     /// copy clamps them to the plane alone, with or without that window.
     /// Units whose columns would clamp take the full path.
-    fn unsearched_cell<B: splot_core::simd::SimdBackend>(
+    fn unsearched_cell(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         rect: McBlockRect,
@@ -581,9 +577,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     /// from columns `xs`: the candidates when the optical-flow SAD skips the
     /// refinement, else the § 7.13.3.9 delta derived from the same samples.
     #[expect(clippy::too_many_arguments)]
-    fn optflow_cell<B: splot_core::simd::SimdBackend>(
+    fn optflow_cell(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         sink: &CurrentFrameSurface<'_, '_, T>,
         batch: &CompoundMcBlock<'_, T>,
         xs: [usize; 2],
@@ -645,9 +641,9 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
     }
 
     /// `Σ |ref0 - ref1|` over pairs of 8- or 12-sample spans.
-    fn sad<B: splot_core::simd::SimdBackend, const N: usize>(
+    fn sad<const N: usize>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         spans: &[[&[T]; N]; 2],
     ) -> Option<u32> {
         let mut sad = 0;
@@ -655,18 +651,18 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
             let width = if left.len() > 8 { 12 } else { 8 };
             if let (Some(left), Some(right)) = (T::u8_slice(left), T::u8_slice(right)) {
                 sad += if width == 8 {
-                    byte_sad::<_, 8>(backend, left, right)?
+                    byte_sad::<8>(backend, left, right)?
                 } else {
-                    byte_sad::<_, 12>(backend, left, right)?
+                    byte_sad::<12>(backend, left, right)?
                 };
                 continue;
             }
             let (left, right) = (T::u16_slice(left)?, T::u16_slice(right)?);
             let rows = core::iter::once((left, right));
             sad += if width == 8 {
-                sad_rows::<_, 8>(backend, rows, self.max_sample)
+                sad_rows::<8>(backend, rows, self.max_sample)
             } else {
-                sad_rows::<_, 12>(backend, rows, self.max_sample)
+                sad_rows::<12>(backend, rows, self.max_sample)
             };
         }
         Some(sad)
@@ -675,8 +671,8 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
 
 /// `Σ |left - right|` over the first `W` eight-bit samples, 8 or 12, which
 /// need no clip to the maximum.
-fn byte_sad<B: splot_core::simd::SimdBackend, const W: usize>(
-    backend: B,
+fn byte_sad<const W: usize>(
+    backend: splot_core::simd::SimdBackend,
     left: &[u8],
     right: &[u8],
 ) -> Option<u32> {
@@ -689,8 +685,7 @@ fn byte_sad<B: splot_core::simd::SimdBackend, const W: usize>(
         Some([low, u64::from(u32::from_le_bytes(*high))])
     };
     let (left, right) = (words(left)?, words(right)?);
-    let narrow = backend.narrow();
-    Some(splot_core::with_simd!(narrow, simd => byte_sad_lanes(simd, left, right)))
+    Some(splot_core::with_simd!(backend, simd => byte_sad_lanes(simd, left, right)))
 }
 
 /// `Σ |left - right|` over the bytes of two pairs of words.
@@ -709,12 +704,8 @@ fn byte_sad_lanes<S: Simd>(simd: S, left: [u64; 2], right: [u64; 2]) -> u32 {
 /// Refines one 8x8 TIP unit. The centre SAD and the centre optical flow read
 /// only the 12x12 centre of the 16x16 bilinear search area, so the centre is
 /// predicted first and the whole area only when the search goes on.
-pub(super) fn tip_refinemv_optflow_motion_cell<
-    'a,
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     block: &CompoundMcBlock<'_, T>,
     (rect, candidates): (McBlockRect, [MotionVector; 2]),
     search: &mut TipSearchScratch,
@@ -805,8 +796,8 @@ const fn unit_start(dx: i32, dy: i32) -> usize {
 
 /// The search offset of a TIP unit from u16 predictions: the 12x12 centre
 /// first, the whole 16x16 area only when the search goes on.
-fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn tip_search<'a, T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     luma: &mut [super::optflow::LumaReference<'a, T>; 2],
     prediction_rect: McBlockRect,
     candidates: [MotionVector; 2],
@@ -825,7 +816,7 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         .zip(candidates)
         .zip([&mut *pred0, &mut *pred1])
     {
-        super::optflow::initial_luma_prediction::<_, _, 2>(
+        super::optflow::initial_luma_prediction::<_, 2>(
             backend,
             luma,
             prediction_rect,
@@ -837,8 +828,7 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
         )?;
     }
     let bit_depth = luma[0].bit_depth();
-    let narrow = backend.narrow();
-    let center = splot_core::with_simd!(narrow, simd => tip_refinemv_sad(simd, pred0, pred1, 0, 0))
+    let center = splot_core::with_simd!(backend, simd => tip_refinemv_sad(simd, pred0, pred1, 0, 0))
         >> bit_depth.bits().saturating_sub(8);
     let center_sad = center - (center >> 3);
     let (dx, dy) = if center_sad < 12 * 12 * 2 {
@@ -849,7 +839,7 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
             .zip(candidates)
             .zip([&mut *pred0, &mut *pred1])
         {
-            super::optflow::initial_luma_prediction::<_, _, 0>(
+            super::optflow::initial_luma_prediction::<_, 0>(
                 backend,
                 luma,
                 prediction_rect,
@@ -860,7 +850,7 @@ fn tip_search<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
                 prediction,
             )?;
         }
-        splot_core::with_simd!(narrow, simd => search_tip_refinemv_offset(simd, pred0, pred1, center_sad, bit_depth))
+        splot_core::with_simd!(backend, simd => search_tip_refinemv_offset(simd, pred0, pred1, center_sad, bit_depth))
     };
     Ok((dx, dy))
 }
@@ -897,31 +887,36 @@ fn tip_refinemv_sad<S: Simd>(
     dx: i32,
     dy: i32,
 ) -> u32 {
-    const STEP: usize = 2 * TIP_PREDICTION_SIZE;
-    const SPAN: usize = 5 * STEP + 16;
-    const ACTIVE: [i16; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
-    let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
-    let (Some(left), Some(right)) = (
-        pred0
-            .get(start(dx, dy)..)
-            .and_then(<[u16]>::first_chunk::<SPAN>),
-        pred1
-            .get(start(-dx, -dy)..)
-            .and_then(<[u16]>::first_chunk::<SPAN>),
-    ) else {
-        return u32::MAX;
+    splot_core::in_scope!(simd => {
+        const STEP: usize = 2 * TIP_PREDICTION_SIZE;
+        const SPAN: usize = 5 * STEP + 16;
+        const ACTIVE: [i16; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0];
+        let start = {
+        #[inline(always)]
+        |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize
     };
-    let mut sum = i16x16::splat(simd, 0);
-    for row in 0..6 {
-        let at = row * STEP;
-        if let (Some(a), Some(b)) = (left[at..].first_chunk(), right[at..].first_chunk()) {
-            let a = u16x16::load_array_ref(simd, a);
-            let b = u16x16::load_array_ref(simd, b);
-            sum += (a - b).bitcast::<i16x16<S>>().abs();
+        let (Some(left), Some(right)) = (
+            pred0
+                .get(start(dx, dy)..)
+                .and_then(<[u16]>::first_chunk::<SPAN>),
+            pred1
+                .get(start(-dx, -dy)..)
+                .and_then(<[u16]>::first_chunk::<SPAN>),
+        ) else {
+            return u32::MAX;
+        };
+        let mut sum = i16x16::splat(simd, 0);
+        for row in 0..6 {
+            let at = row * STEP;
+            if let (Some(a), Some(b)) = (left[at..].first_chunk(), right[at..].first_chunk()) {
+                let a = u16x16::load_array_ref(simd, a);
+                let b = u16x16::load_array_ref(simd, b);
+                sum += (a - b).bitcast::<i16x16<S>>().abs();
+            }
         }
-    }
-    simd.pairwise_dot_product_i16x16(sum, i16x16::load_array_ref(simd, &ACTIVE))
-        .reduce_sum() as u32
+        simd.pairwise_dot_product_i16x16(sum, i16x16::load_array_ref(simd, &ACTIVE))
+            .reduce_sum() as u32
+    })
 }
 
 fn search_range_allowed(candidates: [MotionVector; 2]) -> bool {
@@ -939,13 +934,12 @@ const HIGH_HALF: [u16; 8] = [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX]
 /// `Σ |Min(left, max) - Min(right, max)|` over the first `W` samples, 8 or
 /// `W % 8 == 4`, of each row pair: each column's differences add up in `u16`
 /// lanes for up to 16 rows at a time, which 12-bit samples keep below `2^16`.
-pub(super) fn sad_rows<'a, B: splot_core::simd::SimdBackend, const W: usize>(
-    backend: B,
+pub(super) fn sad_rows<'a, const W: usize>(
+    backend: splot_core::simd::SimdBackend,
     rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
     max: u16,
 ) -> u32 {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => sad_row_lanes::<_, W>(simd, rows, max))
+    splot_core::with_simd!(backend, simd => sad_row_lanes::<_, W>(simd, rows, max))
 }
 
 #[inline]

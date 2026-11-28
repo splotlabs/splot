@@ -51,11 +51,11 @@ macro_rules! simd_runner_methods {
             }
         )*
     };
-    (typed($scope:ident, $backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
+    (typed($backend:expr); $($(#[$attr:meta])* ($($signature:tt)*) $simd:ident => $body:expr;)*) => {
         $(
             $(#[$attr])*
             $($signature)* {
-                $scope!($backend, $simd => $body)
+                splot_core::with_simd!($backend, $simd => $body)
             }
         )*
     };
@@ -116,6 +116,7 @@ mod subpel_mc;
 mod transform_params;
 mod views;
 mod warp_prediction;
+mod wide_kernels;
 mod wienerns_chroma_filter;
 mod wienerns_filter;
 mod workspace;
@@ -131,10 +132,9 @@ pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
     CDEF_PAIR_SEGMENT_BLOCK_AREA, CDEF_PAIR_SEGMENT_STRIDE, CDEF_PAIR_STRIDE,
     CDEF_SEGMENT_BLOCK_AREA, CDEF_SEGMENT_BLOCKS, CDEF_SEGMENT_STRIDE, CDEF_UNAVAILABLE,
-    CDEF_UV_DIR, CdefBlockFilter, CdefDirectionBackend, CdefLumaSegment, CdefPairSegment,
-    CdefSampleTaps, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters,
-    cdef_direction, cdef_direction_padded, cdef_direction_padded_with,
-    cdef_direction_padded_with_backend, cdef_filter_block_boundary_to_valid_stride,
+    CDEF_UV_DIR, CdefBlockFilter, CdefLumaSegment, CdefPairSegment, CdefSampleTaps,
+    CdefSegmentBlock, CdefSegmentOutput, CdefStrengths, CdefTap, CdefUnitFilters, cdef_direction,
+    cdef_direction_padded, cdef_direction_padded_with, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_boundary_to_valid_stride_with, cdef_filter_block_chroma_pair,
     cdef_filter_block_chroma_pair_with, cdef_filter_block_interior_to,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_block_interior_to_valid_stride_with,
@@ -298,6 +298,7 @@ pub use warp_prediction::{
     ext_warp_predict_unit, ext_warp_predict_unit_with, warp_predict_block, warp_predict_block_into,
     warp_predict_block_into_with, warp_predict_block_with, warp_shear_is_valid,
 };
+pub use wide_kernels::KernelSelection;
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CONFIG_UV,
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,

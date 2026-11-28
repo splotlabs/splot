@@ -260,9 +260,9 @@ impl FrameDeblock {
 
     /// Deblocks the frame rows past its final prefix in place, then publishes
     /// the newly final prefix for stripe windows.
-    pub(crate) fn advance_source<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(crate) fn advance_source<T: ReconSample>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         source: &mut FrontierRows<T>,
         mi_row_end: usize,
         bit_depth: BitDepth,
@@ -297,9 +297,9 @@ impl FrameDeblock {
         )
     }
 
-    fn run_ranges_source<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn run_ranges_source<T: ReconSample>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         source: &mut FrontierRows<T>,
         ranges: &[core::ops::Range<usize>; 2],
         bit_depth: BitDepth,
@@ -383,9 +383,9 @@ impl FrameDeblock {
     /// Runs one plane's owed passes over their mode-info row ranges: decides
     /// each pass's edges, then filters them. Within a plane the passes stay
     /// ordered.
-    fn run_plane_job<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn run_plane_job<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         job: PlaneJob<'_, T>,
         edges: &mut [PassEdges; 2],
         reuse: bool,
@@ -413,9 +413,9 @@ impl FrameDeblock {
             }
             let mut ctx = PlaneCtx::new(&mut band)?;
             if plane_pass.pass == 0 {
-                edges.apply::<_, T, 0>(backend, &mut ctx, plane_pass.bit_depth)?;
+                edges.apply::<T, 0>(backend, &mut ctx, plane_pass.bit_depth)?;
             } else {
-                edges.apply::<_, T, 1>(backend, &mut ctx, plane_pass.bit_depth)?;
+                edges.apply::<T, 1>(backend, &mut ctx, plane_pass.bit_depth)?;
             }
         }
         Ok(())
@@ -602,8 +602,8 @@ impl FrameDeblock {
 /// edge changes and reads only its own 4 lines, so the result is the same as
 /// in the per-edge order.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn deblock_tip_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn deblock_tip_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     luma_unit_size: usize,
     quant: QuantizationParams,
@@ -681,7 +681,7 @@ pub(crate) fn deblock_tip_frame<B: splot_core::simd::SimdBackend, T: ReconSample
                     deblock_filter_max_width(unit_width, plane != 0, tile_edge),
                 )
             })?;
-            edges.apply::<_, T, 0>(backend, &mut plane_ctx, bit_depth)?;
+            edges.apply::<T, 0>(backend, &mut plane_ctx, bit_depth)?;
             edges.tip::<1>((width, height), unit_height, |y| {
                 let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
                 let sb_edge = y.is_multiple_of(64 >> sub_y);
@@ -690,7 +690,7 @@ pub(crate) fn deblock_tip_frame<B: splot_core::simd::SimdBackend, T: ReconSample
                     deblock_filter_max_width(unit_height, plane != 0, sb_edge),
                 )
             })?;
-            edges.apply::<_, T, 1>(backend, &mut plane_ctx, bit_depth)
+            edges.apply::<T, 1>(backend, &mut plane_ctx, bit_depth)
         };
     slots.iter_mut().try_for_each(deblock_plane)
 }

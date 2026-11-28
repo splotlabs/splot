@@ -78,6 +78,11 @@ pub(crate) trait IntraLaneSample: ReconSample + crate::SummedSample {
 
     /// Stores eight in-range `u16` lanes.
     fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]);
+
+    /// The PAETH entry of `kernels` for this sample type.
+    #[cfg(target_arch = "x86_64")]
+    fn wide_paeth(kernels: &crate::wide_kernels::WideKernels)
+    -> crate::wide_kernels::PaethFn<Self>;
 }
 
 impl IntraLaneSample for u16 {
@@ -111,6 +116,14 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn store8<S: Simd>(_simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
         values.store_slice(output);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn wide_paeth(
+        kernels: &crate::wide_kernels::WideKernels,
+    ) -> crate::wide_kernels::PaethFn<Self> {
+        kernels.paeth_u16
     }
 }
 
@@ -147,6 +160,14 @@ impl IntraLaneSample for u8 {
     fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
         let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(values, values).into();
         output.copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight intra lanes
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[inline]
+    fn wide_paeth(
+        kernels: &crate::wide_kernels::WideKernels,
+    ) -> crate::wide_kernels::PaethFn<Self> {
+        kernels.paeth_u8
     }
 }
 

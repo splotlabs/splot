@@ -168,6 +168,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
         Self::pending_recycled(
             CurrentFrameWorkspace::new_recycled_from(
                 info,
+                splot_recon::KernelSelection::default(),
                 &mut splot_recon::FramePlaneSamples::default(),
             )?,
             None,
@@ -595,6 +596,11 @@ impl InflightRing {
         slot
     }
 
+    #[cfg(test)]
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        self.buffers.kernels()
+    }
+
     /// The pool retired frame buffers return to.
     pub(crate) fn planes(&self) -> &Arc<splot_recon::PlanePool> {
         self.buffers.planes()
@@ -675,7 +681,7 @@ impl InflightRing {
 /// never reaches drops the writer instead, settling the slot as failed.
 #[expect(clippy::too_many_arguments)]
 pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
-    backend: impl splot_core::simd::SimdBackend,
+    backend: splot_core::simd::SimdBackend,
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     rows: Option<&super::frame_tasks::DecoderRowScheduler>,
@@ -758,6 +764,7 @@ fn reserve_slot<T: SpareFramePlanes>(
         Some(workspace) => workspace,
         None => CurrentFrameWorkspace::new_recycled_from(
             info,
+            buffers.kernels(),
             &mut splot_recon::FramePlaneSamples::default().with_pool(Some(buffers.planes())),
         )?,
     };

@@ -1470,7 +1470,7 @@ fn luma_runs_match_the_scalar_filter() {
 #[test]
 fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
     use crate::lr_madd::{LrBackend, ScalarLr};
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
     struct AutoRun<'a> {
         params: &'a WienerNsLumaFilter<'a>,
@@ -1481,8 +1481,8 @@ fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
         expected: &'a [u16],
         uniform: bool,
     }
-    impl SimdScope<()> for AutoRun<'_> {
-        fn run<B: SimdBackend>(self, backend: B) {
+    impl AutoRun<'_> {
+        fn run(self, backend: SimdBackend) {
             let mut out = vec![0u16; self.params.width * self.params.height];
             if self.uniform {
                 wiener_ns_filter_luma_block_padded_into_with(
@@ -1604,7 +1604,7 @@ fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
                     let _: bool = LrBackend::in_lane(backend);
                 };
 
-                resolved.enter(AutoRun {
+                AutoRun {
                     params: &params,
                     src_u16: &src_u16,
                     src_u8: &src_u8,
@@ -1612,9 +1612,10 @@ fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
                     scratch: &mut scratch,
                     expected: &expected,
                     uniform,
-                });
+                }
+                .run(resolved.backend());
                 run_lr(ScalarLr, &mut scratch);
-                resolved.enter(AutoRun {
+                AutoRun {
                     params: &params,
                     src_u16: &src_u16,
                     src_u8: &src_u8,
@@ -1622,7 +1623,8 @@ fn typed_luma_padded_matches_oracle_across_backend_scratch_reuse() {
                     scratch: &mut scratch,
                     expected: &expected,
                     uniform,
-                });
+                }
+                .run(resolved.backend());
             }
         }
     }

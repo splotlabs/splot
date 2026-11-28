@@ -36,7 +36,7 @@ use splot_core::simd::SimdBackend;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Creates a workspace over recycled plane storage, without initializing
-    /// its samples.
+    /// its samples. `kernels` is the selection of the decode that opens it.
     ///
     /// The pooled buffers keep whatever the previous frame left in them, so
     /// this is only for a stage that seals every row before it reads it.
@@ -44,8 +44,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
     /// depth, geometry arithmetic overflows, or plane allocation fails.
-    pub fn new_recycled(info: DecodedFrameInfo) -> Result<Self> {
-        Self::with_fill(info, None)
+    pub fn new_recycled(info: DecodedFrameInfo, kernels: crate::KernelSelection) -> Result<Self> {
+        Self::with_planes(
+            info,
+            kernels,
+            None,
+            &mut crate::FramePlaneSamples::default(),
+        )
     }
 
     /// Creates a workspace over the sample buffers a retired frame handed back,
@@ -59,9 +64,10 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// depth, geometry arithmetic overflows, or plane allocation fails.
     pub fn new_recycled_from(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         recycled: &mut crate::FramePlaneSamples<T>,
     ) -> Result<Self> {
-        Self::with_planes(info, None, recycled)
+        Self::with_planes(info, kernels, None, recycled)
     }
 
     /// Creates a band: each plane stores the rows of one `luma_rows` tall
@@ -74,7 +80,12 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
     /// depth, geometry arithmetic overflows, or plane allocation fails.
-    pub fn new_band(info: DecodedFrameInfo, luma_rows: usize, spare: Option<Self>) -> Result<Self> {
+    pub fn new_band(
+        info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
+        luma_rows: usize,
+        spare: Option<Self>,
+    ) -> Result<Self> {
         crate::intra_dc_math::validate_sample_type::<T>(info.bit_depth())?;
         let (mut spare, intra_prediction_scratch) = match spare {
             Some(mut spare) => {
@@ -121,6 +132,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch,
+            kernels,
         })
     }
 
@@ -132,6 +144,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// plane's rows are not whole rows inside its storage.
     pub fn lend_band(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         [y, u, v]: [Option<(crate::LentRows<T>, usize)>; 3],
         scratch: IntraPredictionScratch<T>,
     ) -> Result<Self> {
@@ -187,6 +200,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: scratch,
+            kernels,
         })
     }
 
@@ -199,14 +213,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
     /// The rectangle over full-width plane bands `(samples, stride)` the
-    /// caller holds exclusively: each band holds exactly the plane rows of
-    /// `luma_rect` or of its chroma rectangle.
+    /// caller holds exclusively, for a decode that selected `kernels`: each
+    /// band holds exactly the plane rows of `luma_rect` or of its chroma
+    /// rectangle.
     ///
     /// # Errors
     /// Returns [`ReconError`] when a band does not span exactly the rows of
     /// `luma_rect` or its chroma rectangle, or `luma_rect` is not full width.
     pub fn from_bands(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         luma_rect: PlaneRect,
         [y, u, v]: [Option<(&'storage mut [T], usize)>; 3],
     ) -> Result<Self> {
@@ -265,7 +281,13 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
             ),
             _ => return Err(missing(PlaneId::U)),
         };
-        Ok(Self { info, y, u, v })
+        Ok(Self {
+            info,
+            kernels,
+            y,
+            u,
+            v,
+        })
     }
 }
 
@@ -426,13 +448,13 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
         )
     }
 
-    /// Typed [`Self::add_block_residual`] using caller-selected `backend`.
+    /// [`Self::add_block_residual`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::add_block_residual`].
-    pub fn add_block_residual_with<B: SimdBackend>(
+    pub fn add_block_residual_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         prediction: &[T],
         residual: &[i32],
     ) -> Result<()> {
@@ -639,14 +661,14 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
         crate::intra_ibp_dc::predict_dc_in_frame(self.samples, block)
     }
 
-    /// Typed [`Self::predict_dc`] using caller-selected `backend`.
+    /// [`Self::predict_dc`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns [`ReconError`] for a sample type that cannot hold `bit_depth`.
     #[inline]
-    pub fn predict_dc_with<B: SimdBackend>(
+    pub fn predict_dc_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         size: IntraRectBlockSize,
         bit_depth: BitDepth,
         edges: [bool; 2],
@@ -1033,74 +1055,73 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let info8 = DecodedFrameInfo::new(
-                    crate::OutputIndex::new(0),
-                    BitDepth::Eight,
-                    crate::PixelFormat::Monochrome,
-                    PlaneSize::new(32, 32).unwrap(),
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                )
-                .unwrap();
-                let mut ws_a = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
-                let mut ws_b = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
-                let init8: Vec<u8> = (0..32 * 32).map(|i| ((i * 19 + 5) % 256) as u8).collect();
-                ws_a.write_rect(
-                    PlaneId::Y,
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                    &init8,
-                    32,
-                )
-                .unwrap();
-                ws_b.write_rect(
-                    PlaneId::Y,
-                    PlaneRect::new(0, 0, 32, 32).unwrap(),
-                    &init8,
-                    32,
-                )
-                .unwrap();
+        fn check(backend: SimdBackend) {
+            let info8 = DecodedFrameInfo::new(
+                crate::OutputIndex::new(0),
+                BitDepth::Eight,
+                crate::PixelFormat::Monochrome,
+                PlaneSize::new(32, 32).unwrap(),
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+            )
+            .unwrap();
+            let mut ws_a = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+            let mut ws_b = CurrentFrameWorkspace::<u8>::new(info8, 17).unwrap();
+            let init8: Vec<u8> = (0..32 * 32).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+            ws_a.write_rect(
+                PlaneId::Y,
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+                &init8,
+                32,
+            )
+            .unwrap();
+            ws_b.write_rect(
+                PlaneId::Y,
+                PlaneRect::new(0, 0, 32, 32).unwrap(),
+                &init8,
+                32,
+            )
+            .unwrap();
 
-                let size = IntraRectBlockSize::new(3, 3).unwrap();
-                let pred8 = vec![120u8; 64];
-                let res = vec![-15i32; 64];
-                ws_a.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
-                    row.add_block_residual(&pred8, &res)
-                })
-                .unwrap()
-                .unwrap();
-                ws_b.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
-                    row.add_block_residual_with(backend, &pred8, &res)
-                })
-                .unwrap()
-                .unwrap();
-                assert_eq!(
-                    ws_b.samples(PlaneId::Y).unwrap(),
-                    ws_a.samples(PlaneId::Y).unwrap()
-                );
+            let size = IntraRectBlockSize::new(3, 3).unwrap();
+            let pred8 = vec![120u8; 64];
+            let res = vec![-15i32; 64];
+            ws_a.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                row.add_block_residual(&pred8, &res)
+            })
+            .unwrap()
+            .unwrap();
+            ws_b.with_rect_block_rows_mut(PlaneId::Y, 8, 8, size, |row| {
+                row.add_block_residual_with(backend, &pred8, &res)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                ws_b.samples(PlaneId::Y).unwrap(),
+                ws_a.samples(PlaneId::Y).unwrap()
+            );
 
-                ws_a.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
-                    f.predict_dc(size, BitDepth::Eight, [true, true], true)
-                })
-                .unwrap()
-                .unwrap();
-                ws_b.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
-                    f.predict_dc_with(backend, size, BitDepth::Eight, [true, true], true)
-                })
-                .unwrap()
-                .unwrap();
-                assert_eq!(
-                    ws_b.samples(PlaneId::Y).unwrap(),
-                    ws_a.samples(PlaneId::Y).unwrap()
-                );
-            }
+            ws_a.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                f.predict_dc(size, BitDepth::Eight, [true, true], true)
+            })
+            .unwrap()
+            .unwrap();
+            ws_b.with_intra_block_frame(PlaneId::Y, 8, 8, size, |f| {
+                f.predict_dc_with(backend, size, BitDepth::Eight, [true, true], true)
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                ws_b.samples(PlaneId::Y).unwrap(),
+                ws_a.samples(PlaneId::Y).unwrap()
+            );
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

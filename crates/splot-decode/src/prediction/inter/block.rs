@@ -226,6 +226,11 @@ impl<T: ReconSample> InterDecodeScratch<T> {
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
     }
 
+    /// The kernels this decode selected, for the workspaces it opens.
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        crate::support::decode_buffers::DecodeBuffers::kernels_of(self.buffers.as_ref())
+    }
+
     /// Names the pool this decode's workspaces retire into.
     pub(crate) fn set_decode_buffers(
         &mut self,
@@ -537,8 +542,8 @@ fn finish_frame_cdfs(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn decode_inter_blocks<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut InterDecodeScratch<T>,
     mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
     sequence: &SequenceHeader,
@@ -761,9 +766,9 @@ pub(crate) struct TemporalPrelude {
 }
 
 impl TemporalPrelude {
-    fn run<'a, B: splot_core::simd::SimdBackend>(
+    fn run<'a>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         temporal_context: &'a mut TemporalMvContext,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
@@ -867,8 +872,8 @@ fn scheduled_motion_field_inputs(
 /// The driver derives the TIP reference pair once and passes that exact pair to
 /// both the entropy pass and this prelude.
 #[expect(clippy::too_many_arguments)]
-fn frame_temporal_context<'a, B: splot_core::simd::SimdBackend>(
-    backend: B,
+fn frame_temporal_context<'a>(
+    backend: splot_core::simd::SimdBackend,
     temporal_context: &'a mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,

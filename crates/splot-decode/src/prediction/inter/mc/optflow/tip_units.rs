@@ -37,8 +37,8 @@ impl TipUnits {
 /// `columns` per row, each from its § 7.11.3 `candidates`: optical flow
 /// (8x8 units only), else the § 7.13.3.3 refine-MV search when the block
 /// searches, else the candidates.
-pub(crate) fn refine_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn refine_tip_units<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     candidates: &[[MotionVector; 2]],
@@ -121,8 +121,8 @@ pub(crate) fn refine_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>
 /// The cells of units without optical flow: each unit's § 7.13.3.6 search
 /// result when the block searches, else its candidates.
 #[inline(never)]
-fn search_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn search_tip_units<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     candidates: &[[MotionVector; 2]],
@@ -149,8 +149,8 @@ fn search_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
 
 /// Predicts every plane of the TIP block `block` from the units
 /// [`refine_tip_units`] refined from `candidates`.
-pub(crate) fn predict_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_tip_units<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     candidates: &mut Vec<[MotionVector; 2]>,
@@ -176,8 +176,8 @@ pub(crate) fn predict_tip_units<B: splot_core::simd::SimdBackend, T: ReconSample
 /// which the frame storage (§ 5.18.3) keeps the visible part. A TIP block
 /// averages (§ 7.13.3.2) unscaled references (§ 7.10.1), so any other block
 /// is a state error.
-fn predict_grid<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn predict_grid<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     motion: &CompoundMotionGrid,
@@ -243,8 +243,8 @@ fn predict_grid<B: splot_core::simd::SimdBackend, T: ReconSample>(
 }
 
 /// The block-wide inputs of a [`predict_grid`] plane pass.
-struct GridPass<'a, 'b, B, T: ReconSample> {
-    backend: B,
+struct GridPass<'a, 'b, T: ReconSample> {
+    backend: splot_core::simd::SimdBackend,
     info: DecodedFrameInfo,
     block: &'a CompoundMcBlock<'b, T>,
     motion: &'a CompoundMotionGrid,
@@ -253,7 +253,7 @@ struct GridPass<'a, 'b, B, T: ReconSample> {
     offset: ByteOffset,
 }
 
-impl<B: splot_core::simd::SimdBackend, T: ReconSample> GridPass<'_, '_, B, T> {
+impl<T: ReconSample> GridPass<'_, '_, T> {
     /// Predicts one plane of `W` x `H` cells into the visible rectangle `outputs[0]`, and for U
     /// the V plane into `outputs[1]` from the same placements. A cell past the storage edge is
     /// predicted whole and stored clipped; only `WIDE` (16x16) units merge full-pel runs per row.

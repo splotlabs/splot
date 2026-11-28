@@ -27,8 +27,8 @@ use crate::prediction::inter::{
 use crate::{DecodeOptions, DecodePlannedObu, Result};
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn walk_intra_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn walk_intra_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
@@ -91,7 +91,7 @@ pub(crate) fn walk_intra_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info())?; // § 7.11 writes every coded sample before any read
+    let workspace = CurrentFrameWorkspace::<T>::new_recycled(geometry.info(), scratch.kernels())?; // § 7.11 writes every coded sample before any read
 
     let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
@@ -109,7 +109,7 @@ pub(crate) fn walk_intra_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
         frame_cdfs,
         filter_inputs,
         segment_ids,
-    } = decode_inter_blocks::<B, T>(
+    } = decode_inter_blocks::<T>(
         backend,
         scratch,
         tile_plan,

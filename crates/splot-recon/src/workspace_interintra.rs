@@ -41,7 +41,7 @@ trait InterIntraRunner: Copy {
 struct BaselineInterIntra;
 
 #[derive(Clone, Copy)]
-struct TypedInterIntra<B>(B);
+struct TypedInterIntra(SimdBackend);
 
 #[cfg(target_arch = "x86_64")]
 #[inline]
@@ -148,7 +148,7 @@ impl InterIntraRunner for BaselineInterIntra {
     }
 }
 
-impl<B: SimdBackend> InterIntraRunner for TypedInterIntra<B> {
+impl InterIntraRunner for TypedInterIntra {
     #[inline]
     fn subsample_mask(self, luma: &[u8], stride: usize, mask: &mut [u8], w: usize, sub_y: u32) {
         crate::blend_mask::subsample_mask_with(self.0, luma, stride, mask, w, sub_y);
@@ -162,10 +162,9 @@ impl<B: SimdBackend> InterIntraRunner for TypedInterIntra<B> {
         width: usize,
         masks: impl Iterator<Item = (&'m [u8], u8)>,
     ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             blend_interintra_rows::<_, 16>(rows, intra, width, masks, |row, intra, mask| {
-                blend_interintra_u8(narrow.token(), row, intra, mask);
+                blend_interintra_u8(simd, row, intra, mask);
             });
         });
     }
@@ -178,10 +177,9 @@ impl<B: SimdBackend> InterIntraRunner for TypedInterIntra<B> {
         width: usize,
         masks: impl Iterator<Item = (&'m [u8], u8)>,
     ) {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             blend_interintra_rows::<_, 8>(rows, intra, width, masks, |row, intra, mask| {
-                blend_interintra_u16(narrow.token(), row, intra, mask);
+                blend_interintra_u16(simd, row, intra, mask);
             });
         });
     }
@@ -193,10 +191,9 @@ impl<B: SimdBackend> InterIntraRunner for TypedInterIntra<B> {
         (stride, width, height): (usize, usize, usize),
         (alpha, beta, max_sample): (i16, i32, i32),
     ) {
-        let narrow = self.0.narrow();
         #[cfg(target_arch = "x86_64")]
         if can_use_bawp_u8_avx2(width, height, max_sample)
-            && let Some(token) = narrow.avx2_token()
+            && let Some(token) = self.0.avx2_token()
             && let Some(rows) = T::u8_slice_mut(rows)
         {
             bawp_u8_avx2(token, rows, stride, width, alpha, beta);
@@ -204,9 +201,9 @@ impl<B: SimdBackend> InterIntraRunner for TypedInterIntra<B> {
         }
         #[cfg(not(target_arch = "x86_64"))]
         let _ = height;
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             apply_bawp_simd(
-                narrow.token(),
+                simd,
                 rows,
                 (stride, width),
                 (alpha, beta, max_sample),
@@ -566,12 +563,13 @@ pub fn wedge_mask_into(
     )
 }
 
-/// Typed [`wedge_mask_into`] using caller-selected `backend`.
+/// [`wedge_mask_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`wedge_mask_into`].
-pub fn wedge_mask_into_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn wedge_mask_into_with(
+    backend: SimdBackend,
     mask: &mut [u8],
     (w, h): (usize, usize),
     (luma_width, luma_height): (usize, usize),
@@ -579,7 +577,7 @@ pub fn wedge_mask_into_with<B: SimdBackend>(
     (sub_x, sub_y): (u32, u32),
 ) -> Result<()> {
     wedge_mask_into_with_runner(
-        TypedInterIntra(backend.narrow()),
+        TypedInterIntra(backend),
         mask,
         (w, h),
         (luma_width, luma_height),
@@ -629,14 +627,14 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         )
     }
 
-    /// Typed [`Self::blend_smooth_interintra_rect`] using caller-selected `backend`.
+    /// [`Self::blend_smooth_interintra_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::blend_smooth_interintra_rect`].
     #[expect(clippy::too_many_arguments)]
-    pub fn blend_smooth_interintra_rect_with<B: SimdBackend>(
+    pub fn blend_smooth_interintra_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -645,7 +643,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         intra: &[T],
     ) -> Result<()> {
         self.blend_smooth_interintra_rect_with_runner(
-            TypedInterIntra(backend.narrow()),
+            TypedInterIntra(backend),
             plane,
             x,
             y,
@@ -704,14 +702,14 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         )
     }
 
-    /// Typed [`Self::blend_wedge_interintra_rect`] using caller-selected `backend`.
+    /// [`Self::blend_wedge_interintra_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::blend_wedge_interintra_rect`].
     #[expect(clippy::too_many_arguments)]
-    pub fn blend_wedge_interintra_rect_with<B: SimdBackend>(
+    pub fn blend_wedge_interintra_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -724,7 +722,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         intra: &[T],
     ) -> Result<()> {
         self.blend_wedge_interintra_rect_with_runner(
-            TypedInterIntra(backend.narrow()),
+            TypedInterIntra(backend),
             plane,
             (x, y, size),
             (luma_width, luma_height, wedge_index),
@@ -965,25 +963,19 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.apply_bawp_rect_with_runner(BaselineInterIntra, plane, rect, alpha, beta)
     }
 
-    /// Typed [`Self::apply_bawp_rect`] using caller-selected `backend`.
+    /// [`Self::apply_bawp_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::apply_bawp_rect`].
-    pub fn apply_bawp_rect_with<B: SimdBackend>(
+    pub fn apply_bawp_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         rect: crate::PlaneRect,
         alpha: i16,
         beta: i32,
     ) -> Result<()> {
-        self.apply_bawp_rect_with_runner(
-            TypedInterIntra(backend.narrow()),
-            plane,
-            rect,
-            alpha,
-            beta,
-        )
+        self.apply_bawp_rect_with_runner(TypedInterIntra(backend), plane, rect, alpha, beta)
     }
 }
 
@@ -1554,143 +1546,142 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let mut wcompat = vec![0u8; 8 * 8];
-                let mut wtyped = vec![0u8; 8 * 8];
-                wedge_mask_into(&mut wcompat, (8, 8), (16, 16), (3, true), (1, 1)).unwrap();
-                wedge_mask_into_with(backend, &mut wtyped, (8, 8), (16, 16), (3, true), (1, 1))
-                    .unwrap();
-                assert_eq!(wtyped, wcompat);
+        fn check(backend: SimdBackend) {
+            let mut wcompat = vec![0u8; 8 * 8];
+            let mut wtyped = vec![0u8; 8 * 8];
+            wedge_mask_into(&mut wcompat, (8, 8), (16, 16), (3, true), (1, 1)).unwrap();
+            wedge_mask_into_with(backend, &mut wtyped, (8, 8), (16, 16), (3, true), (1, 1))
+                .unwrap();
+            assert_eq!(wtyped, wcompat);
 
-                let storage = PlaneSize::new(32, 32).unwrap();
-                let visible = PlaneRect::new(0, 0, 32, 32).unwrap();
-                let info8 = DecodedFrameInfo::new(
-                    OutputIndex::new(0),
-                    BitDepth::Eight,
-                    PixelFormat::Yuv420,
-                    storage,
-                    visible,
+            let storage = PlaneSize::new(32, 32).unwrap();
+            let visible = PlaneRect::new(0, 0, 32, 32).unwrap();
+            let info8 = DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Eight,
+                PixelFormat::Yuv420,
+                storage,
+                visible,
+            )
+            .unwrap();
+            let mut ws8_a = CurrentFrameWorkspace::<u8>::new(info8, 61).unwrap();
+            let mut ws8_b = CurrentFrameWorkspace::<u8>::new(info8, 61).unwrap();
+            let size = IntraRectBlockSize::new(3, 3).unwrap();
+            let intra8: Vec<u8> = (0..64).map(|i| ((i * 23 + 9) % 256) as u8).collect();
+            ws8_a
+                .blend_smooth_interintra_rect(
+                    PlaneId::Y,
+                    8,
+                    8,
+                    size,
+                    InterIntraMode::Smooth,
+                    &intra8,
                 )
                 .unwrap();
-                let mut ws8_a = CurrentFrameWorkspace::<u8>::new(info8, 61).unwrap();
-                let mut ws8_b = CurrentFrameWorkspace::<u8>::new(info8, 61).unwrap();
-                let size = IntraRectBlockSize::new(3, 3).unwrap();
-                let intra8: Vec<u8> = (0..64).map(|i| ((i * 23 + 9) % 256) as u8).collect();
-                ws8_a
-                    .blend_smooth_interintra_rect(
-                        PlaneId::Y,
-                        8,
-                        8,
-                        size,
-                        InterIntraMode::Smooth,
-                        &intra8,
-                    )
-                    .unwrap();
-                ws8_b
-                    .blend_smooth_interintra_rect_with(
-                        backend,
-                        PlaneId::Y,
-                        8,
-                        8,
-                        size,
-                        InterIntraMode::Smooth,
-                        &intra8,
-                    )
-                    .unwrap();
-                ws8_a
-                    .blend_wedge_interintra_rect(
-                        PlaneId::U,
-                        4,
-                        4,
-                        IntraRectBlockSize::new(2, 2).unwrap(),
-                        8,
-                        8,
-                        2,
-                        1,
-                        1,
-                        &intra8[..16],
-                    )
-                    .unwrap();
-                ws8_b
-                    .blend_wedge_interintra_rect_with(
-                        backend,
-                        PlaneId::U,
-                        4,
-                        4,
-                        IntraRectBlockSize::new(2, 2).unwrap(),
-                        8,
-                        8,
-                        2,
-                        1,
-                        1,
-                        &intra8[..16],
-                    )
-                    .unwrap();
-                let rect16 = PlaneRect::new(0, 0, 16, 16).unwrap();
-                ws8_a.apply_bawp_rect(PlaneId::Y, rect16, 12, 320).unwrap();
-                ws8_b
-                    .apply_bawp_rect_with(backend, PlaneId::Y, rect16, 12, 320)
-                    .unwrap();
-                assert_eq!(
-                    ws8_b.samples(PlaneId::Y).unwrap(),
-                    ws8_a.samples(PlaneId::Y).unwrap()
-                );
-                assert_eq!(
-                    ws8_b.samples(PlaneId::U).unwrap(),
-                    ws8_a.samples(PlaneId::U).unwrap()
-                );
-
-                let info10 = DecodedFrameInfo::new(
-                    OutputIndex::new(0),
-                    BitDepth::Ten,
-                    PixelFormat::Monochrome,
-                    storage,
-                    visible,
+            ws8_b
+                .blend_smooth_interintra_rect_with(
+                    backend,
+                    PlaneId::Y,
+                    8,
+                    8,
+                    size,
+                    InterIntraMode::Smooth,
+                    &intra8,
                 )
                 .unwrap();
-                let mut ws10_a = CurrentFrameWorkspace::<u16>::new(info10, 412).unwrap();
-                let mut ws10_b = CurrentFrameWorkspace::<u16>::new(info10, 412).unwrap();
-                let intra10: Vec<u16> = (0..64).map(|i| ((i * 89 + 17) % 1024) as u16).collect();
-                ws10_a
-                    .blend_smooth_interintra_rect(
-                        PlaneId::Y,
-                        0,
-                        0,
-                        size,
-                        InterIntraMode::Horizontal,
-                        &intra10,
-                    )
-                    .unwrap();
-                ws10_b
-                    .blend_smooth_interintra_rect_with(
-                        backend,
-                        PlaneId::Y,
-                        0,
-                        0,
-                        size,
-                        InterIntraMode::Horizontal,
-                        &intra10,
-                    )
-                    .unwrap();
-                ws10_a
-                    .apply_bawp_rect(PlaneId::Y, rect16, -9, -150)
-                    .unwrap();
-                ws10_b
-                    .apply_bawp_rect_with(backend, PlaneId::Y, rect16, -9, -150)
-                    .unwrap();
-                assert_eq!(
-                    ws10_b.samples(PlaneId::Y).unwrap(),
-                    ws10_a.samples(PlaneId::Y).unwrap()
-                );
-            }
+            ws8_a
+                .blend_wedge_interintra_rect(
+                    PlaneId::U,
+                    4,
+                    4,
+                    IntraRectBlockSize::new(2, 2).unwrap(),
+                    8,
+                    8,
+                    2,
+                    1,
+                    1,
+                    &intra8[..16],
+                )
+                .unwrap();
+            ws8_b
+                .blend_wedge_interintra_rect_with(
+                    backend,
+                    PlaneId::U,
+                    4,
+                    4,
+                    IntraRectBlockSize::new(2, 2).unwrap(),
+                    8,
+                    8,
+                    2,
+                    1,
+                    1,
+                    &intra8[..16],
+                )
+                .unwrap();
+            let rect16 = PlaneRect::new(0, 0, 16, 16).unwrap();
+            ws8_a.apply_bawp_rect(PlaneId::Y, rect16, 12, 320).unwrap();
+            ws8_b
+                .apply_bawp_rect_with(backend, PlaneId::Y, rect16, 12, 320)
+                .unwrap();
+            assert_eq!(
+                ws8_b.samples(PlaneId::Y).unwrap(),
+                ws8_a.samples(PlaneId::Y).unwrap()
+            );
+            assert_eq!(
+                ws8_b.samples(PlaneId::U).unwrap(),
+                ws8_a.samples(PlaneId::U).unwrap()
+            );
+
+            let info10 = DecodedFrameInfo::new(
+                OutputIndex::new(0),
+                BitDepth::Ten,
+                PixelFormat::Monochrome,
+                storage,
+                visible,
+            )
+            .unwrap();
+            let mut ws10_a = CurrentFrameWorkspace::<u16>::new(info10, 412).unwrap();
+            let mut ws10_b = CurrentFrameWorkspace::<u16>::new(info10, 412).unwrap();
+            let intra10: Vec<u16> = (0..64).map(|i| ((i * 89 + 17) % 1024) as u16).collect();
+            ws10_a
+                .blend_smooth_interintra_rect(
+                    PlaneId::Y,
+                    0,
+                    0,
+                    size,
+                    InterIntraMode::Horizontal,
+                    &intra10,
+                )
+                .unwrap();
+            ws10_b
+                .blend_smooth_interintra_rect_with(
+                    backend,
+                    PlaneId::Y,
+                    0,
+                    0,
+                    size,
+                    InterIntraMode::Horizontal,
+                    &intra10,
+                )
+                .unwrap();
+            ws10_a
+                .apply_bawp_rect(PlaneId::Y, rect16, -9, -150)
+                .unwrap();
+            ws10_b
+                .apply_bawp_rect_with(backend, PlaneId::Y, rect16, -9, -150)
+                .unwrap();
+            assert_eq!(
+                ws10_b.samples(PlaneId::Y).unwrap(),
+                ws10_a.samples(PlaneId::Y).unwrap()
+            );
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

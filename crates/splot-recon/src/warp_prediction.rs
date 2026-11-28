@@ -141,7 +141,7 @@ pub(super) trait WarpRunner: Copy {
 struct BaselineWarp;
 
 #[derive(Clone, Copy)]
-struct TypedWarp<B>(B);
+struct TypedWarp(SimdBackend);
 
 impl WarpRunner for BaselineWarp {
     #[cfg(target_arch = "x86_64")]
@@ -202,17 +202,17 @@ impl WarpRunner for BaselineWarp {
     }
 }
 
-impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
+impl WarpRunner for TypedWarp {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<Avx2> {
-        self.0.narrow().avx2_token()
+        self.0.avx2_token()
     }
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
     fn neon_token(self) -> Option<fearless_simd::Neon> {
-        self.0.narrow().neon_token()
+        self.0.neon_token()
     }
 
     #[inline]
@@ -224,11 +224,10 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         out: (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             prepared.clipped_sections(
-                TypedWarp(narrow),
-                narrow.token(),
+                TypedWarp(self.0),
+                simd,
                 reference,
                 block,
                 out,
@@ -246,9 +245,7 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         [phase_x, phase_y]: [usize; 2],
         round1: u32,
     ) -> [i32; 16] {
-        let narrow = self.0.narrow();
-        narrow.vectorize(|| {
-            let simd = narrow.token();
+        splot_core::with_simd!(self.0, simd => {
             let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
             ext_unit::vertical(simd, &intermediate, phase_y, round1)
         })
@@ -263,12 +260,11 @@ impl<B: SimdBackend> WarpRunner for TypedWarp<B> {
         round1: u32,
         output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
     ) -> Result<()> {
-        let narrow = self.0.narrow();
         let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
-        narrow.vectorize(|| {
+        splot_core::with_simd!(self.0, simd => {
             warp_predict_section(
-                TypedWarp(narrow),
-                narrow.token(),
+                TypedWarp(self.0),
+                simd,
                 reference,
                 params,
                 shear,
@@ -370,13 +366,13 @@ impl PreparedWarpPrediction {
         )
     }
 
-    /// Typed [`Self::predict_block_into`] using caller-selected `backend`.
+    /// [`Self::predict_block_into`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same errors as [`Self::predict_block_into`].
-    pub fn predict_block_into_with<B: SimdBackend, T: ReconSample>(
+    pub fn predict_block_into_with<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         block_x: i32,
         block_y: i32,
@@ -384,7 +380,7 @@ impl PreparedWarpPrediction {
         output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
     ) -> Result<()> {
         self.predict_block_into_with_runner(
-            TypedWarp(backend.narrow()),
+            TypedWarp(backend),
             reference,
             block_x,
             block_y,
@@ -460,20 +456,20 @@ impl PreparedWarpPrediction {
         )
     }
 
-    /// Typed [`Self::predict_clipped_into`] using caller-selected `backend`.
+    /// [`Self::predict_clipped_into`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same errors as [`Self::predict_clipped_into`].
-    pub fn predict_clipped_into_with<B: SimdBackend, T: ReconSample>(
+    pub fn predict_clipped_into_with<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         reference: &ReferencePlaneView<'_, T>,
         [x, y, width, height]: [usize; 4],
         output: &mut [T],
         stride: usize,
     ) -> Result<()> {
         self.predict_clipped_into_with_runner(
-            TypedWarp(backend.narrow()),
+            TypedWarp(backend),
             reference,
             [x, y, width, height],
             output,
@@ -491,69 +487,74 @@ impl PreparedWarpPrediction {
         (output, stride): (&mut [T], usize),
         max_sample: i16,
     ) -> Result<()> {
-        if self.translation_two_tap_into(
-            simd,
-            reference,
-            [x, y, width, height],
-            output,
-            stride,
-            max_sample,
-        )? {
-            return Ok(());
-        }
-        for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
-            let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
-            let row = WarpPredictBlockParams {
-                block_x: x as i32,
-                block_y: (y + local_y) as i32,
-                ..self.params
-            };
-            let written = match output.get_mut(local_y * stride..) {
-                Some(target) if section_h == WARPED_BLOCK_SIZE => {
-                    let sections = width / WARPED_BLOCK_SIZE;
-                    eight_bit::put_row(
-                        runner,
-                        reference,
-                        &row,
-                        &self.shear,
-                        sections,
-                        target,
-                        stride,
-                    )
-                }
-                _ => 0,
-            };
-            for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
-                if section < 64 && written >> section & 1 != 0 {
-                    continue;
-                }
-                let params = WarpPredictBlockParams {
-                    block_x: (x + local_x) as i32,
-                    ..row
-                };
-                let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
-                let store = |row: usize, rounded: i32x8<S>| {
-                    if row >= section_h {
-                        return Ok(());
-                    }
-                    let start = (local_y + row) * stride + local_x;
-                    let (low, high) = rounded.split();
-                    let target = &mut output[start..start + section_w];
-                    store_clipped_row(simd, target, low.saturating_narrow(high), max_sample);
-                    Ok(())
-                };
-                warp_predict_section(
-                    runner,
+        splot_core::in_scope!(simd => {
+                if self.translation_two_tap_into(
                     simd,
                     reference,
-                    &params,
-                    &self.shear,
-                    INTER_ROUND1_NON_COMPOUND,
-                    store,
-                )?;
-            }
-        }
-        Ok(())
+                    [x, y, width, height],
+                    output,
+                    stride,
+                    max_sample,
+                )? {
+                    return Ok(());
+                }
+                for local_y in (0..height).step_by(WARPED_BLOCK_SIZE) {
+                    let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
+                    let row = WarpPredictBlockParams {
+                        block_x: x as i32,
+                        block_y: (y + local_y) as i32,
+                        ..self.params
+                    };
+                    let written = match output.get_mut(local_y * stride..) {
+                        Some(target) if section_h == WARPED_BLOCK_SIZE => {
+                            let sections = width / WARPED_BLOCK_SIZE;
+                            eight_bit::put_row(
+                                runner,
+                                reference,
+                                &row,
+                                &self.shear,
+                                sections,
+                                target,
+                                stride,
+                            )
+                        }
+                        _ => 0,
+                    };
+                    for (section, local_x) in (0..width).step_by(WARPED_BLOCK_SIZE).enumerate() {
+                        if section < 64 && written >> section & 1 != 0 {
+                            continue;
+                        }
+                        let params = WarpPredictBlockParams {
+                            block_x: (x + local_x) as i32,
+                            ..row
+                        };
+                        let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
+                        let store = {
+            #[inline(always)]
+            |row: usize, rounded: i32x8<S>| {
+                            if row >= section_h {
+                                return Ok(());
+                            }
+                            let start = (local_y + row) * stride + local_x;
+                            let (low, high) = rounded.split();
+                            let target = &mut output[start..start + section_w];
+                            store_clipped_row(simd, target, low.saturating_narrow(high), max_sample);
+                            Ok(())
+                        }
+        };
+                        warp_predict_section(
+                            runner,
+                            simd,
+                            reference,
+                            &params,
+                            &self.shear,
+                            INTER_ROUND1_NON_COMPOUND,
+                            store,
+                        )?;
+                    }
+                }
+                Ok(())
+            })
     }
 
     /// Predicts a whole translation-only block whose two phases both select a
@@ -863,26 +864,19 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     ext_warp_predict_unit_with_runner(BaselineWarp, reference, params, i4, j4, is_compound)
 }
 
-/// Typed [`ext_warp_predict_unit`] using caller-selected `backend`.
+/// [`ext_warp_predict_unit`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`ext_warp_predict_unit`].
-pub fn ext_warp_predict_unit_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn ext_warp_predict_unit_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     i4: usize,
     j4: usize,
     is_compound: bool,
 ) -> Result<[i32; 16]> {
-    ext_warp_predict_unit_with_runner(
-        TypedWarp(backend.narrow()),
-        reference,
-        params,
-        i4,
-        j4,
-        is_compound,
-    )
+    ext_warp_predict_unit_with_runner(TypedWarp(backend), reference, params, i4, j4, is_compound)
 }
 
 #[inline]
@@ -1031,12 +1025,12 @@ pub fn warp_predict_block<T: ReconSample>(
     Ok(output.into())
 }
 
-/// Typed [`warp_predict_block`] using caller-selected `backend`.
+/// [`warp_predict_block`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`warp_predict_block`].
-pub fn warp_predict_block_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn warp_predict_block_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     is_compound: bool,
@@ -1070,12 +1064,12 @@ pub fn warp_predict_block_into<T: ReconSample>(
     )
 }
 
-/// Typed [`warp_predict_block_into`] using caller-selected `backend`.
+/// [`warp_predict_block_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`warp_predict_block_into`].
-pub fn warp_predict_block_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn warp_predict_block_into_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     is_compound: bool,
@@ -1191,15 +1185,17 @@ fn row_invariant_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    let weights = column_weights(
-        simd,
-        core::array::from_fn(|col| warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))),
-    );
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
-        let sum = tap_sum(sliding_windows(lo, hi), &weights);
-        *intermediate = round_intermediate(sum).to_array();
-    }
+    splot_core::in_scope!(simd => {
+        let weights = column_weights(
+            simd,
+            core::array::from_fn(|col| warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))),
+        );
+        for (row, intermediate) in intermediate.iter_mut().enumerate() {
+            let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
+            let sum = tap_sum(sliding_windows(lo, hi), &weights);
+            *intermediate = round_intermediate(sum).to_array();
+        }
+    });
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a section with `delta == 0`, whose
@@ -1268,12 +1264,17 @@ fn two_tap_intermediate<S: Simd, T: ReconSample>(
     high: usize,
     intermediate: &mut Intermediate,
 ) {
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let source = reference.row(first_row + row);
-        let start = first_col + TWO_TAP_FIRST;
-        let load = |col| warp_source_lanes(simd, source, col);
-        *intermediate = two_tap_horizontal(load, start, high).into();
-    }
+    splot_core::in_scope!(simd => {
+        for (row, intermediate) in intermediate.iter_mut().enumerate() {
+            let source = reference.row(first_row + row);
+            let start = first_col + TWO_TAP_FIRST;
+            let load = {
+            #[inline(always)]
+            |col| warp_source_lanes(simd, source, col)
+        };
+            *intermediate = two_tap_horizontal(load, start, high).into();
+        }
+    });
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a two-tap phase, which reads only
@@ -1610,15 +1611,17 @@ fn build_intermediate<S: Simd, T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut Intermediate,
 ) {
-    let first_col = projected.x4_int.saturating_sub(7);
-    let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
-    for i1 in -7i32..8 {
-        let row = (projected.y4_int + i1).clamp(first_y, last_y);
-        let span = clamped_span(simd, reference.row(row as usize), columns);
-        let sx = projected.sx4 + shear.beta * i1;
-        intermediate[(i1 + 7) as usize] =
-            horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
-    }
+    splot_core::in_scope!(simd => {
+        let first_col = projected.x4_int.saturating_sub(7);
+        let columns = clamped_columns(simd, reference.width(), first_col, [first_x, last_x]);
+        for i1 in -7i32..8 {
+            let row = (projected.y4_int + i1).clamp(first_y, last_y);
+            let span = clamped_span(simd, reference.row(row as usize), columns);
+            let sx = projected.sx4 + shear.beta * i1;
+            intermediate[(i1 + 7) as usize] =
+                horizontal_row(simd, [span.0, span.1], sx, shear.alpha).into();
+        }
+    });
 }
 
 #[inline]
@@ -1630,11 +1633,13 @@ fn build_interior_intermediate<S: Simd, T: ReconSample>(
     (first_col, first_row): (usize, usize),
     intermediate: &mut Intermediate,
 ) {
-    for (row, intermediate) in intermediate.iter_mut().enumerate() {
-        let sx = projected.sx4 + shear.beta * (row as i32 - 7);
-        let span = warp_span(simd, reference.row(first_row + row), first_col);
-        *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
-    }
+    splot_core::in_scope!(simd => {
+        for (row, intermediate) in intermediate.iter_mut().enumerate() {
+            let sx = projected.sx4 + shear.beta * (row as i32 - 7);
+            let span = warp_span(simd, reference.row(first_row + row), first_col);
+            *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
+        }
+    });
 }
 
 /// Runs the § 7.13.3.19 horizontal pass for one intermediate row from its tap

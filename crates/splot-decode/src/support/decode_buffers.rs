@@ -18,6 +18,9 @@ pub(crate) type WalkTemporal = (TemporalMvContext, Vec<TemporalMotionBlock>);
 /// The storage one decode's finished work leaves for the work behind it.
 #[derive(Default)]
 pub(crate) struct DecodeBuffers {
+    /// The kernels this decode selected at its start; its workspaces carry
+    /// them to the kernels that have a wider form.
+    kernels: splot_recon::KernelSelection,
     planes: Arc<splot_recon::PlanePool>,
     tile_records: Mutex<FrameFilterRecordCapacities>,
     /// Sixteen times the running mean of each large row list's length.
@@ -37,9 +40,30 @@ pub(crate) struct DecodeBuffers {
 pub(crate) type UnitLengths = [usize; 11];
 
 impl DecodeBuffers {
-    /// Opens the storage for one decode.
+    /// Opens the storage for one decode that selected no kernels.
+    #[cfg(test)]
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Opens the storage for one decode that selected `kernels`.
+    pub(crate) fn with_kernels(kernels: splot_recon::KernelSelection) -> Arc<Self> {
+        Arc::new(Self {
+            kernels,
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        self.kernels
+    }
+
+    /// The kernels of the decode behind `buffers`; work outside a decode,
+    /// which has none, selected none.
+    pub(crate) fn kernels_of(buffers: Option<&Arc<Self>>) -> splot_recon::KernelSelection {
+        buffers.map_or_else(splot_recon::KernelSelection::default, |buffers| {
+            buffers.kernels
+        })
     }
 
     /// The frame-sized plane storage, which reconstruction workspaces name so

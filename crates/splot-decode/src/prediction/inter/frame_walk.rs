@@ -420,8 +420,12 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &mut payload_scratch,
         )
         .and_then(|prologue| {
-            let workspace =
-                CurrentFrameWorkspace::new_band(geometry.info(), band_rows, spare_band)?;
+            let workspace = CurrentFrameWorkspace::new_band(
+                geometry.info(),
+                parse_progress.kernels(),
+                band_rows,
+                spare_band,
+            )?;
             Ok((prologue, workspace))
         });
         let (

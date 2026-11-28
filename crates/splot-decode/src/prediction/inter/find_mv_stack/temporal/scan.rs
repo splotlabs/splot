@@ -185,6 +185,11 @@ impl BandLanes {
     }
 
     /// The band cell of `(y8, x8)`, or -1 for a row above the band.
+    #[expect(
+        clippy::inline_always,
+        reason = "a lane step of its caller's SIMD loop"
+    )]
+    #[inline(always)]
     fn index<S: Simd>(self, [y8, x8]: [Lanes<S>; 2]) -> Lanes<S> {
         let row = y8 - self.row_base;
         (row * self.width8 + x8) | (row >> 31)
@@ -287,8 +292,8 @@ impl LaneGeometry {
 /// scan of a fresh band each source slot is visited before it is recorded,
 /// and every end record made by this scan already has a source vector.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn project_temporal_motion_field<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn project_temporal_motion_field(
+    backend: splot_core::simd::SimdBackend,
     lanes: &mut ChunkLanes,
     prepared: &TemporalProjectionSource,
     source: &impl TemporalMotionRows,
@@ -315,8 +320,7 @@ pub(super) fn project_temporal_motion_field<B: splot_core::simd::SimdBackend>(
     };
     let refs = band.map_or(0, |band| band.reference_count);
     let rows = rows.start..rows.end.min(prepared.source_height8);
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         let tables = TargetTables::new(simd, prepared, refs);
         project_rows((&tables, lanes), prepared, source, rows, geometry, trajectories, output);
     });
@@ -575,8 +579,11 @@ fn chunk_lanes<S: Simd, const TRACKED: bool>(
         let allow = allow | (REVERSE | END_WRITE);
         lanes.refs[group] = refs.into();
         let factor = tables.folded(tables.divisor, refs) * tables.source_to_current;
-        let motion = [saved_rows, saved_cols].map(|saved| decompress(widen_i8(simd, saved)));
-        let projection = motion.map(|mv| project(mv, factor));
+        let motion = [
+            decompress(widen_i8(simd, saved_rows)),
+            decompress(widen_i8(simd, saved_cols)),
+        ];
+        let projection = [project(motion[0], factor), project(motion[1], factor)];
         for (axis, mv) in motion.into_iter().enumerate() {
             lanes.ints[MV + axis][group] = mv.into();
             if TRACKED {
@@ -695,31 +702,39 @@ fn deinterleave<S: Simd>(
     group: usize,
     step: usize,
 ) -> Option<[u8x16<S>; 3]> {
-    if step == 1 {
-        let span: &[u8; 112] = window.0.get(96 * group..)?.first_chunk()?;
-        let [even_low, even_high, odd_low, odd_high] = [
-            compact(simd, span, 0)?,
-            compact(simd, span, 48)?,
-            compact(simd, span, 6)?,
-            compact(simd, span, 54)?,
-        ];
-        Some(transpose(
-            [even_low.zip_low(odd_low), even_high.zip_low(odd_high)],
-            [even_low.zip_high(odd_low), even_high.zip_high(odd_high)],
-        ))
-    } else {
-        let span: &[u8; 192] = window.0.get(192 * group..)?.first_chunk()?;
-        let [first, second, third, fourth] = [
-            compact(simd, span, 0)?.bitcast::<u32x4<S>>(),
-            compact(simd, span, 48)?.bitcast(),
-            compact(simd, span, 96)?.bitcast(),
-            compact(simd, span, 144)?.bitcast(),
-        ];
-        Some(transpose(
-            [first.zip_low(second), third.zip_low(fourth)].map(Bytes::bitcast),
-            [first.zip_high(second), third.zip_high(fourth)].map(Bytes::bitcast),
-        ))
-    }
+    splot_core::in_scope!(simd => {
+        if step == 1 {
+            let span: &[u8; 112] = window.0.get(96 * group..)?.first_chunk()?;
+            let [even_low, even_high, odd_low, odd_high] = [
+                compact(simd, span, 0)?,
+                compact(simd, span, 48)?,
+                compact(simd, span, 6)?,
+                compact(simd, span, 54)?,
+            ];
+            Some(transpose(
+                [even_low.zip_low(odd_low), even_high.zip_low(odd_high)],
+                [even_low.zip_high(odd_low), even_high.zip_high(odd_high)],
+            ))
+        } else {
+            let span: &[u8; 192] = window.0.get(192 * group..)?.first_chunk()?;
+            let [first, second, third, fourth] = [
+                compact(simd, span, 0)?.bitcast::<u32x4<S>>(),
+                compact(simd, span, 48)?.bitcast(),
+                compact(simd, span, 96)?.bitcast(),
+                compact(simd, span, 144)?.bitcast(),
+            ];
+            Some(transpose(
+                [
+                    first.zip_low(second).bitcast(),
+                    third.zip_low(fourth).bitcast(),
+                ],
+                [
+                    first.zip_high(second).bitcast(),
+                    third.zip_high(fourth).bitcast(),
+                ],
+            ))
+        }
+    })
 }
 
 /// The run of four cells twelve bytes apart at `start`: each cell's three
@@ -754,6 +769,11 @@ fn transpose<S: Simd>(low: [u8x16<S>; 2], high: [u8x16<S>; 2]) -> [u8x16<S>; 3] 
 }
 
 /// `i8` lanes sign-extended to `i32`.
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn widen_i8<S: Simd>(simd: S, bytes: u8x16<S>) -> Lanes<S> {
     let bytes = bytes.bitcast();
     let words = simd.widen_i8x32(simd.combine_i8x16(bytes, bytes)).0;
@@ -776,6 +796,11 @@ fn narrow_bytes<S: Simd>(simd: S, lanes: Lanes<S>) -> u8x16<S> {
 }
 
 /// AV2 § 7.9.2 decompression of a saved vector component, lane by lane.
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn decompress<S: Simd>(value: Lanes<S>) -> Lanes<S> {
     let magnitude = value.abs();
     let step_log2 = ((magnitude >> 4) - 1).max(0);
@@ -787,6 +812,11 @@ fn decompress<S: Simd>(value: Lanes<S>) -> Lanes<S> {
 /// `Round2Signed(component * factor, 14)` of a decompressed component. A
 /// magnitude of at most 2048 keeps the product inside `i32` and the result
 /// under `MV_LIMIT` for every admitted factor, so the scalar clamp never binds.
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn project<S: Simd>(component: Lanes<S>, factor: Lanes<S>) -> Lanes<S> {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14

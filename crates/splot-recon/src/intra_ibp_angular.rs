@@ -138,7 +138,7 @@ fn ibp_weights(p_angle: u16) -> Result<IbpWeights> {
 struct BaselineIbpAngular;
 
 #[derive(Clone, Copy)]
-struct TypedIbpAngular<B: SimdBackend>(B);
+struct TypedIbpAngular(SimdBackend);
 
 trait IbpAngularRunner: Copy {
     fn blend<O: IntraLaneSample>(
@@ -167,7 +167,7 @@ impl IbpAngularRunner for BaselineIbpAngular {
     }
 }
 
-impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
+impl IbpAngularRunner for TypedIbpAngular {
     #[inline]
     fn blend<O: IntraLaneSample>(
         self,
@@ -178,9 +178,8 @@ impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
         primary: &mut [O],
         second: &[O],
     ) {
-        let narrow = self.0.narrow();
         if width <= 16 {
-            splot_core::with_simd!(narrow, simd => {
+            splot_core::with_simd!(self.0, simd => {
                 blend_rows::<_, _, 16>(
                     simd,
                     weights,
@@ -192,7 +191,7 @@ impl<B: SimdBackend> IbpAngularRunner for TypedIbpAngular<B> {
                 );
             });
         } else {
-            splot_core::with_simd!(narrow, simd => {
+            splot_core::with_simd!(self.0, simd => {
                 blend_rows::<_, _, 64>(
                     simd,
                     weights,
@@ -252,8 +251,8 @@ fn apply_ibp_dr_blend_rect_with_runner<R: IbpAngularRunner, T: ReconSample>(
 ///
 /// # Errors
 /// Returns the same validation errors as [`apply_ibp_dr_blend_rect`].
-pub fn apply_ibp_dr_blend_rect_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn apply_ibp_dr_blend_rect_with<T: ReconSample>(
+    backend: SimdBackend,
     size: IntraRectBlockSize,
     p_angle: u16,
     primary: &mut [T],

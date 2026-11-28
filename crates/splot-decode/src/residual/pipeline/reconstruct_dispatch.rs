@@ -193,9 +193,9 @@ impl ResidualPlanePlan {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(super) fn reconstruct<B: SimdBackend, T: ReconSample>(
+    pub(super) fn reconstruct<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,

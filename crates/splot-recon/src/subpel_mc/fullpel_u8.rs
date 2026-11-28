@@ -27,12 +27,12 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     )
 }
 
-/// Typed [`subpel_predict_block_strided_into_u8`] using caller-selected `backend`.
+/// [`subpel_predict_block_strided_into_u8`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_block_strided_into_u8`].
-pub fn subpel_predict_block_strided_into_u8_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_block_strided_into_u8_with<T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u8],
@@ -143,10 +143,10 @@ pub fn subpel_put_block<T: ReconSample>(
     subpel_put_block_with_runner(BaselineSubpel, surface, interp, luma, chroma)
 }
 
-/// Typed [`subpel_put_block`] using caller-selected `backend`.
+/// [`subpel_put_block`] using caller-selected `backend`.
 #[inline]
-pub fn subpel_put_block_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_put_block_with<T: ReconSample>(
+    backend: SimdBackend,
     surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
     interp: InterpolationFilter,
     luma: (&ReferencePlaneView<'_, T>, UnscaledPut),
@@ -204,10 +204,10 @@ pub fn subpel_compound_block<T: ReconSample>(
     subpel_compound_block_with_runner(BaselineSubpel, surface, interp, cwp_weight, luma, chroma)
 }
 
-/// Typed [`subpel_compound_block`] using caller-selected `backend`.
+/// [`subpel_compound_block`] using caller-selected `backend`.
 #[inline]
-pub fn subpel_compound_block_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_compound_block_with<T: ReconSample>(
+    backend: SimdBackend,
     surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
     interp: InterpolationFilter,
     cwp_weight: i16,

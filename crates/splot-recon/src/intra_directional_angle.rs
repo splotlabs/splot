@@ -472,12 +472,12 @@ pub fn predict_intra_directional_angle_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_directional_angle_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_directional_angle_rect_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_directional_angle_rect_into`].
-pub fn predict_intra_directional_angle_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_directional_angle_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
@@ -487,7 +487,7 @@ pub fn predict_intra_directional_angle_rect_into_with<B: SimdBackend, T: ReconSa
 ) -> Result<()> {
     let edge = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
     write_prediction(
-        lines::TypedLines(backend.narrow()),
+        lines::TypedLines(backend),
         bit_depth,
         size,
         angle,
@@ -531,12 +531,12 @@ pub fn predict_intra_middle_directional_angle_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_middle_directional_angle_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_middle_directional_angle_rect_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_middle_directional_angle_rect_into`].
-pub fn predict_intra_middle_directional_angle_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_middle_directional_angle_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -547,7 +547,7 @@ pub fn predict_intra_middle_directional_angle_rect_into_with<B: SimdBackend, T: 
     let context =
         validate_middle_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
     write_middle_prediction(
-        lines::TypedLines(backend.narrow()),
+        lines::TypedLines(backend),
         bit_depth,
         size,
         angle,
@@ -600,15 +600,12 @@ pub fn predict_intra_middle_directional_angle_rect_idif_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_middle_directional_angle_rect_idif_into`] using caller-selected `backend`.
+/// [`predict_intra_middle_directional_angle_rect_idif_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_middle_directional_angle_rect_idif_into`].
-pub fn predict_intra_middle_directional_angle_rect_idif_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub fn predict_intra_middle_directional_angle_rect_idif_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -675,16 +672,13 @@ pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into<T: ReconSample>
     )
 }
 
-/// Typed [`predict_intra_middle_directional_angle_rect_idif_mrl_into`] using caller-selected `backend`.
+/// [`predict_intra_middle_directional_angle_rect_idif_mrl_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same error cases as [`predict_intra_middle_directional_angle_rect_idif_mrl_into`].
 #[expect(clippy::too_many_arguments)]
-pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -703,7 +697,7 @@ pub fn predict_intra_middle_directional_angle_rect_idif_mrl_into_with<
         stride_samples,
     )?;
     write_middle_idif_mrl_prediction(
-        lines::TypedLines(backend.narrow()),
+        lines::TypedLines(backend),
         MiddleIdifMrlPrediction {
             bit_depth,
             size,
@@ -777,15 +771,12 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_directional_angle_rect_one_sided_idif_into`] using caller-selected `backend`.
+/// [`predict_intra_directional_angle_rect_one_sided_idif_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_directional_angle_rect_one_sided_idif_into`].
-pub fn predict_intra_directional_angle_rect_one_sided_idif_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub fn predict_intra_directional_angle_rect_one_sided_idif_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
@@ -846,17 +837,14 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into<T: ReconSamp
     )
 }
 
-/// Typed [`predict_intra_directional_angle_rect_one_sided_idif_mrl_into`] using caller-selected `backend`.
+/// [`predict_intra_directional_angle_rect_one_sided_idif_mrl_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same [`ReconError`] cases as
 /// [`predict_intra_directional_angle_rect_one_sided_idif_mrl_into`].
 #[expect(clippy::too_many_arguments)]
-pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
@@ -875,7 +863,7 @@ pub fn predict_intra_directional_angle_rect_one_sided_idif_mrl_into_with<
         stride_samples,
     )?;
     write_one_sided_idif_prediction(
-        lines::TypedLines(backend.narrow()),
+        lines::TypedLines(backend),
         bit_depth,
         size,
         angle,

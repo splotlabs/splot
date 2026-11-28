@@ -23,9 +23,9 @@ impl GeneralIntraResidualPlan {
     /// `quant` and `eob`, through the decoder's own kernel dispatch; a palette
     /// luma block predicts from its row-major `palette_map`.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct_unit<B: SimdBackend, T: ReconSample>(
+    pub(crate) fn reconstruct_unit<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         index: usize,
         quant: &[i32],
         eob: usize,
@@ -64,9 +64,9 @@ impl GeneralIntraResidualPlan {
     /// their row-major adjusted `quant` and `eob`, with cross-chroma transform
     /// `cctx_type`, through the decoder's paired reconstruction.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct_cctx_pair<B: SimdBackend, T: ReconSample>(
+    pub(crate) fn reconstruct_cctx_pair<T: ReconSample>(
         &self,
-        backend: B,
+        backend: SimdBackend,
         [u, v]: [(usize, &[i32], usize); 2],
         (plane_tx_type, cctx_type): (usize, usize),
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,

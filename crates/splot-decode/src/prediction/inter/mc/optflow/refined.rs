@@ -116,8 +116,8 @@ impl RefinedUnits {
 /// in an 8x8 block, else 8x8). Optical flow and refine-MV need unscaled
 /// references (§ 5.20.7.6 `opfl_allowed_for_refs`, § 5.20.7.17
 /// `is_refinemv_allowed_reference`), so a scaled one is a state error.
-pub(crate) fn refine_block_units<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn refine_block_units<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
@@ -154,7 +154,7 @@ pub(crate) fn refine_block_units<B: splot_core::simd::SimdBackend, T: ReconSampl
             .zip(candidates)
             .zip([&mut *pred0, &mut *pred1])
         {
-            initial_luma_prediction::<_, _, 0>(
+            initial_luma_prediction::<_, 0>(
                 backend,
                 luma,
                 block.rect,
@@ -264,7 +264,7 @@ pub(crate) fn refine_block_units<B: splot_core::simd::SimdBackend, T: ReconSampl
                     for (reference, prediction) in
                         [&mut *pred0, &mut *pred1].into_iter().enumerate()
                     {
-                        initial_luma_prediction::<_, _, 0>(
+                        initial_luma_prediction::<_, 0>(
                             backend,
                             &mut luma[reference],
                             rect,
@@ -316,8 +316,8 @@ fn grown(buffer: &mut Vec<u16>, len: usize) -> &mut [u16] {
 /// refine-MV for any other blend) without warp (§ 7.13.3.14 `useWarp = 0`),
 /// so any other block is a state error. A sub-8x8 chroma block (§ 7.13.3.1
 /// `sub8x8Inter`) predicts its chroma from list 0 alone, as AVM does.
-pub(crate) fn predict_refined_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn predict_refined_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &CompoundMcBlock<'_, T>,
     units: &mut RefinedUnits,
@@ -409,8 +409,8 @@ pub(crate) fn predict_refined_block<B: splot_core::simd::SimdBackend, T: ReconSa
 }
 
 /// The block-wide inputs of a [`predict_refined_block`] plane pass.
-struct RefinedPass<'a, 'b, B, T: ReconSample> {
-    backend: B,
+struct RefinedPass<'a, 'b, T: ReconSample> {
+    backend: splot_core::simd::SimdBackend,
     info: DecodedFrameInfo,
     block: &'a CompoundMcBlock<'b, T>,
     cells: &'a [MotionCell],
@@ -421,7 +421,7 @@ struct RefinedPass<'a, 'b, B, T: ReconSample> {
     offset: ByteOffset,
 }
 
-impl<B: splot_core::simd::SimdBackend, T: ReconSample> RefinedPass<'_, '_, B, T> {
+impl<T: ReconSample> RefinedPass<'_, '_, T> {
     /// Predicts one plane of `W` x `H` cells into the visible rectangle
     /// `outputs[0]`, and for U the V plane into `outputs[1]` from the same
     /// placements.
@@ -548,7 +548,7 @@ impl<B: splot_core::simd::SimdBackend, T: ReconSample> RefinedPass<'_, '_, B, T>
             let [first, second] = outputs;
             let planes = [(views[0], first), (views[1], second)]
                 .map(|(views, (output, stride))| Some((views?, &mut **output, *stride)));
-            run_program::<_, _, _, W>(self.backend, program, planes, &cell_in, pred, intermediate)?;
+            run_program::<_, _, W>(self.backend, program, planes, &cell_in, pred, intermediate)?;
             program.clear();
             Ok(())
         };
@@ -705,13 +705,8 @@ type Target = (MotionCell, [CellPlacement; 2], bool, [usize; 4]);
 
 /// Runs a program of `SIZE`-square uniform cells into each plane (or U and
 /// V) and predicts each cell it declines through [`predict_cell`].
-fn run_program<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    O: CompoundAverageOutput,
-    const SIZE: usize,
->(
-    backend: B,
+fn run_program<T: ReconSample, O: CompoundAverageOutput, const SIZE: usize>(
+    backend: splot_core::simd::SimdBackend,
     program: &mut CompoundCells,
     mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     cell_in: &CellInputs<'_, '_, T>,
@@ -771,8 +766,8 @@ fn run_program<
 /// mask of the cell's own reference starts.
 #[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn predict_cell<B: splot_core::simd::SimdBackend, T: ReconSample, O: CompoundAverageOutput>(
-    backend: B,
+fn predict_cell<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     views: &[ReferencePlaneView<'_, T>; 2],
     (cell, placements, uniform, [col, row, width, height]): Target,
     cell_in: &CellInputs<'_, '_, T>,

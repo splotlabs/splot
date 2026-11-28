@@ -6,8 +6,11 @@
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
 use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{i16x32, u16x32};
 use splot_core::simd::SimdBackend;
 
+use crate::KernelSelection;
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
@@ -92,7 +95,7 @@ impl<'a, T: ReconSample> IntraPaethEdges<'a, T> {
 struct BaselinePaeth;
 
 #[derive(Clone, Copy)]
-struct TypedPaeth<B: SimdBackend>(B);
+struct TypedPaeth(SimdBackend, KernelSelection);
 
 trait PaethRunner: Copy {
     fn paeth<O: IntraLaneSample>(
@@ -123,7 +126,7 @@ impl PaethRunner for BaselinePaeth {
     }
 }
 
-impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
+impl PaethRunner for TypedPaeth {
     #[inline]
     fn paeth<O: IntraLaneSample>(
         self,
@@ -134,8 +137,13 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         output: &mut [O],
         stride_samples: usize,
     ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => {
+        #[cfg(target_arch = "x86_64")]
+        if size.width() >= 32
+            && let Some(wide) = self.1.wide()
+        {
+            return O::wide_paeth(wide)(size, (left, above, top_left), output, stride_samples);
+        }
+        splot_core::with_simd!(self.0, simd => {
             paeth_rows(
                 simd,
                 size,
@@ -247,12 +255,14 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_paeth_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_paeth_rect_into`] using caller-selected `backend`
+/// and the decoder's `kernels`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_paeth_rect_into`].
-pub fn predict_intra_paeth_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_paeth_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
+    kernels: KernelSelection,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraPaethEdges<'_, T>,
@@ -260,7 +270,7 @@ pub fn predict_intra_paeth_rect_into_with<B: SimdBackend, T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     predict_intra_paeth_rect_into_with_runner(
-        TypedPaeth(backend),
+        TypedPaeth(backend, kernels),
         bit_depth,
         size,
         edges,
@@ -316,6 +326,48 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
     }
 }
 
+/// [`paeth_rows`] for a block 32 or 64 wide, 32 lanes a step. The above row
+/// with its distance to the corner and `above - 2 * top_left` are the same
+/// for every row, so they are widened and taken once per block.
+#[cfg(target_arch = "x86_64")]
+#[expect(
+    clippy::inline_always,
+    reason = "must be compiled inside its caller's AVX-512 context"
+)]
+#[inline(always)]
+pub(crate) fn paeth_rows_wide<S: Simd, O: IntraLaneSample>(
+    simd: S,
+    size: IntraRectBlockSize,
+    (left, above, top_left): (&[O], &[O], u16),
+    output: &mut [O],
+    stride_samples: usize,
+) {
+    let (width, height) = (size.width(), size.height());
+    debug_assert!(width <= 64);
+    let top_left = i16x32::splat(simd, top_left as i16);
+    let mut columns = [(top_left, top_left, top_left); 2];
+    for (column, above) in columns.iter_mut().zip(above.as_chunks::<32>().0) {
+        let above = above.map(ReconSample::to_u16);
+        let above = u16x32::load_array_ref(simd, &above).bitcast::<i16x32<S>>();
+        *column = (above, (above - top_left).abs(), above - top_left - top_left);
+    }
+    for (row, &left) in left.iter().take(height).enumerate() {
+        let left = i16x32::splat(simd, left.to_u16() as i16);
+        let p_top = (left - top_left).abs();
+        let target = &mut output[row * stride_samples..row * stride_samples + width];
+        for (target, &(above, p_left, base)) in
+            target.as_chunks_mut::<32>().0.iter_mut().zip(&columns)
+        {
+            let p_top_left = (base + left).abs();
+            let take_left = p_left.simd_le(p_top) & p_left.simd_le(p_top_left);
+            let take_top = p_top.simd_le(p_top_left);
+            let value = take_left.select(left, take_top.select(above, top_left));
+            let (low, high) = simd.split_u16x32(value.bitcast());
+            O::store32(simd, low, high, target);
+        }
+    }
+}
+
 /// One lane group of [`predict_paeth_lanes`].
 #[inline]
 fn paeth_lanes<S: Simd>(above: i16x16<S>, left: i16x16<S>, top_left: i16x16<S>) -> i16x16<S> {
@@ -346,6 +398,11 @@ fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
         top_left
     }
 }
+
+#[cfg(test)]
+#[cfg(target_arch = "x86_64")]
+#[path = "intra_basic_wide_tests.rs"]
+mod wide_tests;
 
 #[cfg(test)]
 mod tests {
@@ -612,71 +669,60 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_route() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 3)] {
-                    let size = rect_size(log2_w, log2_h);
-                    let stride = size.width() + 4;
-                    let left8: Vec<u8> = (0..size.height()).map(|i| (i * 17 + 5) as u8).collect();
-                    let above8: Vec<u8> = (0..size.width()).map(|i| (i * 23 + 9) as u8).collect();
-                    let edges8 = IntraPaethEdges::new(&left8[..], &above8[..], 101u8);
-                    let mut compat8 = vec![3u8; stride * size.height()];
-                    let mut typed8 = Vec::from(compat8.as_slice());
-                    predict_intra_paeth_rect_into(
-                        BitDepth::Eight,
-                        size,
-                        edges8,
-                        &mut compat8,
-                        stride,
-                    )
+        fn check(backend: SimdBackend) {
+            for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 3)] {
+                let size = rect_size(log2_w, log2_h);
+                let stride = size.width() + 4;
+                let left8: Vec<u8> = (0..size.height()).map(|i| (i * 17 + 5) as u8).collect();
+                let above8: Vec<u8> = (0..size.width()).map(|i| (i * 23 + 9) as u8).collect();
+                let edges8 = IntraPaethEdges::new(&left8[..], &above8[..], 101u8);
+                let mut compat8 = vec![3u8; stride * size.height()];
+                let mut typed8 = Vec::from(compat8.as_slice());
+                predict_intra_paeth_rect_into(BitDepth::Eight, size, edges8, &mut compat8, stride)
                     .unwrap();
-                    predict_intra_paeth_rect_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        edges8,
-                        &mut typed8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed8, compat8);
+                predict_intra_paeth_rect_into_with(
+                    backend,
+                    KernelSelection::default(),
+                    BitDepth::Eight,
+                    size,
+                    edges8,
+                    &mut typed8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let left10: Vec<u16> = (0..size.height())
-                        .map(|i| (i as u16 * 59 + 11) % 1024)
-                        .collect();
-                    let above10: Vec<u16> = (0..size.width())
-                        .map(|i| (i as u16 * 83 + 17) % 1024)
-                        .collect();
-                    let edges10 = IntraPaethEdges::new(&left10[..], &above10[..], 417u16);
-                    let mut compat10 = vec![7u16; stride * size.height()];
-                    let mut typed10 = Vec::from(compat10.as_slice());
-                    predict_intra_paeth_rect_into(
-                        BitDepth::Ten,
-                        size,
-                        edges10,
-                        &mut compat10,
-                        stride,
-                    )
+                let left10: Vec<u16> = (0..size.height())
+                    .map(|i| (i as u16 * 59 + 11) % 1024)
+                    .collect();
+                let above10: Vec<u16> = (0..size.width())
+                    .map(|i| (i as u16 * 83 + 17) % 1024)
+                    .collect();
+                let edges10 = IntraPaethEdges::new(&left10[..], &above10[..], 417u16);
+                let mut compat10 = vec![7u16; stride * size.height()];
+                let mut typed10 = Vec::from(compat10.as_slice());
+                predict_intra_paeth_rect_into(BitDepth::Ten, size, edges10, &mut compat10, stride)
                     .unwrap();
-                    predict_intra_paeth_rect_into_with(
-                        backend,
-                        BitDepth::Ten,
-                        size,
-                        edges10,
-                        &mut typed10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed10, compat10);
-                }
+                predict_intra_paeth_rect_into_with(
+                    backend,
+                    KernelSelection::default(),
+                    BitDepth::Ten,
+                    size,
+                    edges10,
+                    &mut typed10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed10, compat10);
             }
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

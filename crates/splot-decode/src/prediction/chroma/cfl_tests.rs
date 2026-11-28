@@ -142,8 +142,7 @@ fn analyse<T: ReconSample>(
     let average = with_luma!(
         frame,
         filter,
-        |luma| crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
-            let simd = backend.token();
+        |luma| crate::test_support::with_auto_backend!(backend => splot_core::with_simd!(backend, simd => {
             edges.gather_above(backend, simd, &luma, &planes, block).unwrap();
             let left = (block.x > 0).then_some(&mut edges.left[..block.height]);
             luma.fill_luma(backend, simd, block, left, &mut ac).unwrap();
@@ -304,8 +303,8 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
             with_luma!(
                 &frame,
                 filter as u8,
-                |luma| crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
-                    luma.fill_luma(backend, backend.token(), block, None, &mut actual)
+                |luma| crate::test_support::with_auto_backend!(backend => splot_core::with_simd!(backend, simd => {
+                    luma.fill_luma(backend, simd, block, None, &mut actual)
                 }))
             )
             .unwrap();
@@ -1024,10 +1023,10 @@ fn cfl_block_luma_matches_per_sample_q3_in_every_format() {
                 let block = cfl_block(x, y, w, h, 16, frame.info().bit_depth());
                 let mut left = [0; MAX_CFL_AXIS];
                 let mut actual = Vec::new();
-                crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+                crate::test_support::with_auto_backend!(backend => splot_core::with_simd!(backend, simd => {
                     luma.fill_luma(
                         backend,
-                        backend.token(),
+                        simd,
                         block,
                         (x > 0).then_some(&mut left[..h]),
                         &mut actual,
@@ -1082,10 +1081,10 @@ fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state:
         let block = cfl_block(x, y, block_width, block_height, 16, BitDepth::Eight);
         let mut left = [0; MAX_CFL_AXIS];
         let mut actual = Vec::new();
-        crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
+        crate::test_support::with_auto_backend!(backend => splot_core::with_simd!(backend, simd => {
             luma.fill_luma(
                 backend,
-                backend.token(),
+                simd,
                 block,
                 (x > 0).then_some(&mut left[..block_height]),
                 &mut actual,
@@ -1138,8 +1137,8 @@ fn check_u8_gathered_edges<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
         let block = cfl_block(x, y, block_width, block_height, sb_mib, BitDepth::Eight);
         let mut edges = CflLumaEdges::default();
         let mut ac = Vec::new();
-        let start = crate::test_support::with_auto_backend!(backend => backend.vectorize(|| {
-            edges.gather(backend, backend.token(), &luma, &planes, block, &mut ac)
+        let start = crate::test_support::with_auto_backend!(backend => splot_core::with_simd!(backend, simd => {
+            edges.gather(backend, simd, &luma, &planes, block, &mut ac)
         }))
         .unwrap();
         folded += usize::from(start > 0);

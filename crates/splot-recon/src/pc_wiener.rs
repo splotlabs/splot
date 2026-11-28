@@ -474,8 +474,8 @@ where
 /// Returns the same errors as [`pc_wiener_classify_grid_padded_classes_into`].
 #[expect(clippy::too_many_arguments)]
 #[inline]
-pub fn pc_wiener_classify_grid_padded_classes_into_with<'a, 'g, B, T, FT>(
-    backend: B,
+pub fn pc_wiener_classify_grid_padded_classes_into_with<'a, 'g, T, FT>(
+    backend: SimdBackend,
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
@@ -486,12 +486,11 @@ pub fn pc_wiener_classify_grid_padded_classes_into_with<'a, 'g, B, T, FT>(
     output: &'a mut Vec<u8>,
 ) -> Result<&'a [u8]>
 where
-    B: SimdBackend,
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
 {
     classify_grid_padded_classes_with_backend(
-        TypedLr(backend.narrow()),
+        TypedLr(backend),
         params,
         cell_cols,
         cell_rows,
@@ -1795,13 +1794,13 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
 /// Returns the same typed [`ReconError`] values as
 /// [`pc_wiener_filter_block_padded`].
 #[inline]
-pub fn pc_wiener_filter_block_padded_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn pc_wiener_filter_block_padded_with<T: ReconSample>(
+    backend: SimdBackend,
     output: &mut [T],
     params: &PcWienerFilter<'_>,
     source: &PcWienerPaddedSource<'_, T>,
 ) -> Result<()> {
-    pc_wiener_filter_block_padded_with_backend(TypedLr(backend.narrow()), output, params, source)
+    pc_wiener_filter_block_padded_with_backend(TypedLr(backend), output, params, source)
 }
 
 fn pc_wiener_filter_block_padded_with_backend<L: LrBackend, T: ReconSample>(

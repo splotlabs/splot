@@ -40,8 +40,9 @@ pub const CCTX_MTX: [[i32; 2]; 6] = [
 /// Returns the errors of [`dequantize_block`](super::dequantize_block) for
 /// either block, and [`ReconError::InvalidDequantBlockShape`] if the V block
 /// does not have the shape of the U block.
-pub fn dequantize_cctx_pair_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn dequantize_cctx_pair_with(
+    backend: SimdBackend,
     params: [&DequantBlockParams; 2],
     quant: [&[i32]; 2],
     rotation: [i32; 2],
@@ -58,8 +59,7 @@ pub fn dequantize_cctx_pair_with<B: SimdBackend>(
     let v_coded = dequant_block_prefix(v, quant[1].len(), v_out.len())?;
     let coded = u_coded.max(v_coded);
     let out = [&mut u_out[..coded], &mut v_out[..coded]];
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => pair_groups(simd, params, quant, rotation, out))?;
+    splot_core::with_simd!(backend, simd => pair_groups(simd, params, quant, rotation, out))?;
     Ok(coded)
 }
 
@@ -77,50 +77,64 @@ fn pair_groups<S: Simd>(
     [cos, sin]: [i32; 2],
     [u_out, v_out]: [&mut [i32]; 2],
 ) -> Result<()> {
-    let dequant = |params: &DequantBlockParams, quant: &[i32], group: usize| {
-        let bound = clamp_bound(params);
-        let coded = &quant[quant.len().min(8 * group)..];
-        let (lanes, len) = match coded.first_chunk() {
-            Some(lanes) => (*lanes, 8),
-            None if coded.is_empty() => return Ok(i32x8::splat(simd, 0)),
-            None => (zero_padded_group(coded), coded.len()),
-        };
-        let q2 = group_quantizers(simd, params, group, len)?;
-        let denom_shift = params.dq_denom.max(1).trailing_zeros();
-        let lanes = i32x8::load_array(simd, lanes);
-        Ok(dequant_lanes(simd, lanes, q2, denom_shift, bound))
-    };
-    let round = |sum: i32x8<S>| {
-        (sum + (sum >> (i32::BITS - 1)) + (1 << (CCTX_PREC_BITS - 1))) >> CCTX_PREC_BITS
-    };
-    let rotated = |group: usize| -> Result<[i32x8<S>; 2]> {
-        let u = dequant(u_params, u_quant, group)?;
-        let v = dequant(v_params, v_quant, group)?;
-        let clip = |sum: i32x8<S>, params| {
+    splot_core::in_scope!(simd => {
+        let dequant = {
+            #[inline(always)]
+            |params: &DequantBlockParams, quant: &[i32], group: usize| {
             let bound = clamp_bound(params);
-            round(sum).clamp(-bound, bound - 1)
+            let coded = &quant[quant.len().min(8 * group)..];
+            let (lanes, len) = match coded.first_chunk() {
+                Some(lanes) => (*lanes, 8),
+                None if coded.is_empty() => return Ok(i32x8::splat(simd, 0)),
+                None => (zero_padded_group(coded), coded.len()),
+            };
+            let q2 = group_quantizers(simd, params, group, len)?;
+            let denom_shift = params.dq_denom.max(1).trailing_zeros();
+            let lanes = i32x8::load_array(simd, lanes);
+            Ok(dequant_lanes(simd, lanes, q2, denom_shift, bound))
+        }
         };
-        Ok([
-            clip(u * cos - v * sin, u_params),
-            clip(u * sin + v * cos, v_params),
-        ])
-    };
-    let (u_groups, u_half) = u_out.as_chunks_mut::<8>();
-    let (v_groups, v_half) = v_out.as_chunks_mut::<8>();
-    for (group, (u, v)) in u_groups.iter_mut().zip(v_groups.iter_mut()).enumerate() {
-        let [next_u, next_v] = rotated(group)?;
-        *u = next_u.into();
-        *v = next_v.into();
-    }
-    if let (Ok(u), Ok(v)) = (
-        <&mut [i32; 4]>::try_from(u_half),
-        <&mut [i32; 4]>::try_from(v_half),
-    ) {
-        let [next_u, next_v] = rotated(u_groups.len())?;
-        *u = simd.split_i32x8(next_u).0.into();
-        *v = simd.split_i32x8(next_v).0.into();
-    }
-    Ok(())
+        let round = {
+            #[inline(always)]
+            |sum: i32x8<S>| {
+            (sum + (sum >> (i32::BITS - 1)) + (1 << (CCTX_PREC_BITS - 1))) >> CCTX_PREC_BITS
+        }
+        };
+        let rotated = {
+            #[inline(always)]
+            |group: usize| -> Result<[i32x8<S>; 2]> {
+            let u = dequant(u_params, u_quant, group)?;
+            let v = dequant(v_params, v_quant, group)?;
+            let clip = {
+            #[inline(always)]
+            |sum: i32x8<S>, params| {
+                let bound = clamp_bound(params);
+                round(sum).clamp(-bound, bound - 1)
+            }
+        };
+            Ok([
+                clip(u * cos - v * sin, u_params),
+                clip(u * sin + v * cos, v_params),
+            ])
+        }
+        };
+        let (u_groups, u_half) = u_out.as_chunks_mut::<8>();
+        let (v_groups, v_half) = v_out.as_chunks_mut::<8>();
+        for (group, (u, v)) in u_groups.iter_mut().zip(v_groups.iter_mut()).enumerate() {
+            let [next_u, next_v] = rotated(group)?;
+            *u = next_u.into();
+            *v = next_v.into();
+        }
+        if let (Ok(u), Ok(v)) = (
+            <&mut [i32; 4]>::try_from(u_half),
+            <&mut [i32; 4]>::try_from(v_half),
+        ) {
+            let [next_u, next_v] = rotated(u_groups.len())?;
+            *u = simd.split_i32x8(next_u).0.into();
+            *v = simd.split_i32x8(next_v).0.into();
+        }
+        Ok(())
+    })
 }
 
 /// § 7.14.4 and § 7.14.6 clip coefficients to `±(1 << (BitDepth + 7))`.
@@ -135,7 +149,7 @@ mod tests {
     use super::*;
     use crate::BitDepth;
     use crate::math::round2_signed_i32;
-    use splot_core::simd::{SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdPolicy, resolve_backend};
 
     /// The scalar § 7.14.6 rotation of one dequantized pair: the oracle of
     /// [`pair_groups`].
@@ -145,28 +159,14 @@ mod tests {
             .map(|sum| round2_signed_i32(sum, CCTX_PREC_BITS).clamp(-bound, bound - 1))
     }
 
-    struct Pair<'a>(
-        [&'a DequantBlockParams; 2],
-        [&'a [i32]; 2],
-        [i32; 2],
-        [&'a mut [i32]; 2],
-    );
-
-    impl SimdScope<Result<usize>> for Pair<'_> {
-        fn run<B: SimdBackend>(self, backend: B) -> Result<usize> {
-            dequantize_cctx_pair_with(backend, self.0, self.1, self.2, self.3)
-        }
-    }
-
     fn pair<'a>(
         params: [&'a DequantBlockParams; 2],
         quant: [&'a [i32]; 2],
         rotation: [i32; 2],
         out: [&'a mut [i32]; 2],
     ) -> Result<usize> {
-        resolve_backend(SimdPolicy::Auto)
-            .unwrap()
-            .enter(Pair(params, quant, rotation, out))
+        let backend = resolve_backend(SimdPolicy::Auto).unwrap().backend();
+        dequantize_cctx_pair_with(backend, params, quant, rotation, out)
     }
 
     /// The lane groups must reproduce the per-coefficient oracle exactly for

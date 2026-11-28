@@ -46,7 +46,7 @@ const IBP_INVERSE: [[u16; 16]; 5] = {
 struct BaselineIbpDc;
 
 #[derive(Clone, Copy)]
-struct TypedIbpDc<B: SimdBackend>(B);
+struct TypedIbpDc(SimdBackend);
 
 trait IbpDcRunner: Copy {
     fn ibp_dc<P: IntraLaneSample>(
@@ -75,7 +75,7 @@ impl IbpDcRunner for BaselineIbpDc {
     }
 }
 
-impl<B: SimdBackend> IbpDcRunner for TypedIbpDc<B> {
+impl IbpDcRunner for TypedIbpDc {
     #[inline]
     fn ibp_dc<P: IntraLaneSample>(
         self,
@@ -83,14 +83,12 @@ impl<B: SimdBackend> IbpDcRunner for TypedIbpDc<B> {
         edges: (Option<&[P]>, Option<&[P]>),
         pred: &mut [P],
     ) -> Option<()> {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => ibp_dc_block(simd, block, edges, pred))
+        splot_core::with_simd!(self.0, simd => ibp_dc_block(simd, block, edges, pred))
     }
 
     #[inline]
     fn dc_frame<P: IntraLaneSample>(self, block: DcFrameBlock, samples: &mut [P]) -> Option<()> {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => dc_frame_block(simd, block, samples))
+        splot_core::with_simd!(self.0, simd => dc_frame_block(simd, block, samples))
     }
 }
 
@@ -168,12 +166,12 @@ pub fn predict_intra_ibp_dc_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_ibp_dc_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_ibp_dc_rect_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_ibp_dc_rect_into`].
-pub fn predict_intra_ibp_dc_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_ibp_dc_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraDcEdges<'_, T>,
@@ -232,9 +230,9 @@ pub(crate) fn predict_dc_in_frame<T: ReconSample>(
     predict_dc_in_frame_with_runner(BaselineIbpDc, samples, block)
 }
 
-/// Typed [`predict_dc_in_frame`] using caller-selected `backend`.
-pub(crate) fn predict_dc_in_frame_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+/// [`predict_dc_in_frame`] using caller-selected `backend`.
+pub(crate) fn predict_dc_in_frame_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     block: DcFrameBlock,
 ) -> Result<()> {
@@ -452,17 +450,19 @@ fn ibp_dc_lanes<S: Simd>(
     edge: u16x16<S>,
     inverse: u16x16<S>,
 ) -> u16x16<S> {
-    if wide {
-        return blend_ibp_lanes(
-            simd,
-            true,
-            dc,
-            edge,
-            u16x16::splat(simd, IBP_WEIGHT_MAX) - inverse,
-        );
-    }
-    let base = (dc << u32::from(IBP_WEIGHT_SHIFT)) + (1 << (IBP_WEIGHT_SHIFT - 1));
-    (base + (edge - dc) * inverse) >> u32::from(IBP_WEIGHT_SHIFT)
+    splot_core::in_scope!(simd => {
+        if wide {
+            return blend_ibp_lanes(
+                simd,
+                true,
+                dc,
+                edge,
+                u16x16::splat(simd, IBP_WEIGHT_MAX) - inverse,
+            );
+        }
+        let base = (dc << u32::from(IBP_WEIGHT_SHIFT)) + (1 << (IBP_WEIGHT_SHIFT - 1));
+        (base + (edge - dc) * inverse) >> u32::from(IBP_WEIGHT_SHIFT)
+    })
 }
 
 /// `Round2(pred * weight + edge * (128 - weight), 7)` over 16 lanes, in `u16`
@@ -475,22 +475,24 @@ pub(crate) fn blend_ibp_lanes<S: Simd>(
     edge: u16x16<S>,
     weight: u16x16<S>,
 ) -> u16x16<S> {
-    let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
-    let round = 1 << (IBP_WEIGHT_SHIFT - 1);
-    if !wide {
-        return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
-    }
-    let [
-        (pred_low, pred_high),
-        (edge_low, edge_high),
-        (weight_low, weight_high),
-        (inverse_low, inverse_high),
-    ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
-    let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
-        >> u32::from(IBP_WEIGHT_SHIFT);
-    let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
-        >> u32::from(IBP_WEIGHT_SHIFT);
-    simd.relaxed_narrow_u32x8(low, high)
+    splot_core::in_scope!(simd => {
+        let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
+        let round = 1 << (IBP_WEIGHT_SHIFT - 1);
+        if !wide {
+            return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
+        }
+        let [
+            (pred_low, pred_high),
+            (edge_low, edge_high),
+            (weight_low, weight_high),
+            (inverse_low, inverse_high),
+        ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
+        let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
+            >> u32::from(IBP_WEIGHT_SHIFT);
+        let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
+            >> u32::from(IBP_WEIGHT_SHIFT);
+        simd.relaxed_narrow_u32x8(low, high)
+    })
 }
 
 #[cfg(test)]
@@ -774,103 +776,90 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 4)] {
-                    let size = rect_size(log2_w, log2_h);
-                    let stride = size.width() + 4;
-                    let left8: Vec<u8> = (0..size.height()).map(|i| (i * 29 + 3) as u8).collect();
-                    let above8: Vec<u8> = (0..size.width()).map(|i| (i * 41 + 7) as u8).collect();
-                    let edges8 = IntraDcEdges::new(Some(&left8[..]), Some(&above8[..]));
-                    let mut compat8 = vec![3u8; stride * size.height()];
-                    let mut typed8 = Vec::from(compat8.as_slice());
-                    predict_intra_ibp_dc_rect_into(
-                        BitDepth::Eight,
-                        size,
-                        edges8,
-                        &mut compat8,
-                        stride,
-                    )
+        fn check(backend: SimdBackend) {
+            for (log2_w, log2_h) in [(2, 3), (4, 4), (5, 4)] {
+                let size = rect_size(log2_w, log2_h);
+                let stride = size.width() + 4;
+                let left8: Vec<u8> = (0..size.height()).map(|i| (i * 29 + 3) as u8).collect();
+                let above8: Vec<u8> = (0..size.width()).map(|i| (i * 41 + 7) as u8).collect();
+                let edges8 = IntraDcEdges::new(Some(&left8[..]), Some(&above8[..]));
+                let mut compat8 = vec![3u8; stride * size.height()];
+                let mut typed8 = Vec::from(compat8.as_slice());
+                predict_intra_ibp_dc_rect_into(BitDepth::Eight, size, edges8, &mut compat8, stride)
                     .unwrap();
-                    predict_intra_ibp_dc_rect_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        edges8,
-                        &mut typed8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed8, compat8);
+                predict_intra_ibp_dc_rect_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    edges8,
+                    &mut typed8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let left10: Vec<u16> = (0..size.height())
-                        .map(|i| (i as u16 * 71 + 9) % 1024)
-                        .collect();
-                    let above10: Vec<u16> = (0..size.width())
-                        .map(|i| (i as u16 * 97 + 13) % 1024)
-                        .collect();
-                    let edges10 = IntraDcEdges::new(Some(&left10[..]), Some(&above10[..]));
-                    let mut compat10 = vec![5u16; stride * size.height()];
-                    let mut typed10 = Vec::from(compat10.as_slice());
-                    predict_intra_ibp_dc_rect_into(
-                        BitDepth::Ten,
-                        size,
-                        edges10,
-                        &mut compat10,
-                        stride,
-                    )
+                let left10: Vec<u16> = (0..size.height())
+                    .map(|i| (i as u16 * 71 + 9) % 1024)
+                    .collect();
+                let above10: Vec<u16> = (0..size.width())
+                    .map(|i| (i as u16 * 97 + 13) % 1024)
+                    .collect();
+                let edges10 = IntraDcEdges::new(Some(&left10[..]), Some(&above10[..]));
+                let mut compat10 = vec![5u16; stride * size.height()];
+                let mut typed10 = Vec::from(compat10.as_slice());
+                predict_intra_ibp_dc_rect_into(BitDepth::Ten, size, edges10, &mut compat10, stride)
                     .unwrap();
-                    predict_intra_ibp_dc_rect_into_with(
-                        backend,
-                        BitDepth::Ten,
+                predict_intra_ibp_dc_rect_into_with(
+                    backend,
+                    BitDepth::Ten,
+                    size,
+                    edges10,
+                    &mut typed10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed10, compat10);
+
+                let frame_stride = size.width() + 8;
+                let origin = frame_stride + 1;
+                let len = (size.height() + 2) * frame_stride;
+                for ibp in [false, true] {
+                    let mut frame8_a: Vec<u8> =
+                        (0..len).map(|i| ((i * 19 + 5) % 256) as u8).collect();
+                    let mut frame8_b = Vec::from(frame8_a.as_slice());
+                    let block8 = DcFrameBlock {
                         size,
-                        edges10,
-                        &mut typed10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed10, compat10);
+                        bit_depth: BitDepth::Eight,
+                        origin,
+                        stride: frame_stride,
+                        left: true,
+                        above: true,
+                        ibp,
+                    };
+                    predict_dc_in_frame(&mut frame8_a, block8).unwrap();
+                    predict_dc_in_frame_with(backend, &mut frame8_b, block8).unwrap();
+                    assert_eq!(frame8_b, frame8_a);
 
-                    let frame_stride = size.width() + 8;
-                    let origin = frame_stride + 1;
-                    let len = (size.height() + 2) * frame_stride;
-                    for ibp in [false, true] {
-                        let mut frame8_a: Vec<u8> =
-                            (0..len).map(|i| ((i * 19 + 5) % 256) as u8).collect();
-                        let mut frame8_b = Vec::from(frame8_a.as_slice());
-                        let block8 = DcFrameBlock {
-                            size,
-                            bit_depth: BitDepth::Eight,
-                            origin,
-                            stride: frame_stride,
-                            left: true,
-                            above: true,
-                            ibp,
-                        };
-                        predict_dc_in_frame(&mut frame8_a, block8).unwrap();
-                        predict_dc_in_frame_with(backend, &mut frame8_b, block8).unwrap();
-                        assert_eq!(frame8_b, frame8_a);
-
-                        let mut frame10_a: Vec<u16> =
-                            (0..len).map(|i| ((i * 109 + 11) % 1024) as u16).collect();
-                        let mut frame10_b = Vec::from(frame10_a.as_slice());
-                        let block10 = DcFrameBlock {
-                            bit_depth: BitDepth::Ten,
-                            ..block8
-                        };
-                        predict_dc_in_frame(&mut frame10_a, block10).unwrap();
-                        predict_dc_in_frame_with(backend, &mut frame10_b, block10).unwrap();
-                        assert_eq!(frame10_b, frame10_a);
-                    }
+                    let mut frame10_a: Vec<u16> =
+                        (0..len).map(|i| ((i * 109 + 11) % 1024) as u16).collect();
+                    let mut frame10_b = Vec::from(frame10_a.as_slice());
+                    let block10 = DcFrameBlock {
+                        bit_depth: BitDepth::Ten,
+                        ..block8
+                    };
+                    predict_dc_in_frame(&mut frame10_a, block10).unwrap();
+                    predict_dc_in_frame_with(backend, &mut frame10_b, block10).unwrap();
+                    assert_eq!(frame10_b, frame10_a);
                 }
             }
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

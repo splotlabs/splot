@@ -119,25 +119,30 @@ impl DeblockEdge {
     /// gives them.
     #[inline]
     pub fn from_words<S: Simd>(simd: S, words: [u16x16<S>; 4], out: &mut [Self; 16]) {
-        let [q_thr, side, widths, flags] = words;
-        let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
-        let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
-        let (low, low_high) = simd.interleave_u16x16(q_thr, side);
-        let (high, high_high) = simd.interleave_u16x16(widths, flags & 3);
-        let edges = |low: u16x16<S>, high: u16x16<S>| {
-            let (first, second) = simd.interleave_u32x8(low.bitcast(), high.bitcast());
-            (
-                first.bitcast::<u64x4<S>>().to_array(),
-                second.bitcast::<u64x4<S>>().to_array(),
-            )
+        splot_core::in_scope!(simd => {
+                let [q_thr, side, widths, flags] = words;
+                let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
+                let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
+                let (low, low_high) = simd.interleave_u16x16(q_thr, side);
+                let (high, high_high) = simd.interleave_u16x16(widths, flags & 3);
+                let edges = {
+            #[inline(always)]
+            |low: u16x16<S>, high: u16x16<S>| {
+                    let (first, second) = simd.interleave_u32x8(low.bitcast(), high.bitcast());
+                    (
+                        first.bitcast::<u64x4<S>>().to_array(),
+                        second.bitcast::<u64x4<S>>().to_array(),
+                    )
+                }
         };
-        let (a, b) = edges(low, high);
-        let (c, d) = edges(low_high, high_high);
-        for (out, quad) in out.chunks_exact_mut(4).zip([a, b, c, d]) {
-            for (out, edge) in out.iter_mut().zip(quad) {
-                *out = Self(edge);
-            }
-        }
+                let (a, b) = edges(low, high);
+                let (c, d) = edges(low_high, high_high);
+                for (out, quad) in out.chunks_exact_mut(4).zip([a, b, c, d]) {
+                    for (out, edge) in out.iter_mut().zip(quad) {
+                        *out = Self(edge);
+                    }
+                }
+            });
     }
 
     /// Whether the edge filters nothing.
@@ -207,7 +212,7 @@ const fn chunk_writes(reach: usize) -> usize {
 struct BaselineDeblock;
 
 #[derive(Clone, Copy)]
-struct TypedDeblock<B: SimdBackend>(B);
+struct TypedDeblock(SimdBackend);
 
 trait DeblockRunner: Copy {
     #[cfg(target_arch = "x86_64")]
@@ -245,7 +250,7 @@ impl DeblockRunner for BaselineDeblock {
     }
 }
 
-impl<B: SimdBackend> DeblockRunner for TypedDeblock<B> {
+impl DeblockRunner for TypedDeblock {
     #[cfg(target_arch = "x86_64")]
     #[inline]
     fn avx2_token(self) -> Option<fearless_simd::Avx2> {
@@ -261,8 +266,7 @@ impl<B: SimdBackend> DeblockRunner for TypedDeblock<B> {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => portable_chunk::<_, E, VERTICAL>(
+        splot_core::with_simd!(self.0, simd => portable_chunk::<_, E, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
     }
@@ -297,12 +301,12 @@ pub fn deblock_vertical_edges<T: ReconSample>(
 }
 
 /// Filters vertical edges like [`deblock_vertical_edges`] using the caller's
-/// startup-selected static SIMD backend `backend`.
+/// startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_vertical_edges`].
-pub fn deblock_vertical_edges_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_vertical_edges_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -355,13 +359,13 @@ pub fn deblock_vertical_edge_band<T: ReconSample>(
 }
 
 /// Filters a vertical edge band like [`deblock_vertical_edge_band`] using
-/// the caller's startup-selected static SIMD backend `backend`.
+/// the caller's startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_vertical_edge_band`].
 #[expect(clippy::too_many_arguments)]
-pub fn deblock_vertical_edge_band_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_vertical_edge_band_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -476,12 +480,12 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
 }
 
 /// Filters horizontal edges like [`deblock_horizontal_edges`] using the
-/// caller's startup-selected static SIMD backend `backend`.
+/// caller's startup-selected SIMD backend `backend`.
 ///
 /// # Errors
 /// As [`deblock_horizontal_edges`].
-pub fn deblock_horizontal_edges_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn deblock_horizontal_edges_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     stride: usize,
     first: usize,
@@ -858,32 +862,34 @@ fn portable_chunk<S: Simd, E: EdgeSample, const VERTICAL: bool>(
     edges: &[DeblockEdge; SEGMENTS],
     max_sample: i16,
 ) {
-    let origin = if VERTICAL {
-        first - REACH
-    } else {
-        first - REACH * stride
-    };
-    let Ok(stride) = u32::try_from(stride).map(|stride| stride as usize) else {
-        return;
-    };
-    let Some(samples) = samples.get_mut(origin..) else {
-        return;
-    };
-    if samples.len() < (ROWS - 1) * stride + ROWS {
-        return;
-    }
-    let chunk = (samples, stride, edges, max_sample);
-    match edges
-        .iter()
-        .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
-    {
-        0 => {}
-        1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
-        3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
-        4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
-        6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
-        _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
-    }
+    splot_core::in_scope!(simd => {
+        let origin = if VERTICAL {
+            first - REACH
+        } else {
+            first - REACH * stride
+        };
+        let Ok(stride) = u32::try_from(stride).map(|stride| stride as usize) else {
+            return;
+        };
+        let Some(samples) = samples.get_mut(origin..) else {
+            return;
+        };
+        if samples.len() < (ROWS - 1) * stride + ROWS {
+            return;
+        }
+        let chunk = (samples, stride, edges, max_sample);
+        match edges
+            .iter()
+            .fold(0, |widest, edge| widest.max(edge.max_width_pos()))
+        {
+            0 => {}
+            1 => portable_class::<S, E, VERTICAL, 1>(simd, chunk),
+            3 => portable_class::<S, E, VERTICAL, 3>(simd, chunk),
+            4 => portable_class::<S, E, VERTICAL, 4>(simd, chunk),
+            6 => portable_class::<S, E, VERTICAL, 6>(simd, chunk),
+            _ => portable_class::<S, E, VERTICAL, 8>(simd, chunk),
+        }
+    });
 }
 
 /// [`portable_chunk`] for the window from `s[-8]` of the chunk's first line
@@ -1247,84 +1253,116 @@ mod portable {
         edges: &[DeblockEdge; SEGMENTS],
         widest: usize,
     ) -> Option<(usize, Ramp<S>)> {
-        let packed = edges.map(|edge| edge.0);
-        let (low, high) = (
-            u64x2::from_slice(simd, &packed[..2]).bitcast::<u8x16<S>>(),
-            u64x2::from_slice(simd, &packed[2..]).bitcast::<u8x16<S>>(),
-        );
-        let pick = |pattern: &[u8; 16]| -> i16x8<S> {
-            let pattern = u8x16::from_slice(simd, pattern);
-            simd.concat_swizzle_dyn_u8x16(low, high, pattern).bitcast()
+        splot_core::in_scope!(simd => {
+                let packed = edges.map(|edge| edge.0);
+                let (low, high) = (
+                    u64x2::from_slice(simd, &packed[..2]).bitcast::<u8x16<S>>(),
+                    u64x2::from_slice(simd, &packed[2..]).bitcast::<u8x16<S>>(),
+                );
+                let pick = {
+            #[inline(always)]
+            |pattern: &[u8; 16]| -> i16x8<S> {
+                    let pattern = u8x16::from_slice(simd, pattern);
+                    simd.concat_swizzle_dyn_u8x16(low, high, pattern).bitcast()
+                }
         };
-        let (q, side) = (pick(&field(0, 1)), pick(&field(2, 3)));
-        let (max_pos, max_neg) = (pick(&field(4, 7)), pick(&field(5, 7)));
-        let flags = pick(&field(6, 7));
-        let e = |j: isize| sides[(REACH as isize + j) as usize];
-        let splat = |value: i16| i16x8::splat(simd, value);
-        let zero = splat(0);
-        let count = |mask| simd.select_i16x8(mask, splat(1), zero);
-        let mean = |x: i16x8<S>| {
-            let x = x.bitcast::<u16x8<S>>();
-            ((x + simd.slide_u16x8::<4>(x, x) + 1) >> 1).bitcast::<i16x8<S>>()
+                let (q, side) = (pick(&field(0, 1)), pick(&field(2, 3)));
+                let (max_pos, max_neg) = (pick(&field(4, 7)), pick(&field(5, 7)));
+                let flags = pick(&field(6, 7));
+                let e = {
+            #[inline(always)]
+            |j: isize| sides[(REACH as isize + j) as usize]
         };
-        let second = |a: i16x8<S>, b: i16x8<S>, c: i16x8<S>| mean((a + c - b - b).abs());
-        let (em2, em1, e0, e1) = (e(-2), e(-1), e(0), e(1));
-        let high_deriv = second(e(-3), em2, em1).max(second(e0, e1, e(2)));
-        let one = q.min(side).simd_gt(zero) & high_deriv.simd_le(side);
-        let mut index = count(one);
-        if widest > 1 {
-            let transition = second(em2, em1, e0) + second(em1, e0, e1);
-            let passes = |side_limit: i16x8<S>, q_limit: i16x8<S>| {
-                high_deriv.simd_le(side_limit) & transition.simd_le(q_limit)
-            };
-            let two = one & max_pos.simd_gt(splat(1)) & passes(side >> 2, q << 2);
-            let three = two & passes(side >> 3, q * 3);
-            let toward = |edge: i16x8<S>, inner: i16x8<S>, outer: i16x8<S>, n: i16| {
-                mean((edge - outer - (edge - inner) * n).abs())
-            };
-            let ends = |dist: i16, end: i16x8<S>| {
-                let reach = dist as isize;
-                let neg = max_neg.simd_lt(splat(dist))
-                    | toward(em1, em2, e(-reach - 1), dist).simd_le(end);
-                neg & toward(e0, e1, e(reach), dist).simd_le(end)
-            };
-            let three = three & ends(3, (side * 3) >> 4);
-            index += count(two) + count(three);
-            if widest > 3 {
-                let wide = |previous, dist: i16, q_first: i32, end| {
-                    let q_limit = (q * q_first as i16) >> 4;
-                    previous
-                        & max_pos.simd_ge(splat(dist))
-                        & transition.simd_le(q_limit)
-                        & ends(dist.min(7), end)
-                };
-                let four = wide(three, 4, Q_FIRST[0], side >> 2);
-                index += count(four);
-                if widest > 4 {
-                    let six = wide(four, 6, Q_FIRST[2], (side * 6) >> 4);
-                    index += count(six);
-                    if widest > 6 {
-                        index += count(wide(six, 8, Q_FIRST[4], side >> 1));
+                let splat = {
+            #[inline(always)]
+            |value: i16| i16x8::splat(simd, value)
+        };
+                let zero = splat(0);
+                let count = {
+            #[inline(always)]
+            |mask| simd.select_i16x8(mask, splat(1), zero)
+        };
+                let mean = {
+            #[inline(always)]
+            |x: i16x8<S>| {
+                    let x = x.bitcast::<u16x8<S>>();
+                    ((x + simd.slide_u16x8::<4>(x, x) + 1) >> 1).bitcast::<i16x8<S>>()
+                }
+        };
+                let second = {
+            #[inline(always)]
+            |a: i16x8<S>, b: i16x8<S>, c: i16x8<S>| mean((a + c - b - b).abs())
+        };
+                let (em2, em1, e0, e1) = (e(-2), e(-1), e(0), e(1));
+                let high_deriv = second(e(-3), em2, em1).max(second(e0, e1, e(2)));
+                let one = q.min(side).simd_gt(zero) & high_deriv.simd_le(side);
+                let mut index = count(one);
+                if widest > 1 {
+                    let transition = second(em2, em1, e0) + second(em1, e0, e1);
+                    let passes = {
+            #[inline(always)]
+            |side_limit: i16x8<S>, q_limit: i16x8<S>| {
+                        high_deriv.simd_le(side_limit) & transition.simd_le(q_limit)
+                    }
+        };
+                    let two = one & max_pos.simd_gt(splat(1)) & passes(side >> 2, q << 2);
+                    let three = two & passes(side >> 3, q * 3);
+                    let toward = {
+            #[inline(always)]
+            |edge: i16x8<S>, inner: i16x8<S>, outer: i16x8<S>, n: i16| {
+                        mean((edge - outer - (edge - inner) * n).abs())
+                    }
+        };
+                    let ends = {
+            #[inline(always)]
+            |dist: i16, end: i16x8<S>| {
+                        let reach = dist as isize;
+                        let neg = max_neg.simd_lt(splat(dist))
+                            | toward(em1, em2, e(-reach - 1), dist).simd_le(end);
+                        neg & toward(e0, e1, e(reach), dist).simd_le(end)
+                    }
+        };
+                    let three = three & ends(3, (side * 3) >> 4);
+                    index += count(two) + count(three);
+                    if widest > 3 {
+                        let wide = {
+            #[inline(always)]
+            |previous, dist: i16, q_first: i32, end| {
+                            let q_limit = (q * q_first as i16) >> 4;
+                            previous
+                                & max_pos.simd_ge(splat(dist))
+                                & transition.simd_le(q_limit)
+                                & ends(dist.min(7), end)
+                        }
+        };
+                        let four = wide(three, 4, Q_FIRST[0], side >> 2);
+                        index += count(four);
+                        if widest > 4 {
+                            let six = wide(four, 6, Q_FIRST[2], (side * 6) >> 4);
+                            index += count(six);
+                            if widest > 6 {
+                                index += count(wide(six, 8, Q_FIRST[4], side >> 1));
+                            }
+                        }
                     }
                 }
-            }
-        }
-        let widest = simd.reduce_max_i16x8(index);
-        if widest <= 0 {
-            return None;
-        }
-        let neg_cap = max_neg - count(max_neg.simd_gt(splat(4))) - count(max_neg.simd_gt(splat(6)));
-        let keep =
-            |index: i16x8<S>, bit: i16| simd.select_i16x8((flags & bit).simd_eq(zero), index, zero);
-        let (pos, neg) = (keep(index, 2), keep(index.min(neg_cap), 1));
-        let ramp = Ramp([
-            q * lookup(simd, &CLAMP, index),
-            lookup(simd, &START, pos),
-            lookup(simd, &STEP, pos),
-            lookup(simd, &START, neg),
-            lookup(simd, &STEP, neg),
-        ]);
-        Some((WIDTHS[widest as usize], ramp))
+                let widest = simd.reduce_max_i16x8(index);
+                if widest <= 0 {
+                    return None;
+                }
+                let neg_cap = max_neg - count(max_neg.simd_gt(splat(4))) - count(max_neg.simd_gt(splat(6)));
+                let keep =
+                    |index: i16x8<S>, bit: i16| simd.select_i16x8((flags & bit).simd_eq(zero), index, zero);
+                let (pos, neg) = (keep(index, 2), keep(index.min(neg_cap), 1));
+                let ramp = Ramp([
+                    q * lookup(simd, &CLAMP, index),
+                    lookup(simd, &START, pos),
+                    lookup(simd, &STEP, pos),
+                    lookup(simd, &START, neg),
+                    lookup(simd, &STEP, neg),
+                ]);
+                Some((WIDTHS[widest as usize], ramp))
+            })
     }
 
     /// Filters the lines of `N` halves whose sample rows across the edge are

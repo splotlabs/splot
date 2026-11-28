@@ -341,8 +341,8 @@ fn output_interpolation_filter(
     }
 }
 
-pub(super) fn prepare_motion_field<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn prepare_motion_field(
+    backend: splot_core::simd::SimdBackend,
     temporal: &mut TemporalMvContext,
     core: &FrameHeaderCore,
     sb_h4: usize,
@@ -704,8 +704,8 @@ fn batch_candidates(
 /// with. A compound block goes through the plane pass of [`mc::predict_tip_units`];
 /// a single-reference block (§ 7.13.3.1 weight 16) puts each unit.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn predict_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn predict_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut TipReconstructScratch,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     mut records: Option<&mut Vec<TemporalMotionBlock>>,
@@ -839,11 +839,8 @@ const TIP_OUTPUT_BAND_LUMA_ROWS: usize = 64;
 const TIP_OUTPUT_BAND_LUMA_COLS: usize = 256;
 
 #[expect(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn reconstruct_output<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     decode_scratch: &mut super::InterDecodeScratch<T>,
     mut recycled: splot_recon::FramePlaneSamples<T>,
     sequence: &SequenceHeader,
@@ -862,7 +859,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<
     );
     let progress = Arc::new(
         crate::pipeline::frame_progress::FrameProgress::from_workspace(
-            CurrentFrameWorkspace::<T>::new_recycled_from(geometry.info(), &mut recycled)?,
+            CurrentFrameWorkspace::<T>::new_recycled_from(
+                geometry.info(),
+                decode_scratch.kernels(),
+                &mut recycled,
+            )?,
             None,
         )?,
     );
@@ -929,8 +930,8 @@ impl<T: ReconSample> TipOutputStages<T> {
     /// # Errors
     /// Returns the header, projection or workspace diagnostic.
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn init<B: splot_core::simd::SimdBackend>(
-        backend: B,
+    pub(crate) fn init(
+        backend: splot_core::simd::SimdBackend,
         spares: &TipSpares,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: &SequenceHeader,
@@ -1153,9 +1154,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the projection's own diagnostic.
-    pub(crate) fn project<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn project(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         core: &FrameHeaderCore,
         reference: &InterReferenceState<T>,
@@ -1214,9 +1215,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     ///
     /// # Errors
     /// Returns the prediction's own diagnostic.
-    pub(crate) fn band<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn band(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         index: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
@@ -1241,7 +1242,12 @@ impl<T: ReconSample> TipOutputStages<T> {
                 (plane.samples_mut(), stride)
             })
         });
-        let mut surface = splot_recon::CurrentFrameRect::from_bands(self.info, rect, [y, u, v])?;
+        let mut surface = splot_recon::CurrentFrameRect::from_bands(
+            self.info,
+            self.progress.kernels(),
+            rect,
+            [y, u, v],
+        )?;
         let mut sink = CurrentFrameSurface::Rect(&mut surface);
         self.predict_band(
             backend, &mut band, rect, &mut sink, sequence, core, reference,
@@ -1272,9 +1278,9 @@ impl<T: ReconSample> TipOutputStages<T> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn predict_band<B: splot_core::simd::SimdBackend>(
+    fn predict_band(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         band: &mut TipOutputBand,
         rect: splot_recon::PlaneRect,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -1350,8 +1356,8 @@ impl<T: ReconSample> TipOutputStages<T> {
 ///
 /// # Errors
 /// Returns the deblock diagnostic.
-pub(crate) fn deblock_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn deblock_output<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,

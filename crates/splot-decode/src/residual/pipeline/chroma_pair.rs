@@ -39,8 +39,8 @@ pub(super) fn cctx_allowed(plane: &ResidualPlanePlan, frame: FrameTileCtx) -> bo
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn reconstruct_chroma_pair_or_planes<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
+    backend: SimdBackend,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -126,8 +126,8 @@ pub(super) fn reconstruct_chroma_pair_or_planes<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_cfl_pair<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_cfl_pair<T: ReconSample>(
+    backend: SimdBackend,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -189,8 +189,8 @@ fn reconstruct_cfl_pair<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_chroma_cctx_pair<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_chroma_cctx_pair<T: ReconSample>(
+    backend: SimdBackend,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,

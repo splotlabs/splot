@@ -100,7 +100,7 @@ impl<'a, T: ReconSample> IntraDipEdges<'a, T> {
 struct BaselineDip;
 
 #[derive(Clone, Copy)]
-struct TypedDip<B: SimdBackend>(B);
+struct TypedDip(SimdBackend);
 
 trait DipRunner: Copy {
     fn predict<P: IntraLaneSample>(
@@ -131,7 +131,7 @@ impl DipRunner for BaselineDip {
     }
 }
 
-impl<B: SimdBackend> DipRunner for TypedDip<B> {
+impl DipRunner for TypedDip {
     #[inline]
     fn predict<P: IntraLaneSample>(
         self,
@@ -142,8 +142,7 @@ impl<B: SimdBackend> DipRunner for TypedDip<B> {
         above: &[P],
         output: &mut [P],
     ) -> Option<()> {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => {
+        splot_core::with_simd!(self.0, simd => {
             predict_dip_samples(simd, block, features, rows, left, above, output)
         })
     }
@@ -262,13 +261,13 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     )
 }
 
-/// Typed [`predict_intra_dip_rect_into`] using caller-selected `backend`.
+/// [`predict_intra_dip_rect_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`predict_intra_dip_rect_into`].
 #[expect(clippy::too_many_arguments)]
-pub fn predict_intra_dip_rect_into_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn predict_intra_dip_rect_into_with<T: ReconSample>(
+    backend: SimdBackend,
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
     dip_mode: usize,
@@ -306,14 +305,16 @@ fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
     above: &[P],
     output: &mut [P],
 ) -> Option<()> {
-    let inputs = (features, rows, left, above);
-    match block.size.log2_width() {
-        2 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
-        3 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
-        4 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
-        5 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
-        _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
-    }
+    splot_core::in_scope!(simd => {
+        let inputs = (features, rows, left, above);
+        match block.size.log2_width() {
+            2 => dip_bands::<S, P, 4, 1>(simd, block, inputs, output),
+            3 => dip_bands::<S, P, 8, 1>(simd, block, inputs, output),
+            4 => dip_bands::<S, P, 16, 1>(simd, block, inputs, output),
+            5 => dip_bands::<S, P, 32, 2>(simd, block, inputs, output),
+            _ => dip_bands::<S, P, 64, 4>(simd, block, inputs, output),
+        }
+    })
 }
 
 fn validate_dip_edges<T: ReconSample>(
@@ -878,79 +879,78 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_route() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                for (log2_w, log2_h) in [(2, 2), (3, 4), (4, 3)] {
-                    let size = rect_size(log2_w, log2_h);
-                    let stride = size.width() + 4;
-                    let left8: Vec<u8> = (0..=size.height()).map(|i| (i * 31) as u8).collect();
-                    let above8: Vec<u8> = (0..=size.width()).map(|i| (i * 43) as u8).collect();
-                    let edges8 = IntraDipEdges::new(&left8[..], &above8[..], 80);
-                    let mut compat8 = vec![5u8; stride * size.height()];
-                    let mut typed8 = Vec::from(compat8.as_slice());
-                    predict_intra_dip_rect_into(
-                        BitDepth::Eight,
-                        size,
-                        2,
-                        false,
-                        edges8,
-                        &mut compat8,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_dip_rect_into_with(
-                        backend,
-                        BitDepth::Eight,
-                        size,
-                        2,
-                        false,
-                        edges8,
-                        &mut typed8,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed8, compat8);
+        fn check(backend: SimdBackend) {
+            for (log2_w, log2_h) in [(2, 2), (3, 4), (4, 3)] {
+                let size = rect_size(log2_w, log2_h);
+                let stride = size.width() + 4;
+                let left8: Vec<u8> = (0..=size.height()).map(|i| (i * 31) as u8).collect();
+                let above8: Vec<u8> = (0..=size.width()).map(|i| (i * 43) as u8).collect();
+                let edges8 = IntraDipEdges::new(&left8[..], &above8[..], 80);
+                let mut compat8 = vec![5u8; stride * size.height()];
+                let mut typed8 = Vec::from(compat8.as_slice());
+                predict_intra_dip_rect_into(
+                    BitDepth::Eight,
+                    size,
+                    2,
+                    false,
+                    edges8,
+                    &mut compat8,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_dip_rect_into_with(
+                    backend,
+                    BitDepth::Eight,
+                    size,
+                    2,
+                    false,
+                    edges8,
+                    &mut typed8,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed8, compat8);
 
-                    let left10: Vec<u16> = (0..=size.height())
-                        .map(|i| ((i * 67) % 1024) as u16)
-                        .collect();
-                    let above10: Vec<u16> = (0..=size.width())
-                        .map(|i| ((i * 89) % 1024) as u16)
-                        .collect();
-                    let edges10 = IntraDipEdges::new(&left10[..], &above10[..], 512);
-                    let mut compat10 = vec![9u16; stride * size.height()];
-                    let mut typed10 = Vec::from(compat10.as_slice());
-                    predict_intra_dip_rect_into(
-                        BitDepth::Ten,
-                        size,
-                        4,
-                        true,
-                        edges10,
-                        &mut compat10,
-                        stride,
-                    )
-                    .unwrap();
-                    predict_intra_dip_rect_into_with(
-                        backend,
-                        BitDepth::Ten,
-                        size,
-                        4,
-                        true,
-                        edges10,
-                        &mut typed10,
-                        stride,
-                    )
-                    .unwrap();
-                    assert_eq!(typed10, compat10);
-                }
+                let left10: Vec<u16> = (0..=size.height())
+                    .map(|i| ((i * 67) % 1024) as u16)
+                    .collect();
+                let above10: Vec<u16> = (0..=size.width())
+                    .map(|i| ((i * 89) % 1024) as u16)
+                    .collect();
+                let edges10 = IntraDipEdges::new(&left10[..], &above10[..], 512);
+                let mut compat10 = vec![9u16; stride * size.height()];
+                let mut typed10 = Vec::from(compat10.as_slice());
+                predict_intra_dip_rect_into(
+                    BitDepth::Ten,
+                    size,
+                    4,
+                    true,
+                    edges10,
+                    &mut compat10,
+                    stride,
+                )
+                .unwrap();
+                predict_intra_dip_rect_into_with(
+                    backend,
+                    BitDepth::Ten,
+                    size,
+                    4,
+                    true,
+                    edges10,
+                    &mut typed10,
+                    stride,
+                )
+                .unwrap();
+                assert_eq!(typed10, compat10);
             }
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

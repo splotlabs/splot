@@ -37,10 +37,11 @@ impl CdefPairSegment {
     }
 
     /// Variant of [`Self::gather_bytes`] using the caller's startup-selected
-    /// static SIMD backend `backend`.
-    pub fn gather_bytes_with<B: SimdBackend>(
+    /// SIMD backend `backend`.
+    #[inline]
+    pub fn gather_bytes_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         u: &[u8],
         v: &[u8],
         width: usize,

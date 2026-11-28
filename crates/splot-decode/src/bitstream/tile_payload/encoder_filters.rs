@@ -686,46 +686,21 @@ pub fn apply_loop_filters(
     let (grid, reference) = GdfFlags::decoder_inputs(gdf, seq, core)?;
     sink.set_gdf_grid(grid);
     sink.set_gdf_reference_context(reference);
-    {
-        struct Scope {
-            sink: crate::filters::wienerns_lr::recon::WienerNsLrReconSink<u16>,
-            core: Arc<FrameHeaderCore>,
-            disable_loopfilters_across_tiles: bool,
-            deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
-            rule_ctx: &'static str,
-        }
-        impl splot_core::simd::SimdScope<Result<DecodedFrame<u16>>> for Scope {
-            fn run<B: splot_core::simd::SimdBackend>(
-                self,
-                backend: B,
-            ) -> Result<DecodedFrame<u16>> {
-                self.sink
-                    .into_filtered_frame(
-                        backend.narrow(),
-                        self.core,
-                        self.disable_loopfilters_across_tiles,
-                        self.deblock_quant_deltas,
-                        None,
-                    )
-                    .and_then(|(filtered, _)| {
-                        filtered
-                            .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
-                    })
-                    .map_err(rule(self.rule_ctx))
-            }
-        }
-        splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
-            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?
-            .enter(Scope {
-                sink,
-                core: Arc::new(core.clone()),
-                disable_loopfilters_across_tiles: seq
-                    .filter
-                    .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-                deblock_quant_deltas: crate::pipeline::deblock_quant_deltas(seq, core),
-                rule_ctx: "loop filters",
-            })
-    }
+    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
+        .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?
+        .backend();
+    sink.into_filtered_frame(
+        backend,
+        Arc::new(core.clone()),
+        seq.filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+        crate::pipeline::deblock_quant_deltas(seq, core),
+        None,
+    )
+    .and_then(|(filtered, _)| {
+        filtered.ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)
+    })
+    .map_err(rule("loop filters"))
 }
 
 /// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when

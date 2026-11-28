@@ -550,9 +550,9 @@ impl ParsedGeneralIntraResidual {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(crate) fn reconstruct<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         arena: &mut ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -685,9 +685,9 @@ impl ParsedResidualPlane {
     }
 
     #[expect(clippy::too_many_arguments)]
-    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(super) fn reconstruct<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         frame: FrameTileCtx,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -780,8 +780,8 @@ impl ParsedResidualPlane {
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_chroma_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_chroma_pair<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -816,8 +816,8 @@ fn reconstruct_chroma_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_deferred_planes<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_deferred_planes<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     frame: FrameTileCtx,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,

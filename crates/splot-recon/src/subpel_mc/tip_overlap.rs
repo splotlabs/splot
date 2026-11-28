@@ -46,12 +46,12 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
     predict_12x12_overlap(BaselineSubpel, reference, params, output, stride, carry)
 }
 
-/// Typed [`subpel_predict_12x12_bilinear_overlap_into`] using caller-selected `backend`.
+/// [`subpel_predict_12x12_bilinear_overlap_into`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same errors as [`subpel_predict_12x12_bilinear_overlap_into`].
-pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn subpel_predict_12x12_bilinear_overlap_into_with<'a, T: ReconSample>(
+    backend: SimdBackend,
     reference: &ReferencePlaneView<'a, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],

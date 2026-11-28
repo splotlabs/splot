@@ -20,8 +20,8 @@ use crate::bitstream::tile_payload::{
 use crate::pipeline::reconstruct::*;
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_chroma_block_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
+    backend: SimdBackend,
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
@@ -274,8 +274,8 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<B: SimdBackend, T: Rec
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_directional_first_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     mode: SupportedDirectionalLumaMode,
@@ -309,11 +309,8 @@ fn reconstruct_general_intra_chroma_directional_first_into<B: SimdBackend, T: Re
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<
-    B: SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,
@@ -351,8 +348,8 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<
 }
 
 #[expect(clippy::too_many_arguments)]
-fn reconstruct_general_intra_chroma_smooth_into<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: CoeffBlock<'_>,
     plane_id: PlaneId,

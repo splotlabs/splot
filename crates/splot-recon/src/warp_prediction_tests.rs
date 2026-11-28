@@ -1400,84 +1400,82 @@ fn ten_bit_sheared_sections_match_the_spec_trace() {
 
 #[test]
 fn typed_backend_matches_compatibility_routes() {
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-    struct Check;
-    impl SimdScope<()> for Check {
-        fn run<B: SimdBackend>(self, backend: B) {
-            let (ref_w, ref_h) = (64usize, 64usize);
-            let samples8: Vec<u8> = build_ref(ref_w, ref_h)
-                .into_iter()
-                .map(|v| v as u8)
-                .collect();
-            let samples10: Vec<u16> = (0..ref_w * ref_h)
-                .map(|i| ((i * 71 + (i / ref_w) * 19 + 5) % 1024) as u16)
-                .collect();
-            let view8 = ReferencePlaneView::new(&samples8, ref_w, ref_h).unwrap();
-            let view10 = ReferencePlaneView::new(&samples10, ref_w, ref_h).unwrap();
+    fn check(backend: SimdBackend) {
+        let (ref_w, ref_h) = (64usize, 64usize);
+        let samples8: Vec<u8> = build_ref(ref_w, ref_h)
+            .into_iter()
+            .map(|v| v as u8)
+            .collect();
+        let samples10: Vec<u16> = (0..ref_w * ref_h)
+            .map(|i| ((i * 71 + (i / ref_w) * 19 + 5) % 1024) as u16)
+            .collect();
+        let view8 = ReferencePlaneView::new(&samples8, ref_w, ref_h).unwrap();
+        let view10 = ReferencePlaneView::new(&samples10, ref_w, ref_h).unwrap();
 
-            let unit = 1 << WARPEDMODEL_PREC_BITS;
-            let mut params8 = default_params(16, 16, ref_w as i32, ref_h as i32);
-            params8.warp_params = [4 << 16, -2 << 16, unit + 1200, -700, 650, unit - 900];
-            assert_eq!(
-                warp_predict_block_with(backend, &view8, &params8, false).unwrap(),
-                warp_predict_block(&view8, &params8, false).unwrap(),
-            );
+        let unit = 1 << WARPEDMODEL_PREC_BITS;
+        let mut params8 = default_params(16, 16, ref_w as i32, ref_h as i32);
+        params8.warp_params = [4 << 16, -2 << 16, unit + 1200, -700, 650, unit - 900];
+        assert_eq!(
+            warp_predict_block_with(backend, &view8, &params8, false).unwrap(),
+            warp_predict_block(&view8, &params8, false).unwrap(),
+        );
 
-            let prepared8 = PreparedWarpPrediction::new(&params8).unwrap();
-            let mut blk_compat = [0i32; 64];
-            let mut blk_typed = [0i32; 64];
-            prepared8
-                .predict_block_into(&view8, 16, 16, true, &mut blk_compat)
-                .unwrap();
-            prepared8
-                .predict_block_into_with(backend, &view8, 16, 16, true, &mut blk_typed)
-                .unwrap();
-            assert_eq!(blk_typed, blk_compat);
+        let prepared8 = PreparedWarpPrediction::new(&params8).unwrap();
+        let mut blk_compat = [0i32; 64];
+        let mut blk_typed = [0i32; 64];
+        prepared8
+            .predict_block_into(&view8, 16, 16, true, &mut blk_compat)
+            .unwrap();
+        prepared8
+            .predict_block_into_with(backend, &view8, 16, 16, true, &mut blk_typed)
+            .unwrap();
+        assert_eq!(blk_typed, blk_compat);
 
-            let mut out8_compat = vec![17u8; 32 * 24];
-            let mut out8_typed = Vec::from(out8_compat.as_slice());
-            prepared8
-                .predict_clipped_into(&view8, [16, 16, 16, 16], &mut out8_compat, 32)
-                .unwrap();
-            prepared8
-                .predict_clipped_into_with(backend, &view8, [16, 16, 16, 16], &mut out8_typed, 32)
-                .unwrap();
-            assert_eq!(out8_typed, out8_compat);
+        let mut out8_compat = vec![17u8; 32 * 24];
+        let mut out8_typed = Vec::from(out8_compat.as_slice());
+        prepared8
+            .predict_clipped_into(&view8, [16, 16, 16, 16], &mut out8_compat, 32)
+            .unwrap();
+        prepared8
+            .predict_clipped_into_with(backend, &view8, [16, 16, 16, 16], &mut out8_typed, 32)
+            .unwrap();
+        assert_eq!(out8_typed, out8_compat);
 
-            let mut params10 = default_params(8, 8, ref_w as i32, ref_h as i32);
-            params10.bit_depth = BitDepth::Ten;
-            params10.warp_params = [2 << 16, 3 << 16, unit, 0, 0, unit];
-            let prepared10 = PreparedWarpPrediction::new(&params10).unwrap();
-            let mut out10_compat = vec![9u16; 24 * 16];
-            let mut out10_typed = Vec::from(out10_compat.as_slice());
-            prepared10
-                .predict_clipped_into(&view10, [8, 8, 16, 16], &mut out10_compat, 24)
-                .unwrap();
-            prepared10
-                .predict_clipped_into_with(backend, &view10, [8, 8, 16, 16], &mut out10_typed, 24)
-                .unwrap();
-            assert_eq!(out10_typed, out10_compat);
+        let mut params10 = default_params(8, 8, ref_w as i32, ref_h as i32);
+        params10.bit_depth = BitDepth::Ten;
+        params10.warp_params = [2 << 16, 3 << 16, unit, 0, 0, unit];
+        let prepared10 = PreparedWarpPrediction::new(&params10).unwrap();
+        let mut out10_compat = vec![9u16; 24 * 16];
+        let mut out10_typed = Vec::from(out10_compat.as_slice());
+        prepared10
+            .predict_clipped_into(&view10, [8, 8, 16, 16], &mut out10_compat, 24)
+            .unwrap();
+        prepared10
+            .predict_clipped_into_with(backend, &view10, [8, 8, 16, 16], &mut out10_typed, 24)
+            .unwrap();
+        assert_eq!(out10_typed, out10_compat);
 
-            let mut p10_compat = [0i32; 64];
-            let mut p10_typed = [0i32; 64];
-            warp_predict_block_into(&view10, &params10, true, &mut p10_compat).unwrap();
-            warp_predict_block_into_with(backend, &view10, &params10, true, &mut p10_typed)
-                .unwrap();
-            assert_eq!(p10_typed, p10_compat);
+        let mut p10_compat = [0i32; 64];
+        let mut p10_typed = [0i32; 64];
+        warp_predict_block_into(&view10, &params10, true, &mut p10_compat).unwrap();
+        warp_predict_block_into_with(backend, &view10, &params10, true, &mut p10_typed).unwrap();
+        assert_eq!(p10_typed, p10_compat);
 
-            assert_eq!(
-                ext_warp_predict_unit_with(backend, &view8, &params8, 0, 0, false).unwrap(),
-                ext_warp_predict_unit(&view8, &params8, 0, 0, false).unwrap(),
-            );
-            assert_eq!(
-                ext_warp_predict_unit_with(backend, &view10, &params10, 4, 4, true).unwrap(),
-                ext_warp_predict_unit(&view10, &params10, 4, 4, true).unwrap(),
-            );
-        }
+        assert_eq!(
+            ext_warp_predict_unit_with(backend, &view8, &params8, 0, 0, false).unwrap(),
+            ext_warp_predict_unit(&view8, &params8, 0, 0, false).unwrap(),
+        );
+        assert_eq!(
+            ext_warp_predict_unit_with(backend, &view10, &params10, 4, 4, true).unwrap(),
+            ext_warp_predict_unit(&view10, &params10, 4, 4, true).unwrap(),
+        );
     }
 
-    resolve_backend(SimdPolicy::Auto)
-        .expect("auto backend")
-        .enter(Check);
+    check(
+        resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .backend(),
+    );
 }

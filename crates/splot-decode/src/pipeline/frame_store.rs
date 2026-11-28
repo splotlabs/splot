@@ -115,6 +115,8 @@ pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
     /// Immutable concrete SIMD backend validated when the session opened.
     backend: splot_core::simd::ResolvedBackend,
+    /// The kernels that backend selected beyond its level.
+    kernels: splot_recon::KernelSelection,
     /// The row scheduler of a multi-threaded context, which the split inter
     /// frames run on.
     rows: Option<Arc<DecoderRowScheduler>>,
@@ -148,6 +150,7 @@ impl DecodeSession {
             #[cfg(feature = "block-evidence")]
             block_evidence: None,
             backend,
+            kernels: splot_recon::KernelSelection::of(backend),
             rows,
             retained: Mutex::new(None),
             detach_held: false,
@@ -186,6 +189,11 @@ impl DecodeSession {
         self.backend
     }
 
+    /// The kernels the session's backend selected beyond its level.
+    pub(crate) const fn kernels(&self) -> splot_recon::KernelSelection {
+        self.kernels
+    }
+
     /// The row scheduler, or `None` when the decode runs on one thread.
     pub(crate) fn rows(&self) -> Option<&DecoderRowScheduler> {
         self.rows.as_deref()
@@ -216,7 +224,7 @@ impl DecodeSession {
             {
                 retained
             }
-            _ => RetainedDecode::new(depth, width),
+            _ => RetainedDecode::new(depth, width, self.kernels),
         };
         retained.frames.detach_held = self.detach_held;
         *self.planes.lock() = Some(Arc::clone(retained.ring.planes()));
@@ -239,8 +247,8 @@ pub(super) struct RetainedDecode {
 }
 
 impl RetainedDecode {
-    fn new(depth: NonZeroUsize, width: usize) -> Self {
-        let buffers = DecodeBuffers::new();
+    fn new(depth: NonZeroUsize, width: usize, kernels: splot_recon::KernelSelection) -> Self {
+        let buffers = DecodeBuffers::with_kernels(kernels);
         Self {
             width,
             pools: RowPools::new(depth.get(), width, &buffers),
@@ -439,5 +447,25 @@ impl FrameEntry {
                 .as_mut()
                 .is_none_or(MotionFieldHandle::try_retire)
             && self.products.as_ref().is_none_or(FrameProducts::can_reuse)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use splot_core::simd::{SimdPolicy, resolve_backend};
+
+    /// A decode's buffers carry the kernels its session's policy selected.
+    #[test]
+    fn retained_decode_carries_the_session_kernel_selection() {
+        for policy in [SimdPolicy::Auto, SimdPolicy::Avx2, SimdPolicy::Avx512] {
+            let Ok(backend) = resolve_backend(policy) else {
+                continue;
+            };
+            let session = DecodeSession::new(NonZeroUsize::MIN, None, backend);
+            let retained = session.take(NonZeroUsize::MIN);
+            let selected = splot_recon::KernelSelection::of(backend);
+            assert_eq!(retained.ring.kernels(), selected, "{policy:?}");
+        }
     }
 }

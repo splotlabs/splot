@@ -44,9 +44,7 @@ use crate::ReconSample;
 use splot_core::simd::SimdBackend;
 
 mod direction_backend;
-pub use direction_backend::{
-    CdefDirectionBackend, cdef_direction_padded_with, cdef_direction_padded_with_backend,
-};
+pub use direction_backend::cdef_direction_padded_with;
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
 const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
@@ -139,10 +137,26 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     };
     // 8-bit rows skip the shift: a register-count shift is two micro-ops.
     if coeff_shift == 0 {
-        core::array::from_fn(|i| row(i).bitcast::<i16x8<S>>() - 128)
+        eight_rows(|i| row(i).bitcast::<i16x8<S>>() - 128)
     } else {
-        core::array::from_fn(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
+        eight_rows(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
     }
+}
+
+/// `[row(0), .., row(7)]` unrolled: the inliner left `core::array::from_fn` out of line.
+#[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
+#[inline(always)]
+fn eight_rows<T>(row: impl Fn(usize) -> T) -> [T; 8] {
+    [
+        row(0),
+        row(1),
+        row(2),
+        row(3),
+        row(4),
+        row(5),
+        row(6),
+        row(7),
+    ]
 }
 
 #[expect(clippy::inline_always, reason = "measured CDEF direction hot path")]
@@ -1365,8 +1379,8 @@ pub fn cdef_filter_block_interior_to_valid_stride<T: ReconSample>(
 
 /// Variant of [`cdef_filter_block_interior_to_valid_stride`] using `backend`.
 #[doc(hidden)]
-pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn cdef_filter_block_interior_to_valid_stride_with<T: ReconSample>(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
@@ -1374,8 +1388,7 @@ pub fn cdef_filter_block_interior_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_to_valid_stride_simd::<_, T, false>(
             simd, pad, w, h, filter, out, out_stride,
         )
@@ -1400,8 +1413,8 @@ pub fn cdef_filter_block_boundary_to_valid_stride<T: ReconSample>(
 
 /// Variant of [`cdef_filter_block_boundary_to_valid_stride`] using `backend`.
 #[doc(hidden)]
-pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn cdef_filter_block_boundary_to_valid_stride_with<T: ReconSample>(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
@@ -1409,8 +1422,7 @@ pub fn cdef_filter_block_boundary_to_valid_stride_with<B: SimdBackend, T: ReconS
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_to_valid_stride_simd::<_, T, true>(
             simd, pad, w, h, filter, out, out_stride,
         )
@@ -1445,29 +1457,31 @@ fn cdef_filter_block_to_valid_stride_simd<
     out: &mut [T],
     out_stride: usize,
 ) -> bool {
-    const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
-    let (w, h) = (w.min(8), h.min(8));
-    let mut block = [0u16; 64];
-    let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
-    if w == 0
-        || cdef_filter_block_rows::<
-            _,
-            _,
-            8,
-            HAS_UNAVAILABLE,
-            CDEF_PADDED_SIDE,
-            2,
-            8,
-            SPAN,
-            CDEF_PADDED_AREA,
-        >(simd, args)
-        .is_none()
-    {
-        return false;
-    }
-    let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
-    let size = (w, h, unfiltered);
-    cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    splot_core::in_scope!(simd => {
+        const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
+        let (w, h) = (w.min(8), h.min(8));
+        let mut block = [0u16; 64];
+        let args = (pad, h, filter, &CDEF_TAP_STARTS, &mut block[..], 8);
+        if w == 0
+            || cdef_filter_block_rows::<
+                _,
+                _,
+                8,
+                HAS_UNAVAILABLE,
+                CDEF_PADDED_SIDE,
+                2,
+                8,
+                SPAN,
+                CDEF_PADDED_AREA,
+            >(simd, args)
+            .is_none()
+        {
+            return false;
+        }
+        let unfiltered = filter.pri_str == 0 && filter.sec_str == 0;
+        let size = (w, h, unfiltered);
+        cdef_publish_block(simd, &block, size, out, out_stride).is_some()
+    })
 }
 
 /// Writes the first `w` lanes of the first `h` rows of `block` to `out`, rows
@@ -1481,25 +1495,27 @@ fn cdef_publish_block<S: SimdToken, T: ReconSample>(
     out: &mut [T],
     out_stride: usize,
 ) -> Option<()> {
-    for (row, lanes) in block.as_chunks::<8>().0.iter().enumerate().take(h) {
-        let start = row.checked_mul(out_stride)?;
-        if let Some(out) = T::u8_slice_mut(&mut *out) {
-            let mut lanes = u16x8::load_array(simd, *lanes);
-            if unfiltered {
-                let group = u16x8::splat(simd, if w == 4 { 4 } else { 8 });
-                let lane = u16x8::load_array(simd, [0, 1, 2, 3, 4, 5, 6, 7]);
-                lanes = lane.simd_lt(group).select(lanes, u16x8::splat(simd, 0));
-                if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
-                    return None;
+    splot_core::in_scope!(simd => {
+        for (row, lanes) in block.as_chunks::<8>().0.iter().enumerate().take(h) {
+            let start = row.checked_mul(out_stride)?;
+            if let Some(out) = T::u8_slice_mut(&mut *out) {
+                let mut lanes = u16x8::load_array(simd, *lanes);
+                if unfiltered {
+                    let group = u16x8::splat(simd, if w == 4 { 4 } else { 8 });
+                    let lane = u16x8::load_array(simd, [0, 1, 2, 3, 4, 5, 6, 7]);
+                    lanes = lane.simd_lt(group).select(lanes, u16x8::splat(simd, 0));
+                    if simd.any_true_mask16x8(lanes.simd_gt(u16x8::splat(simd, 255))) {
+                        return None;
+                    }
                 }
+                let bytes = simd.saturating_narrow_u16x8(lanes, lanes);
+                cdef_publish_row(bytes.as_slice().first_chunk()?, w, out.get_mut(start..)?)?;
+            } else {
+                cdef_publish_row(lanes, w, T::u16_slice_mut(&mut *out)?.get_mut(start..)?)?;
             }
-            let bytes = simd.saturating_narrow_u16x8(lanes, lanes);
-            cdef_publish_row(bytes.as_slice().first_chunk()?, w, out.get_mut(start..)?)?;
-        } else {
-            cdef_publish_row(lanes, w, T::u16_slice_mut(&mut *out)?.get_mut(start..)?)?;
         }
-    }
-    Some(())
+        Some(())
+    })
 }
 
 /// Writes the first `w` of the 8 `lanes` of one row to the start of `out`,
@@ -1546,16 +1562,16 @@ pub fn cdef_filter_block_chroma_pair(
 }
 
 /// Variant of [`cdef_filter_block_chroma_pair`] using the caller's
-/// startup-selected static SIMD backend `backend`.
-pub fn cdef_filter_block_chroma_pair_with<B: SimdBackend>(
-    backend: B,
+/// startup-selected SIMD backend `backend`.
+#[inline]
+pub fn cdef_filter_block_chroma_pair_with(
+    backend: SimdBackend,
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => {
+    splot_core::with_simd!(backend, simd => {
         cdef_filter_block_chroma_pair_rows(simd, pad, h, filter, out)
     })
 }
@@ -1567,22 +1583,24 @@ fn cdef_filter_block_chroma_pair_rows<S: SimdToken>(
     filter: &CdefBlockFilter,
     out: &mut [u16; CDEF_PAIR_OUTPUT],
 ) -> bool {
-    if h > 4 {
-        return false;
-    }
-    let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
-    cdef_filter_block_rows::<
-        _,
-        _,
-        8,
-        false,
-        CDEF_PAIR_STRIDE,
-        4,
-        4,
-        { 3 * CDEF_PAIR_STRIDE + 8 },
-        CDEF_PADDED_AREA,
-    >(simd, args)
-    .is_some()
+    splot_core::in_scope!(simd => {
+        if h > 4 {
+            return false;
+        }
+        let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
+        cdef_filter_block_rows::<
+            _,
+            _,
+            8,
+            false,
+            CDEF_PAIR_STRIDE,
+            4,
+            4,
+            { 3 * CDEF_PAIR_STRIDE + 8 },
+            CDEF_PADDED_AREA,
+        >(simd, args)
+        .is_some()
+    })
 }
 
 mod segment;

@@ -11,9 +11,9 @@ enum Kernel {
 }
 
 impl Kernel {
-    fn run<B: splot_core::simd::SimdBackend>(
+    fn run(
         self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         window: &[&[u16; 28]; WINDOW_ROWS],
         output: [&mut [u16; 16]; 2],
         classes: &[GdfClass; 8],

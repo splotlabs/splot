@@ -1019,7 +1019,7 @@ fn rejects_luma_sample_out_of_range_fail_atomically() {
 #[test]
 fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
     use crate::lr_madd::ScalarLr;
-    use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+    use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
     struct AutoChroma<'a, T: ReconSample> {
         params: &'a WienerNsChromaFilter<'a>,
@@ -1027,8 +1027,8 @@ fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
         scratch: &'a mut WienerNsChromaScratch,
         expected: &'a [u16],
     }
-    impl<T: ReconSample> SimdScope<()> for AutoChroma<'_, T> {
-        fn run<B: SimdBackend>(self, backend: B) {
+    impl<T: ReconSample> AutoChroma<'_, T> {
+        fn run(self, backend: SimdBackend) {
             let mut out = vec![T::default(); self.params.width * self.params.height];
             wiener_ns_filter_chroma_block_padded_into_with(
                 backend,
@@ -1109,12 +1109,13 @@ fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
                         .unwrap()
                 };
 
-                resolved.enter(AutoChroma {
+                AutoChroma {
                     params: &params,
                     source: &source,
                     scratch: &mut scratch,
                     expected: &expected,
-                });
+                }
+                .run(resolved.backend());
                 let mut out_scalar = vec![0u16; width * height];
                 wiener_ns_filter_chroma_padded_with_backend(
                     ScalarLr,
@@ -1125,12 +1126,13 @@ fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
                 )
                 .unwrap();
                 assert_eq!(out_scalar, expected);
-                resolved.enter(AutoChroma {
+                AutoChroma {
                     params: &params,
                     source: &source,
                     scratch: &mut scratch,
                     expected: &expected,
-                });
+                }
+                .run(resolved.backend());
                 if bit_depth == BitDepth::Eight {
                     let c_u8: Vec<u8> = c_u16.iter().map(|&v| v as u8).collect();
                     let l_u8: Vec<u8> = l_u16.iter().map(|&v| v as u8).collect();
@@ -1149,12 +1151,13 @@ fn typed_chroma_padded_matches_oracle_across_backend_scratch_reuse() {
                         WienerNsChromaPaddedSource::chroma_from_rows(&c_lines8, 0, width, height)
                             .unwrap()
                     };
-                    resolved.enter(AutoChroma {
+                    AutoChroma {
                         params: &params,
                         source: &source8,
                         scratch: &mut scratch,
                         expected: &expected,
-                    });
+                    }
+                    .run(resolved.backend());
                 }
             }
         }

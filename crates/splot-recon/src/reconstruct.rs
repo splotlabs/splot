@@ -90,9 +90,9 @@ impl ResidualRunner for BaselineResidual {
 }
 
 #[derive(Clone, Copy)]
-struct TypedResidual<B: SimdBackend>(B);
+struct TypedResidual(SimdBackend);
 
-impl<B: SimdBackend> ResidualRunner for TypedResidual<B> {
+impl ResidualRunner for TypedResidual {
     #[inline]
     fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
         crate::sample_range::u16_samples_exceed_with(self.0, samples, max_sample)
@@ -203,15 +203,15 @@ pub fn reconstruct_add_residual<T: ReconSample>(
 ///
 /// # Errors
 /// Returns the same validation errors as [`reconstruct_add_residual`].
-pub fn reconstruct_add_residual_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn reconstruct_add_residual_with<T: ReconSample>(
+    backend: SimdBackend,
     prediction: &[T],
     residual: &[i32],
     bit_depth: BitDepth,
     out: &mut [T],
 ) -> Result<()> {
     reconstruct_add_residual_with_runner(
-        TypedResidual(backend.narrow()),
+        TypedResidual(backend),
         prediction,
         residual,
         bit_depth,
@@ -265,8 +265,8 @@ pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn add_block_residual_into_rows_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn add_block_residual_into_rows_with<T: ReconSample>(
+    backend: SimdBackend,
     prediction: &[T],
     residual: &[i32],
     bit_depth: BitDepth,
@@ -276,7 +276,7 @@ pub(crate) fn add_block_residual_into_rows_with<B: SimdBackend, T: ReconSample>(
     height: usize,
 ) -> Result<()> {
     add_block_residual_into_rows_with_runner(
-        TypedResidual(backend.narrow()),
+        TypedResidual(backend),
         prediction,
         residual,
         bit_depth,
@@ -443,13 +443,13 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     add_residual_in_place_with_runner(BaselineResidual, samples, residual, max)
 }
 
-pub(crate) fn add_residual_in_place_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn add_residual_in_place_with<T: ReconSample>(
+    backend: SimdBackend,
     samples: &mut [T],
     residual: &[i32],
     max: i32,
 ) -> Result<()> {
-    add_residual_in_place_with_runner(TypedResidual(backend.narrow()), samples, residual, max)
+    add_residual_in_place_with_runner(TypedResidual(backend), samples, residual, max)
 }
 
 fn add_residual_in_place_with_runner<R: ResidualRunner, T: ReconSample>(
@@ -523,27 +523,29 @@ fn add_residual_u16_tail<S: Simd>(
     max: i32,
     out: &mut [u16],
 ) {
-    let len = out.len().min(residual.len());
-    let mut start = 0;
-    if let (Some(slot), Some(res)) = (out.first_chunk::<4>(), residual.first_chunk::<4>()) {
-        let pred = prediction
-            .and_then(<[u16]>::first_chunk::<4>)
-            .unwrap_or(slot);
-        let sum = add_residual_lanes(simd, *pred, res, max);
-        if let Some(slot) = out.first_chunk_mut::<4>() {
-            *slot = sum;
+    splot_core::in_scope!(simd => {
+        let len = out.len().min(residual.len());
+        let mut start = 0;
+        if let (Some(slot), Some(res)) = (out.first_chunk::<4>(), residual.first_chunk::<4>()) {
+            let pred = prediction
+                .and_then(<[u16]>::first_chunk::<4>)
+                .unwrap_or(slot);
+            let sum = add_residual_lanes(simd, *pred, res, max);
+            if let Some(slot) = out.first_chunk_mut::<4>() {
+                *slot = sum;
+            }
+            start = 4;
         }
-        start = 4;
-    }
-    if start >= len {
-        return;
-    }
-    let n = len - start;
-    let (mut pred, mut res) = ([0u16; 4], [0i32; 4]);
-    pred[..n].copy_from_slice(&prediction.unwrap_or(&*out)[start..len]); // splot-copy-ok: zero-padded lane group
-    res[..n].copy_from_slice(&residual[start..len]); // splot-copy-ok: zero-padded lane group
-    let sum = add_residual_lanes(simd, pred, &res, max);
-    out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
+        if start >= len {
+            return;
+        }
+        let n = len - start;
+        let (mut pred, mut res) = ([0u16; 4], [0i32; 4]);
+        pred[..n].copy_from_slice(&prediction.unwrap_or(&*out)[start..len]); // splot-copy-ok: zero-padded lane group
+        res[..n].copy_from_slice(&residual[start..len]); // splot-copy-ok: zero-padded lane group
+        let sum = add_residual_lanes(simd, pred, &res, max);
+        out[start..len].copy_from_slice(&sum[..n]); // splot-copy-ok: the group's own lanes
+    });
 }
 
 #[expect(clippy::inline_always, reason = "per-row residual add hot path")]
@@ -642,17 +644,14 @@ pub(crate) fn add_constant_u8_rows(
 }
 
 /// Applies [`add_constant_u8_rows`] using `backend`.
-pub(crate) fn add_constant_u8_rows_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub(crate) fn add_constant_u8_rows_with(
+    backend: SimdBackend,
     samples: &mut [u8],
     geometry: (usize, usize, usize, usize),
     residual: i32,
 ) {
-    TypedResidual(backend.narrow()).add_constant_u8_rows(
-        samples,
-        geometry,
-        constant_u8_adjust(residual),
-    );
+    TypedResidual(backend).add_constant_u8_rows(samples, geometry, constant_u8_adjust(residual));
 }
 
 #[inline]
@@ -1056,90 +1055,77 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let res: Vec<i32> = (0..37).map(|i| (i * 29) % 181 - 90).collect();
+        fn check(backend: SimdBackend) {
+            let res: Vec<i32> = (0..37).map(|i| (i * 29) % 181 - 90).collect();
 
-                let pred_u8: Vec<u8> = (0..37).map(|i| ((i * 41 + 3) % 251) as u8).collect();
-                let mut compat_u8 = vec![0u8; 37];
-                let mut typed_u8 = vec![0u8; 37];
-                reconstruct_add_residual(&pred_u8, &res, BitDepth::Eight, &mut compat_u8).unwrap();
-                reconstruct_add_residual_with(
-                    backend,
-                    &pred_u8,
-                    &res,
-                    BitDepth::Eight,
-                    &mut typed_u8,
-                )
+            let pred_u8: Vec<u8> = (0..37).map(|i| ((i * 41 + 3) % 251) as u8).collect();
+            let mut compat_u8 = vec![0u8; 37];
+            let mut typed_u8 = vec![0u8; 37];
+            reconstruct_add_residual(&pred_u8, &res, BitDepth::Eight, &mut compat_u8).unwrap();
+            reconstruct_add_residual_with(backend, &pred_u8, &res, BitDepth::Eight, &mut typed_u8)
                 .unwrap();
-                assert_eq!(typed_u8, compat_u8);
+            assert_eq!(typed_u8, compat_u8);
 
-                let pred_u16: Vec<u16> = (0..37).map(|i| ((i * 197 + 11) % 1020) as u16).collect();
-                let mut compat_u16 = vec![0u16; 37];
-                let mut typed_u16 = vec![0u16; 37];
-                reconstruct_add_residual(&pred_u16, &res, BitDepth::Ten, &mut compat_u16).unwrap();
-                reconstruct_add_residual_with(
-                    backend,
-                    &pred_u16,
-                    &res,
-                    BitDepth::Ten,
-                    &mut typed_u16,
-                )
+            let pred_u16: Vec<u16> = (0..37).map(|i| ((i * 197 + 11) % 1020) as u16).collect();
+            let mut compat_u16 = vec![0u16; 37];
+            let mut typed_u16 = vec![0u16; 37];
+            reconstruct_add_residual(&pred_u16, &res, BitDepth::Ten, &mut compat_u16).unwrap();
+            reconstruct_add_residual_with(backend, &pred_u16, &res, BitDepth::Ten, &mut typed_u16)
                 .unwrap();
-                assert_eq!(typed_u16, compat_u16);
+            assert_eq!(typed_u16, compat_u16);
 
-                let block_u8: Vec<u8> = (0..24).map(|i| ((i * 53 + 9) % 251) as u8).collect();
-                let block_res: Vec<i32> = (0..24).map(|i| (i * 37) % 121 - 60).collect();
-                let mut rows_compat = vec![5u8; 3 * 12];
-                let mut rows_typed = vec![5u8; 3 * 12];
-                add_block_residual_into_rows(
-                    &block_u8,
-                    &block_res,
-                    BitDepth::Eight,
-                    &mut rows_compat,
-                    12,
-                    8,
-                    3,
-                )
-                .unwrap();
-                add_block_residual_into_rows_with(
-                    backend,
-                    &block_u8,
-                    &block_res,
-                    BitDepth::Eight,
-                    &mut rows_typed,
-                    12,
-                    8,
-                    3,
-                )
-                .unwrap();
-                assert_eq!(rows_typed, rows_compat);
+            let block_u8: Vec<u8> = (0..24).map(|i| ((i * 53 + 9) % 251) as u8).collect();
+            let block_res: Vec<i32> = (0..24).map(|i| (i * 37) % 121 - 60).collect();
+            let mut rows_compat = vec![5u8; 3 * 12];
+            let mut rows_typed = vec![5u8; 3 * 12];
+            add_block_residual_into_rows(
+                &block_u8,
+                &block_res,
+                BitDepth::Eight,
+                &mut rows_compat,
+                12,
+                8,
+                3,
+            )
+            .unwrap();
+            add_block_residual_into_rows_with(
+                backend,
+                &block_u8,
+                &block_res,
+                BitDepth::Eight,
+                &mut rows_typed,
+                12,
+                8,
+                3,
+            )
+            .unwrap();
+            assert_eq!(rows_typed, rows_compat);
 
-                let mut ip_compat = pred_u8.clone();
-                let mut ip_typed = pred_u8;
-                add_residual_in_place(&mut ip_compat, &res, 255).unwrap();
-                add_residual_in_place_with(backend, &mut ip_typed, &res, 255).unwrap();
-                assert_eq!(ip_typed, ip_compat);
+            let mut ip_compat = pred_u8.clone();
+            let mut ip_typed = pred_u8;
+            add_residual_in_place(&mut ip_compat, &res, 255).unwrap();
+            add_residual_in_place_with(backend, &mut ip_typed, &res, 255).unwrap();
+            assert_eq!(ip_typed, ip_compat);
 
-                let mut ip16_compat = pred_u16.clone();
-                let mut ip16_typed = pred_u16;
-                add_residual_in_place(&mut ip16_compat, &res, 1023).unwrap();
-                add_residual_in_place_with(backend, &mut ip16_typed, &res, 1023).unwrap();
-                assert_eq!(ip16_typed, ip16_compat);
+            let mut ip16_compat = pred_u16.clone();
+            let mut ip16_typed = pred_u16;
+            add_residual_in_place(&mut ip16_compat, &res, 1023).unwrap();
+            add_residual_in_place_with(backend, &mut ip16_typed, &res, 1023).unwrap();
+            assert_eq!(ip16_typed, ip16_compat);
 
-                let mut const_compat: Vec<u8> = (0..60).map(|i| ((i * 19) % 250) as u8).collect();
-                let mut const_typed = const_compat.clone();
-                add_constant_u8_rows(&mut const_compat, (2, 14, 11, 4), -23);
-                add_constant_u8_rows_with(backend, &mut const_typed, (2, 14, 11, 4), -23);
-                assert_eq!(const_typed, const_compat);
-            }
+            let mut const_compat: Vec<u8> = (0..60).map(|i| ((i * 19) % 250) as u8).collect();
+            let mut const_typed = const_compat.clone();
+            add_constant_u8_rows(&mut const_compat, (2, 14, 11, 4), -23);
+            add_constant_u8_rows_with(backend, &mut const_typed, (2, 14, 11, 4), -23);
+            assert_eq!(const_typed, const_compat);
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

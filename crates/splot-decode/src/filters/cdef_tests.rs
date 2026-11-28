@@ -517,7 +517,7 @@ fn assert_cdef_block_matches_per_sample_reference(
             let mut pad = [0u16; CDEF_PADDED_AREA];
             let mut filtered = StripePlane::copy_from_into(snap, 0, 64, None, CopyAll).unwrap();
             crate::test_support::with_auto_backend!(backend => {
-                compute_cdef_filter_plane::<_, u8>(backend, snap, &ctx, false, &filter, &mut pad, &mut filtered)
+                compute_cdef_filter_plane::<u8>(backend, snap, &ctx, false, &filter, &mut pad, &mut filtered)
             })
             .unwrap();
             let offsets = CdefTapOffsets::for_direction(filter.dir);

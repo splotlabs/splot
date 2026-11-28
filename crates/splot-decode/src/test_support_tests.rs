@@ -18,24 +18,10 @@ use crate::pipeline::frame_progress::{FrameProgress, FrontierRows};
 
 macro_rules! with_auto_backend {
     ($backend:ident => $body:expr) => {{
-        match splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
+        let $backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
             .expect("auto backend")
-        {
-            #[cfg(target_arch = "x86_64")]
-            splot_core::simd::ResolvedBackend::Sse2($backend) => $body,
-            #[cfg(target_arch = "x86_64")]
-            splot_core::simd::ResolvedBackend::Avx2($backend) => $body,
-            #[cfg(target_arch = "x86_64")]
-            splot_core::simd::ResolvedBackend::Avx512(backend) => {
-                let $backend = splot_core::simd::SimdBackend::narrow(backend);
-                $body
-            }
-            #[cfg(target_arch = "aarch64")]
-            splot_core::simd::ResolvedBackend::Neon($backend) => $body,
-            #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-            splot_core::simd::ResolvedBackend::Fallback($backend) => $body,
-            _ => unreachable!("unsupported ResolvedBackend variant"),
-        }
+            .backend();
+        $body
     }};
 }
 

@@ -161,16 +161,74 @@ pub(super) fn copy_compound_u16<S: Simd>(
     output: &mut [u16],
     stride: usize,
 ) {
-    let (w, h) = (blocks[0].w, blocks[0].h);
-    let max_v = u16x8::splat(simd, max);
-    if forward == 8 {
+    splot_core::in_scope!(simd => {
+        let (w, h) = (blocks[0].w, blocks[0].h);
+        let max_v = u16x8::splat(simd, max);
+        if forward == 8 {
+            if w == 4 {
+                for row in 0..h {
+                    let a =
+                        u16::lanes(simd, blocks[0].source, blocks[0].start(row)).bitcast::<u16x8<S>>();
+                    let b =
+                        u16::lanes(simd, blocks[1].source, blocks[1].start(row)).bitcast::<u16x8<S>>();
+                    let lanes = ((a | b) - ((a ^ b) >> 1)).min(max_v).to_array();
+                    if let Some(slot) = output
+                        .get_mut(row * stride..)
+                        .and_then(<[u16]>::first_chunk_mut::<4>)
+                    {
+                        slot.copy_from_slice(&lanes[..4]); // splot-copy-ok: four blended u16 lanes
+                    }
+                }
+                return;
+            }
+            if w.is_multiple_of(8) {
+                for row in 0..h {
+                    let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
+                    let (Some(src0), Some(src1), Some(dst)) = (
+                        blocks[0].source.get(s0..s0 + w),
+                        blocks[1].source.get(s1..s1 + w),
+                        output.get_mut(out_row..out_row + w),
+                    ) else {
+                        continue;
+                    };
+                    for ((slot, a), b) in dst
+                        .as_chunks_mut::<8>()
+                        .0
+                        .iter_mut()
+                        .zip(src0.as_chunks::<8>().0)
+                        .zip(src1.as_chunks::<8>().0)
+                    {
+                        let a = u16x8::load_array_ref(simd, a);
+                        let b = u16x8::load_array_ref(simd, b);
+                        ((a | b) - ((a ^ b) >> 1)).min(max_v).store_array(slot);
+                    }
+                }
+                return;
+            }
+            for row in 0..h {
+                let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
+                for col in (0..w).step_by(8) {
+                    let a = u16::lanes(simd, blocks[0].source, s0 + col).bitcast::<u16x8<S>>();
+                    let b = u16::lanes(simd, blocks[1].source, s1 + col).bitcast::<u16x8<S>>();
+                    let avg = ((a | b) - ((a ^ b) >> 1)).min(max_v);
+                    store_wide(output, out_row + col, (w - col).min(8), avg);
+                }
+            }
+            return;
+        }
+        let (f_v, b_v, max_i32) = (
+            i16x8::splat(simd, forward as i16),
+            i16x8::splat(simd, (16 - forward) as i16),
+            i32::from(max),
+        );
         if w == 4 {
             for row in 0..h {
-                let a =
-                    u16::lanes(simd, blocks[0].source, blocks[0].start(row)).bitcast::<u16x8<S>>();
-                let b =
-                    u16::lanes(simd, blocks[1].source, blocks[1].start(row)).bitcast::<u16x8<S>>();
-                let lanes = ((a | b) - ((a ^ b) >> 1)).min(max_v).to_array();
+                let a = u16::lanes(simd, blocks[0].source, blocks[0].start(row));
+                let b = u16::lanes(simd, blocks[1].source, blocks[1].start(row));
+                let l0 = ((a.widening_mul(f_v).0 + b.widening_mul(b_v).0 + 8) >> 4)
+                    .max(0)
+                    .min(max_i32);
+                let lanes = l0.narrow(l0).bitcast::<u16x8<S>>().to_array();
                 if let Some(slot) = output
                     .get_mut(row * stride..)
                     .and_then(<[u16]>::first_chunk_mut::<4>)
@@ -197,9 +255,13 @@ pub(super) fn copy_compound_u16<S: Simd>(
                     .zip(src0.as_chunks::<8>().0)
                     .zip(src1.as_chunks::<8>().0)
                 {
-                    let a = u16x8::load_array_ref(simd, a);
-                    let b = u16x8::load_array_ref(simd, b);
-                    ((a | b) - ((a ^ b) >> 1)).min(max_v).store_array(slot);
+                    let a: i16x8<S> = u16x8::load_array_ref(simd, a).bitcast();
+                    let b: i16x8<S> = u16x8::load_array_ref(simd, b).bitcast();
+                    let (a0, a1) = a.widening_mul(f_v);
+                    let (b0, b1) = b.widening_mul(b_v);
+                    let l0 = ((a0 + b0 + 8) >> 4).max(0).min(max_i32);
+                    let l1 = ((a1 + b1 + 8) >> 4).max(0).min(max_i32);
+                    l0.narrow(l1).bitcast::<u16x8<S>>().store_array(slot);
                 }
             }
             return;
@@ -207,79 +269,19 @@ pub(super) fn copy_compound_u16<S: Simd>(
         for row in 0..h {
             let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
             for col in (0..w).step_by(8) {
-                let a = u16::lanes(simd, blocks[0].source, s0 + col).bitcast::<u16x8<S>>();
-                let b = u16::lanes(simd, blocks[1].source, s1 + col).bitcast::<u16x8<S>>();
-                let avg = ((a | b) - ((a ^ b) >> 1)).min(max_v);
-                store_wide(output, out_row + col, (w - col).min(8), avg);
-            }
-        }
-        return;
-    }
-    let (f_v, b_v, max_i32) = (
-        i16x8::splat(simd, forward as i16),
-        i16x8::splat(simd, (16 - forward) as i16),
-        i32::from(max),
-    );
-    if w == 4 {
-        for row in 0..h {
-            let a = u16::lanes(simd, blocks[0].source, blocks[0].start(row));
-            let b = u16::lanes(simd, blocks[1].source, blocks[1].start(row));
-            let l0 = ((a.widening_mul(f_v).0 + b.widening_mul(b_v).0 + 8) >> 4)
-                .max(0)
-                .min(max_i32);
-            let lanes = l0.narrow(l0).bitcast::<u16x8<S>>().to_array();
-            if let Some(slot) = output
-                .get_mut(row * stride..)
-                .and_then(<[u16]>::first_chunk_mut::<4>)
-            {
-                slot.copy_from_slice(&lanes[..4]); // splot-copy-ok: four blended u16 lanes
-            }
-        }
-        return;
-    }
-    if w.is_multiple_of(8) {
-        for row in 0..h {
-            let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
-            let (Some(src0), Some(src1), Some(dst)) = (
-                blocks[0].source.get(s0..s0 + w),
-                blocks[1].source.get(s1..s1 + w),
-                output.get_mut(out_row..out_row + w),
-            ) else {
-                continue;
-            };
-            for ((slot, a), b) in dst
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip(src0.as_chunks::<8>().0)
-                .zip(src1.as_chunks::<8>().0)
-            {
-                let a: i16x8<S> = u16x8::load_array_ref(simd, a).bitcast();
-                let b: i16x8<S> = u16x8::load_array_ref(simd, b).bitcast();
-                let (a0, a1) = a.widening_mul(f_v);
-                let (b0, b1) = b.widening_mul(b_v);
+                let (a0, a1) = u16::lanes(simd, blocks[0].source, s0 + col).widening_mul(f_v);
+                let (b0, b1) = u16::lanes(simd, blocks[1].source, s1 + col).widening_mul(b_v);
                 let l0 = ((a0 + b0 + 8) >> 4).max(0).min(max_i32);
                 let l1 = ((a1 + b1 + 8) >> 4).max(0).min(max_i32);
-                l0.narrow(l1).bitcast::<u16x8<S>>().store_array(slot);
+                store_wide(
+                    output,
+                    out_row + col,
+                    (w - col).min(8),
+                    l0.narrow(l1).bitcast(),
+                );
             }
         }
-        return;
-    }
-    for row in 0..h {
-        let (s0, s1, out_row) = (blocks[0].start(row), blocks[1].start(row), row * stride);
-        for col in (0..w).step_by(8) {
-            let (a0, a1) = u16::lanes(simd, blocks[0].source, s0 + col).widening_mul(f_v);
-            let (b0, b1) = u16::lanes(simd, blocks[1].source, s1 + col).widening_mul(b_v);
-            let l0 = ((a0 + b0 + 8) >> 4).max(0).min(max_i32);
-            let l1 = ((a1 + b1 + 8) >> 4).max(0).min(max_i32);
-            store_wide(
-                output,
-                out_row + col,
-                (w - col).min(8),
-                l0.narrow(l1).bitcast(),
-            );
-        }
-    }
+    });
 }
 
 #[inline]
@@ -452,168 +454,175 @@ fn copy_wide<S: Simd>(
     stride: usize,
     max: u16x8<S>,
 ) {
-    let clip = |slot: &mut [u16; 8], lanes: &[u16; 8]| {
-        u16x8::load_array_ref(simd, lanes)
-            .min(max)
-            .store_array(slot);
-    };
-    let w = block.w;
-    for row in 0..block.h {
-        let (row_start, out_row) = (block.start(row), row * stride);
-        let (Some(src), Some(dst)) = (
-            block.source.get(row_start..row_start + w),
-            output.get_mut(out_row..out_row + w),
-        ) else {
-            continue;
+    splot_core::in_scope!(simd => {
+        let clip = {
+            #[inline(always)]
+            |slot: &mut [u16; 8], lanes: &[u16; 8]| {
+            u16x8::load_array_ref(simd, lanes)
+                .min(max)
+                .store_array(slot);
+        }
         };
-        if let (Some(slot), Some(lanes)) = (dst.last_chunk_mut(), src.last_chunk()) {
-            clip(slot, lanes);
+        let w = block.w;
+        for row in 0..block.h {
+            let (row_start, out_row) = (block.start(row), row * stride);
+            let (Some(src), Some(dst)) = (
+                block.source.get(row_start..row_start + w),
+                output.get_mut(out_row..out_row + w),
+            ) else {
+                continue;
+            };
+            if let (Some(slot), Some(lanes)) = (dst.last_chunk_mut(), src.last_chunk()) {
+                clip(slot, lanes);
+            }
+            let rows = dst.as_chunks_mut::<8>().0.iter_mut();
+            for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
+                clip(slot, lanes);
+            }
         }
-        let rows = dst.as_chunks_mut::<8>().0.iter_mut();
-        for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
-            clip(slot, lanes);
-        }
-    }
+    });
 }
 
 #[inline(never)]
 fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
-    let (w, h) = (block.w, block.h);
-    match sink {
-        Sink::PutWide {
-            output,
-            stride,
-            max,
-        } => {
-            let (stride, max_v) = (*stride, u16x8::splat(simd, *max));
-            if w == 4 {
-                for row in 0..h {
-                    let lanes = T::lanes(simd, block.source, block.start(row))
-                        .bitcast::<u16x8<S>>()
-                        .min(max_v)
-                        .to_array();
-                    if let Some(slot) = output
-                        .get_mut(row * stride..)
-                        .and_then(<[u16]>::first_chunk_mut::<4>)
-                    {
-                        slot.copy_from_slice(&lanes[..4]); // splot-copy-ok: four clamped u16 lanes
+    splot_core::in_scope!(simd => {
+        let (w, h) = (block.w, block.h);
+        match sink {
+            Sink::PutWide {
+                output,
+                stride,
+                max,
+            } => {
+                let (stride, max_v) = (*stride, u16x8::splat(simd, *max));
+                if w == 4 {
+                    for row in 0..h {
+                        let lanes = T::lanes(simd, block.source, block.start(row))
+                            .bitcast::<u16x8<S>>()
+                            .min(max_v)
+                            .to_array();
+                        if let Some(slot) = output
+                            .get_mut(row * stride..)
+                            .and_then(<[u16]>::first_chunk_mut::<4>)
+                        {
+                            slot.copy_from_slice(&lanes[..4]); // splot-copy-ok: four clamped u16 lanes
+                        }
                     }
+                    return;
                 }
-                return;
-            }
-            if w.is_multiple_of(8)
-                && let Some(source) = T::words(block.source)
-            {
+                if w.is_multiple_of(8)
+                    && let Some(source) = T::words(block.source)
+                {
+                    for row in 0..h {
+                        let (row_start, out_row) = (block.start(row), row * stride);
+                        let (Some(src), Some(dst)) = (
+                            source.get(row_start..row_start + w),
+                            output.get_mut(out_row..out_row + w),
+                        ) else {
+                            continue;
+                        };
+                        let rows = dst.as_chunks_mut::<8>().0.iter_mut();
+                        for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
+                            *slot = *lanes;
+                        }
+                    }
+                    return;
+                }
+                if w > 8
+                    && let Some(source) = T::words(block.source)
+                {
+                    copy_wide(simd, &block.with_source(source), output, stride, max_v);
+                    return;
+                }
                 for row in 0..h {
                     let (row_start, out_row) = (block.start(row), row * stride);
-                    let (Some(src), Some(dst)) = (
-                        source.get(row_start..row_start + w),
-                        output.get_mut(out_row..out_row + w),
-                    ) else {
-                        continue;
-                    };
-                    let rows = dst.as_chunks_mut::<8>().0.iter_mut();
-                    for (slot, lanes) in rows.zip(src.as_chunks::<8>().0) {
-                        *slot = *lanes;
+                    for col in (0..w).step_by(8) {
+                        let lanes = T::lanes(simd, block.source, row_start + col)
+                            .bitcast::<u16x8<S>>()
+                            .min(max_v);
+                        store_wide(output, out_row + col, (w - col).min(8), lanes);
                     }
                 }
-                return;
             }
-            if w > 8
-                && let Some(source) = T::words(block.source)
-            {
-                copy_wide(simd, &block.with_source(source), output, stride, max_v);
-                return;
-            }
-            for row in 0..h {
-                let (row_start, out_row) = (block.start(row), row * stride);
-                for col in (0..w).step_by(8) {
-                    let lanes = T::lanes(simd, block.source, row_start + col)
-                        .bitcast::<u16x8<S>>()
-                        .min(max_v);
-                    store_wide(output, out_row + col, (w - col).min(8), lanes);
-                }
-            }
-        }
-        Sink::Put { output, stride } => {
-            let (stride, max_v) = (*stride, u16x8::splat(simd, 255));
-            for row in 0..h {
-                let (row_start, out_row) = (block.start(row), row * stride);
-                for col in (0..w).step_by(8) {
-                    let lanes = T::lanes(simd, block.source, row_start + col)
-                        .bitcast::<u16x8<S>>()
-                        .min(max_v)
-                        .to_array();
-                    store(
-                        output,
-                        out_row + col,
-                        (w - col).min(8),
-                        lanes.map(|v| v as u8),
-                    );
-                }
-            }
-        }
-        Sink::Prep { output, stride } => {
-            let stride = *stride;
-            if w <= 4 {
+            Sink::Put { output, stride } => {
+                let (stride, max_v) = (*stride, u16x8::splat(simd, 255));
                 for row in 0..h {
-                    let low = T::lanes(simd, block.source, block.start(row)).widen().0 << 4;
-                    let at = row * stride;
-                    if w == 4
-                        && let Some(slot) =
-                            output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
-                    {
-                        low.store_array(slot);
-                    } else {
-                        store4(output, at, w, low.to_array());
+                    let (row_start, out_row) = (block.start(row), row * stride);
+                    for col in (0..w).step_by(8) {
+                        let lanes = T::lanes(simd, block.source, row_start + col)
+                            .bitcast::<u16x8<S>>()
+                            .min(max_v)
+                            .to_array();
+                        store(
+                            output,
+                            out_row + col,
+                            (w - col).min(8),
+                            lanes.map(|v| v as u8),
+                        );
                     }
                 }
-                return;
             }
-            for row in 0..h {
-                let (row_start, out_row) = (block.start(row), row * stride);
-                for col in (0..w).step_by(8) {
-                    let (low, high) = T::lanes(simd, block.source, row_start + col).widen();
-                    let (low, high) = (low << 4, high << 4);
-                    let count = (w - col).min(8);
-                    let at = out_row + col;
-                    match output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
-                        Some(slot) if count == 8 => {
-                            let (first, second) = slot.split_at_mut(4);
-                            if let (Some(first), Some(second)) =
-                                (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
-                            {
-                                low.store_array(first);
-                                high.store_array(second);
+            Sink::Prep { output, stride } => {
+                let stride = *stride;
+                if w <= 4 {
+                    for row in 0..h {
+                        let low = T::lanes(simd, block.source, block.start(row)).widen().0 << 4;
+                        let at = row * stride;
+                        if w == 4
+                            && let Some(slot) =
+                                output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
+                        {
+                            low.store_array(slot);
+                        } else {
+                            store4(output, at, w, low.to_array());
+                        }
+                    }
+                    return;
+                }
+                for row in 0..h {
+                    let (row_start, out_row) = (block.start(row), row * stride);
+                    for col in (0..w).step_by(8) {
+                        let (low, high) = T::lanes(simd, block.source, row_start + col).widen();
+                        let (low, high) = (low << 4, high << 4);
+                        let count = (w - col).min(8);
+                        let at = out_row + col;
+                        match output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
+                            Some(slot) if count == 8 => {
+                                let (first, second) = slot.split_at_mut(4);
+                                if let (Some(first), Some(second)) =
+                                    (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
+                                {
+                                    low.store_array(first);
+                                    high.store_array(second);
+                                }
+                            }
+                            _ => {
+                                let (low, high) = (low.to_array(), high.to_array());
+                                let lanes =
+                                    core::array::from_fn(|i| if i < 4 { low[i] } else { high[i - 4] });
+                                store(output, at, count, lanes);
                             }
                         }
-                        _ => {
-                            let (low, high) = (low.to_array(), high.to_array());
-                            let lanes =
-                                core::array::from_fn(|i| if i < 4 { low[i] } else { high[i - 4] });
-                            store(output, at, count, lanes);
-                        }
+                    }
+                }
+            }
+            _ => {
+                if w <= 4 {
+                    for row in 0..h {
+                        let low = T::lanes(simd, block.source, block.start(row)).widen().0 << 4;
+                        emit4(simd, sink, w, row, low);
+                    }
+                    return;
+                }
+                for row in 0..h {
+                    let row_start = block.start(row);
+                    for col in (0..w).step_by(8) {
+                        let (low, high) = T::lanes(simd, block.source, row_start + col).widen();
+                        emit(simd, sink, w, row, col, (low << 4, high << 4));
                     }
                 }
             }
         }
-        _ => {
-            if w <= 4 {
-                for row in 0..h {
-                    let low = T::lanes(simd, block.source, block.start(row)).widen().0 << 4;
-                    emit4(simd, sink, w, row, low);
-                }
-                return;
-            }
-            for row in 0..h {
-                let row_start = block.start(row);
-                for col in (0..w).step_by(8) {
-                    let (low, high) = T::lanes(simd, block.source, row_start + col).widen();
-                    emit(simd, sink, w, row, col, (low << 4, high << 4));
-                }
-            }
-        }
-    }
+    });
 }
 
 #[inline(never)]
@@ -838,80 +847,85 @@ fn load4_pred0<S: Simd, P: Copy + Into<i32>>(simd: S, pred0: &[P], at: usize) ->
 #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
 #[inline(always)]
 fn emit4<S: Simd>(simd: S, sink: &mut Sink<'_>, w: usize, row: usize, low: i32x4<S>) {
-    let blended = |first: i32x4<S>, forward: i32| {
-        if forward == 8 {
-            (first + low + 16) >> 5
-        } else {
-            (first * forward + low * (16 - forward) + 128) >> 8
-        }
-    };
-    match sink {
-        Sink::Put { output, stride } => {
-            let lanes = low.max(0).min(255).to_array().map(|v| v as u8);
-            store4(output, row * *stride, w, lanes);
-        }
-        Sink::PutWide {
-            output,
-            stride,
-            max,
-        } => {
-            let lanes = low.max(0).min(i32::from(*max)).to_array().map(|v| v as u16);
-            store4(output, row * *stride, w, lanes);
-        }
-        Sink::Prep { output, stride } => {
-            let at = row * *stride;
-            if w == 4
-                && let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
-            {
-                low.store_array(slot);
-                return;
+    splot_core::in_scope!(simd => {
+        let blended = {
+            #[inline(always)]
+            |first: i32x4<S>, forward: i32| {
+            if forward == 8 {
+                (first + low + 16) >> 5
+            } else {
+                (first * forward + low * (16 - forward) + 128) >> 8
             }
-            store4(output, at, w, low.to_array());
         }
-        Sink::Average {
-            pred0,
-            forward,
-            output,
-            stride,
-        } => {
-            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
-                .max(0)
-                .min(255)
-                .to_array()
-                .map(|v| v as u8);
-            store4(output, row * *stride, w, lanes);
+        };
+        match sink {
+            Sink::Put { output, stride } => {
+                let lanes = low.max(0).min(255).to_array().map(|v| v as u8);
+                store4(output, row * *stride, w, lanes);
+            }
+            Sink::PutWide {
+                output,
+                stride,
+                max,
+            } => {
+                let lanes = low.max(0).min(i32::from(*max)).to_array().map(|v| v as u16);
+                store4(output, row * *stride, w, lanes);
+            }
+            Sink::Prep { output, stride } => {
+                let at = row * *stride;
+                if w == 4
+                    && let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
+                {
+                    low.store_array(slot);
+                    return;
+                }
+                store4(output, at, w, low.to_array());
+            }
+            Sink::Average {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
+                    .max(0)
+                    .min(255)
+                    .to_array()
+                    .map(|v| v as u8);
+                store4(output, row * *stride, w, lanes);
+            }
+            Sink::PrepNarrow { output, stride } => {
+                store4(output, row * *stride, w, low.to_array().map(|v| v as i16));
+            }
+            Sink::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
+                    .max(0)
+                    .min(255)
+                    .to_array()
+                    .map(|v| v as u8);
+                store4(output, row * *stride, w, lanes);
+            }
+            Sink::AverageWide {
+                pred0,
+                forward,
+                output,
+                stride,
+                max,
+            } => {
+                let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
+                    .max(0)
+                    .min(i32::from(*max))
+                    .to_array()
+                    .map(|v| v as u16);
+                store4(output, row * *stride, w, lanes);
+            }
         }
-        Sink::PrepNarrow { output, stride } => {
-            store4(output, row * *stride, w, low.to_array().map(|v| v as i16));
-        }
-        Sink::AverageNarrow {
-            pred0,
-            forward,
-            output,
-            stride,
-        } => {
-            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
-                .max(0)
-                .min(255)
-                .to_array()
-                .map(|v| v as u8);
-            store4(output, row * *stride, w, lanes);
-        }
-        Sink::AverageWide {
-            pred0,
-            forward,
-            output,
-            stride,
-            max,
-        } => {
-            let lanes = blended(load4_pred0(simd, pred0, row * w), *forward)
-                .max(0)
-                .min(i32::from(*max))
-                .to_array()
-                .map(|v| v as u16);
-            store4(output, row * *stride, w, lanes);
-        }
-    }
+    });
 }
 
 #[expect(clippy::inline_always, reason = "measured sub-pel hot path")]
@@ -948,143 +962,154 @@ fn emit<S: Simd>(
     col: usize,
     (low, high): (i32x4<S>, i32x4<S>),
 ) {
-    let count = (w - col).min(8);
-    let clipped = |low: i32x4<S>, high: i32x4<S>, max: i32| {
-        low.max(0)
-            .min(max)
-            .narrow(high.max(0).min(max))
-            .bitcast::<u16x8<S>>()
-    };
-    let at = row * w + col;
-    let blended = |(first, second): (i32x4<S>, i32x4<S>), forward: i32| {
-        let blend = |first: i32x4<S>, second: i32x4<S>| {
-            if forward == 8 {
-                (first + second + 16) >> 5
-            } else {
-                (first * forward + second * (16 - forward) + 128) >> 8
+    splot_core::in_scope!(simd => {
+        let count = (w - col).min(8);
+        let clipped = {
+            #[inline(always)]
+            |low: i32x4<S>, high: i32x4<S>, max: i32| {
+            low.max(0)
+                .min(max)
+                .narrow(high.max(0).min(max))
+                .bitcast::<u16x8<S>>()
+        }
+        };
+        let at = row * w + col;
+        let blended = {
+            #[inline(always)]
+            |(first, second): (i32x4<S>, i32x4<S>), forward: i32| {
+            let blend = {
+            #[inline(always)]
+            |first: i32x4<S>, second: i32x4<S>| {
+                if forward == 8 {
+                    (first + second + 16) >> 5
+                } else {
+                    (first * forward + second * (16 - forward) + 128) >> 8
+                }
             }
         };
-        (blend(first, low), blend(second, high))
-    };
-    match sink {
-        Sink::Put { output, stride } => {
-            let lanes = clipped(low, high, 255).to_array();
-            store(
+            (blend(first, low), blend(second, high))
+        }
+        };
+        match sink {
+            Sink::Put { output, stride } => {
+                let lanes = clipped(low, high, 255).to_array();
+                store(
+                    output,
+                    row * *stride + col,
+                    count,
+                    lanes.map(|lane| lane as u8),
+                );
+            }
+            Sink::PutWide {
+                output,
+                stride,
+                max,
+            } => store_wide(
                 output,
                 row * *stride + col,
                 count,
-                lanes.map(|lane| lane as u8),
-            );
-        }
-        Sink::PutWide {
-            output,
-            stride,
-            max,
-        } => store_wide(
-            output,
-            row * *stride + col,
-            count,
-            clipped(low, high, i32::from(*max)),
-        ),
-        Sink::Prep { output, stride } => {
-            let at = row * *stride + col;
-            match output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
-                Some(slot) if count == 8 => {
-                    let (first, second) = slot.split_at_mut(4);
-                    if let (Some(first), Some(second)) =
-                        (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
-                    {
-                        low.store_array(first);
-                        high.store_array(second);
+                clipped(low, high, i32::from(*max)),
+            ),
+            Sink::Prep { output, stride } => {
+                let at = row * *stride + col;
+                match output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
+                    Some(slot) if count == 8 => {
+                        let (first, second) = slot.split_at_mut(4);
+                        if let (Some(first), Some(second)) =
+                            (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
+                        {
+                            low.store_array(first);
+                            high.store_array(second);
+                        }
+                    }
+                    _ => {
+                        let (low, high) = (low.to_array(), high.to_array());
+                        let lanes =
+                            core::array::from_fn(
+                                |lane| {
+                                    if lane < 4 { low[lane] } else { high[lane - 4] }
+                                },
+                            );
+                        store(output, at, count, lanes);
                     }
                 }
-                _ => {
-                    let (low, high) = (low.to_array(), high.to_array());
-                    let lanes =
-                        core::array::from_fn(
-                            |lane| {
-                                if lane < 4 { low[lane] } else { high[lane - 4] }
-                            },
-                        );
-                    store(output, at, count, lanes);
-                }
+            }
+            Sink::PrepNarrow { output, stride } => {
+                let (low, high) = (low.to_array(), high.to_array());
+                let lanes = core::array::from_fn(|lane| {
+                    if lane < 4 {
+                        low[lane] as i16
+                    } else {
+                        high[lane - 4] as i16
+                    }
+                });
+                store(output, row * *stride + col, count, lanes);
+            }
+            Sink::AverageNarrow {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let (first, second) = blended(
+                    (
+                        load4_pred0(simd, pred0, at),
+                        load4_pred0(simd, pred0, at + 4),
+                    ),
+                    *forward,
+                );
+                let lanes = clipped(first, second, 255).to_array();
+                store(
+                    output,
+                    row * *stride + col,
+                    count,
+                    lanes.map(|lane| lane as u8),
+                );
+            }
+            Sink::Average {
+                pred0,
+                forward,
+                output,
+                stride,
+            } => {
+                let (first, second) = blended(
+                    (
+                        load4_pred0(simd, pred0, at),
+                        load4_pred0(simd, pred0, at + 4),
+                    ),
+                    *forward,
+                );
+                let lanes = clipped(first, second, 255).to_array();
+                store(
+                    output,
+                    row * *stride + col,
+                    count,
+                    lanes.map(|lane| lane as u8),
+                );
+            }
+            Sink::AverageWide {
+                pred0,
+                forward,
+                output,
+                stride,
+                max,
+            } => {
+                let (first, second) = blended(
+                    (
+                        load4_pred0(simd, pred0, at),
+                        load4_pred0(simd, pred0, at + 4),
+                    ),
+                    *forward,
+                );
+                store_wide(
+                    output,
+                    row * *stride + col,
+                    count,
+                    clipped(first, second, i32::from(*max)),
+                );
             }
         }
-        Sink::PrepNarrow { output, stride } => {
-            let (low, high) = (low.to_array(), high.to_array());
-            let lanes = core::array::from_fn(|lane| {
-                if lane < 4 {
-                    low[lane] as i16
-                } else {
-                    high[lane - 4] as i16
-                }
-            });
-            store(output, row * *stride + col, count, lanes);
-        }
-        Sink::AverageNarrow {
-            pred0,
-            forward,
-            output,
-            stride,
-        } => {
-            let (first, second) = blended(
-                (
-                    load4_pred0(simd, pred0, at),
-                    load4_pred0(simd, pred0, at + 4),
-                ),
-                *forward,
-            );
-            let lanes = clipped(first, second, 255).to_array();
-            store(
-                output,
-                row * *stride + col,
-                count,
-                lanes.map(|lane| lane as u8),
-            );
-        }
-        Sink::Average {
-            pred0,
-            forward,
-            output,
-            stride,
-        } => {
-            let (first, second) = blended(
-                (
-                    load4_pred0(simd, pred0, at),
-                    load4_pred0(simd, pred0, at + 4),
-                ),
-                *forward,
-            );
-            let lanes = clipped(first, second, 255).to_array();
-            store(
-                output,
-                row * *stride + col,
-                count,
-                lanes.map(|lane| lane as u8),
-            );
-        }
-        Sink::AverageWide {
-            pred0,
-            forward,
-            output,
-            stride,
-            max,
-        } => {
-            let (first, second) = blended(
-                (
-                    load4_pred0(simd, pred0, at),
-                    load4_pred0(simd, pred0, at + 4),
-                ),
-                *forward,
-            );
-            store_wide(
-                output,
-                row * *stride + col,
-                count,
-                clipped(first, second, i32::from(*max)),
-            );
-        }
-    }
+    });
 }
 
 /// Stores the first `count` of `lanes` at `at`.

@@ -159,13 +159,14 @@ impl IntraTileSyntax {
         let state = self.inter.as_mut().ok_or(EncoderSyntaxError::Unsupported(
             "inter syntax in an intra frame",
         ))?;
-        self.backend
-            .enter(WarpPredictScope {
-                tile: &mut state.tile,
-                frontier: &leaf.frontier,
+        state
+            .tile
+            .predict_warp_luma(
+                self.backend.backend(),
+                &leaf.frontier,
                 motion,
-                workspace: &mut self.recon.workspace,
-            })
+                &mut self.recon.workspace,
+            )
             .map_err(rule("warp prediction"))?;
         out.clear();
         for row in self
@@ -249,19 +250,5 @@ impl IntraTileSyntax {
             .ok()
             .filter(|_| ref_frame < self.reference_count())
             .ok_or(EncoderSyntaxError::Unsupported("reference index"))
-    }
-}
-
-struct WarpPredictScope<'a> {
-    tile: &'a mut crate::prediction::inter::EncoderInterTile,
-    frontier: &'a crate::bitstream::tile_payload::DecodeBlockFrontier,
-    motion: EncoderWarpMotion,
-    workspace: &'a mut splot_recon::CurrentFrameWorkspace<u16>,
-}
-
-impl splot_core::simd::SimdScope<crate::Result<()>> for WarpPredictScope<'_> {
-    fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> crate::Result<()> {
-        self.tile
-            .predict_warp_luma(backend.narrow(), self.frontier, self.motion, self.workspace)
     }
 }

@@ -117,25 +117,27 @@ impl<'a> Strengths<'a> {
     #[cold]
     #[inline(never)]
     fn of_distinct<S: Simd>(&mut self, simd: S, sides: [u16x16<S>; 2]) -> [u16x16<S>; 4] {
-        let qindexes = sides.map(SimdBase::to_array);
-        let mut words = [u16x16::splat(simd, 0); 4];
-        let mut pending = u32::MAX;
-        while let Some(&qindex) = qindexes
-            .as_flattened()
-            .get(pending.trailing_zeros() as usize)
-        {
-            let (q_thr, side) = self.cache.get(u32::from(qindex));
-            let strengths = [q_thr, side].map(|value| value.clamp(0, 0x7fff) as u16);
-            self.last = (qindex, strengths);
-            let [q_thr, side] = strengths.map(|value| u16x16::splat(simd, value));
-            for (index, lanes) in sides.into_iter().enumerate() {
-                let same = lanes.simd_eq(u16x16::splat(simd, qindex));
-                words[2 * index] = simd.select_u16x16(same, q_thr, words[2 * index]);
-                words[2 * index + 1] = simd.select_u16x16(same, side, words[2 * index + 1]);
-                pending &= !((same.to_bitmask() as u32) << (GROUP * index));
+        splot_core::in_scope!(simd => {
+            let qindexes = sides.map(SimdBase::to_array);
+            let mut words = [u16x16::splat(simd, 0); 4];
+            let mut pending = u32::MAX;
+            while let Some(&qindex) = qindexes
+                .as_flattened()
+                .get(pending.trailing_zeros() as usize)
+            {
+                let (q_thr, side) = self.cache.get(u32::from(qindex));
+                let strengths = [q_thr, side].map(|value| value.clamp(0, 0x7fff) as u16);
+                self.last = (qindex, strengths);
+                let [q_thr, side] = strengths.map(|value| u16x16::splat(simd, value));
+                for (index, lanes) in sides.into_iter().enumerate() {
+                    let same = lanes.simd_eq(u16x16::splat(simd, qindex));
+                    words[2 * index] = simd.select_u16x16(same, q_thr, words[2 * index]);
+                    words[2 * index + 1] = simd.select_u16x16(same, side, words[2 * index + 1]);
+                    pending &= !((same.to_bitmask() as u32) << (GROUP * index));
+                }
             }
-        }
-        words
+            words
+        })
     }
 }
 
@@ -247,30 +249,26 @@ impl PassEdges {
     }
 
     /// Decides every edge of `plane_pass` from the records on its two sides.
-    pub(super) fn build<B: splot_core::simd::SimdBackend>(
+    pub(super) fn build(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         grid: &MiGrid<'_>,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
     ) -> Result<(), DeblockError> {
         match (plane_pass.plane, plane_pass.pass) {
-            (0, 0) => self.build_specialized::<_, 0, 0>(backend, grid, plane_pass, geometry),
-            (0, _) => self.build_specialized::<_, 0, 1>(backend, grid, plane_pass, geometry),
-            (1, 0) => self.build_specialized::<_, 1, 0>(backend, grid, plane_pass, geometry),
-            (1, _) => self.build_specialized::<_, 1, 1>(backend, grid, plane_pass, geometry),
-            (2, 0) => self.build_specialized::<_, 2, 0>(backend, grid, plane_pass, geometry),
-            _ => self.build_specialized::<_, 2, 1>(backend, grid, plane_pass, geometry),
+            (0, 0) => self.build_specialized::<0, 0>(backend, grid, plane_pass, geometry),
+            (0, _) => self.build_specialized::<0, 1>(backend, grid, plane_pass, geometry),
+            (1, 0) => self.build_specialized::<1, 0>(backend, grid, plane_pass, geometry),
+            (1, _) => self.build_specialized::<1, 1>(backend, grid, plane_pass, geometry),
+            (2, 0) => self.build_specialized::<2, 0>(backend, grid, plane_pass, geometry),
+            _ => self.build_specialized::<2, 1>(backend, grid, plane_pass, geometry),
         }
     }
 
-    fn build_specialized<
-        B: splot_core::simd::SimdBackend,
-        const PLANE: usize,
-        const PASS: usize,
-    >(
+    fn build_specialized<const PLANE: usize, const PASS: usize>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         grid: &MiGrid<'_>,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
@@ -310,7 +308,7 @@ impl PassEdges {
         );
         if !plane_pass.allow_df_sub_pu {
             let facts = grid.facts.ok_or(DeblockError::Workspace)?;
-            return self.build_from_facts::<_, PLANE, PASS>(
+            return self.build_from_facts::<PLANE, PASS>(
                 backend, facts, plane_pass, geometry, first, &strengths,
             );
         }
@@ -490,9 +488,9 @@ impl PassEdges {
     /// vertical edges reuse the row above's decisions when all 17 cells match
     /// except for `EDGE_H`. The leftmost cell's match comes from the previous
     /// group after the first.
-    fn build_from_facts<B: splot_core::simd::SimdBackend, const PLANE: usize, const PASS: usize>(
+    fn build_from_facts<const PLANE: usize, const PASS: usize>(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         facts: &PlaneFacts,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
@@ -704,9 +702,9 @@ impl PassEdges {
     /// through the batched kernels where their samples 8 either side of the
     /// edge lie in the band, and the rest in runs of [`LONE_RUN`] through
     /// padded copies of their samples.
-    pub(super) fn apply<B: splot_core::simd::SimdBackend, T: ReconSample, const PASS: usize>(
+    pub(super) fn apply<T: ReconSample, const PASS: usize>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
@@ -741,7 +739,7 @@ impl PassEdges {
                     .get(columns.start..)
                     .ok_or(DeblockError::Workspace)?;
                 let live = self.live.get(columns).ok_or(DeblockError::Workspace)?;
-                deblock_vertical_edge_band_with::<_, T>(
+                deblock_vertical_edge_band_with::<T>(
                     backend,
                     samples,
                     stride,
@@ -785,7 +783,7 @@ impl PassEdges {
                         .edges
                         .get(line * self.stride..line * self.stride + full)
                         .ok_or(DeblockError::Workspace)?;
-                    deblock_horizontal_edges_with::<_, T>(
+                    deblock_horizontal_edges_with::<T>(
                         backend, samples, stride, first, row, bit_depth,
                     )
                     .map_err(|_| DeblockError::SampleFilter)?;
@@ -815,7 +813,7 @@ impl PassEdges {
                     y_p,
                     edges: run,
                 }
-                .filter::<_, T, PASS>(backend, ctx, bit_depth)?;
+                .filter::<T, PASS>(backend, ctx, bit_depth)?;
             }
         }
         Ok(())
@@ -942,9 +940,9 @@ impl LoneRun<'_> {
     /// writes back the samples inside. A changed sample outside the plane or
     /// band is the error the per-line path gives; it is checked against the
     /// plane only when the widest `maxWidthPos` of the run reaches outside.
-    pub(super) fn filter<B: splot_core::simd::SimdBackend, T: ReconSample, const PASS: usize>(
+    pub(super) fn filter<T: ReconSample, const PASS: usize>(
         self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {

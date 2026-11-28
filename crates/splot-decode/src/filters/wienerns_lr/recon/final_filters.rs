@@ -860,8 +860,8 @@ impl<'a, T: ReconSample> LrSourceRows<'a, T> {
 /// The one value that the `width` columns from `col` of every row hold. A
 /// window narrower than one SIMD check is checked with the columns to its
 /// left that fill one, so it is not flat when they differ.
-fn flat_lr_window<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn flat_lr_window<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     rows: &[&[T]],
     col: usize,
     width: usize,
@@ -885,8 +885,8 @@ fn flat_lr_window<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// column `col`, holds one value `v <= max_sample`: the § 7.20.3 tap
 /// differences are then zero and the § 7.20.4 taps sum to zero, so both
 /// filters return `v`, and no other process reads the strip's classes.
-fn for_each_lr_strip<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn for_each_lr_strip<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     rows: &[&[T]],
     col: usize,
     width: usize,
@@ -994,9 +994,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
 impl StripeChain<'_> {
     #[expect(clippy::too_many_arguments)]
-    pub(crate) fn apply_lr_stripe<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         core: &FrameHeaderCore,
         cdef: CdefFrame<'a, T>,
         cdef_overlap: &CdefOverlap<T>,
@@ -1191,9 +1191,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_pc_wiener_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn compute_pc_wiener_block<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane<T>,
@@ -1300,9 +1300,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_chroma_lr_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn compute_chroma_lr_block<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
         lr_unit_filters: &[WienerNsLrUnitFilter],
@@ -1439,9 +1439,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn compute_luma_lr_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn compute_luma_lr_block<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane<T>,
@@ -1609,9 +1609,9 @@ impl StripeChain<'_> {
     }
 
     #[expect(clippy::too_many_arguments)]
-    fn luma_lr_cell_subclasses<'a, B: splot_core::simd::SimdBackend, T: ReconSample>(
+    fn luma_lr_cell_subclasses<'a, T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         block: &WienerNsLrSourceBlock,
         window: &LrSourceRows<'_, T>,
         qindex: u32,
@@ -1660,7 +1660,7 @@ impl StripeChain<'_> {
             tile_end_y,
         };
         with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-            pc_wiener_classify_grid_padded_classes_into_with::<B, T, _>(
+            pc_wiener_classify_grid_padded_classes_into_with::<T, _>(
                 backend,
                 &params,
                 cell_cols,

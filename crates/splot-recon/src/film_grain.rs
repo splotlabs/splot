@@ -17,7 +17,6 @@
 use fearless_simd::{Simd, i16x16, i16x32, i32x8, prelude::*, u8x16, u8x32, u16x16};
 
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
-use splot_core::simd::SelectedBackend;
 
 use crate::{
     DecodedFrame, DecodedFrameInfo, FramePlaneSamples, FramePlanes, Plane, PlaneId, PlaneRect,
@@ -25,9 +24,11 @@ use crate::{
 };
 
 mod template;
+#[cfg(target_arch = "x86_64")]
 mod wide_luma;
 use template::{GrainTemplates, generate_grain};
-use wide_luma::add_luma_noise;
+#[cfg(target_arch = "x86_64")]
+pub(crate) use wide_luma::add_luma_noise;
 
 const LUMA_GRAIN_WIDTH: usize = 82;
 const LUMA_GRAIN_HEIGHT: usize = 73;
@@ -84,33 +85,39 @@ pub fn apply_film_grain_into<T: ReconSample>(
 /// # Errors
 ///
 /// See [`apply_film_grain`].
-pub fn apply_film_grain_into_with<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn apply_film_grain_into_with<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
+    kernels: crate::KernelSelection,
     frame: &DecodedFrame<T>,
     model: &FilmGrainModel,
     grain_seed: u16,
     spare: FramePlaneSamples<T>,
 ) -> Result<DecodedFrame<T>> {
-    let narrow = backend.narrow();
-    let wide = B::KIND == SelectedBackend::Avx512 && frame.bit_depth().bits() <= 10;
-    splot_core::with_simd!(narrow, simd => {
+    #[cfg(target_arch = "x86_64")]
+    let wide = kernels.wide().filter(|_| frame.bit_depth().bits() <= 10);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = kernels;
+    splot_core::with_simd!(backend, simd => {
         let add_noise = |row: &mut [T], scale: &[i16], noise: &[i16], params| {
-            if wide && row.len() >= 32 {
-                return backend.vectorize(
-                    #[inline(always)]
-                    || add_noise_row::<_, _, true>(backend.token(), row, scale, noise, params),
-                );
+            #[cfg(target_arch = "x86_64")]
+            if let Some(wide) = wide
+                && row.len() >= 32
+            {
+                if let Some(row) = T::u8_slice_mut(row) {
+                    return (wide.grain_u8)(row, scale, noise, params);
+                }
+                if let Some(row) = T::u16_slice_mut(row) {
+                    return (wide.grain_u16)(row, scale, noise, params);
+                }
             }
             add_noise_row::<_, _, false>(simd, row, scale, noise, params)
         };
-        let wide_luma = (wide && frame.bit_depth().bits() == 8).then_some(
-            |row: &mut [u8], table: &[u8; 256], noise: &[i16], params| {
-                backend.vectorize(
-                    #[inline(always)]
-                    || add_luma_noise(backend.token(), row, table, noise, params),
-                );
-            },
-        );
+        #[cfg(target_arch = "x86_64")]
+        let wide_luma = wide
+            .filter(|_| frame.bit_depth().bits() == 8)
+            .map(|wide| wide.luma_grain);
+        #[cfg(not(target_arch = "x86_64"))]
+        let wide_luma = None::<PackedLumaNoise>;
         apply_film_grain_simd(simd, frame, model, grain_seed, spare, add_noise, wide_luma)
     })
 }
@@ -710,7 +717,7 @@ fn chroma_index_lanes<S: Simd, L: GrainLanes>(
 }
 
 #[derive(Clone, Copy)]
-struct NoiseParams {
+pub(crate) struct NoiseParams {
     shift: u8,
     min: i32,
     max: i32,
@@ -724,7 +731,7 @@ struct NoiseParams {
     reason = "keep the row in the selected SIMD scope"
 )]
 #[inline(always)]
-fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
+pub(crate) fn add_noise_row<S: Simd, T: ReconSample, const WIDE: bool>(
     simd: S,
     row: &mut [T],
     scale: &[i16],

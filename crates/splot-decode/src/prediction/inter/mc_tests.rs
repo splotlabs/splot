@@ -1103,12 +1103,12 @@ fn direct_compound_blend_preserves_sample_storage_width() {
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
     let mut eight = vec![0; pred0.len()];
     crate::test_support::with_auto_backend!(backend => {
-        blend::weighted_row::<_, u8>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut eight)
+        blend::weighted_row::<u8>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut eight)
     })
     .expect("eight-bit compound blend");
     let mut wide = vec![0; pred0.len()];
     crate::test_support::with_auto_backend!(backend => {
-        blend::weighted_row::<_, u16>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut wide)
+        blend::weighted_row::<u16>(backend, &pred0, &pred1, BitDepth::Eight, CWP_EQUAL, &mut wide)
     })
     .expect("wide eight-bit compound blend");
     assert_eq!(
@@ -1118,7 +1118,7 @@ fn direct_compound_blend_preserves_sample_storage_width() {
 
     let mut ten_bit = vec![0; 1];
     crate::test_support::with_auto_backend!(backend => {
-        blend::weighted_row::<_, u16>(
+        blend::weighted_row::<u16>(
             backend,
             &[900 * 16],
             &[1000 * 16],
@@ -1173,7 +1173,7 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
 
     let mut got = vec![0; pred0.len()];
     crate::test_support::with_auto_backend!(backend => {
-        blend_compound_average::<_, u16>(
+        blend_compound_average::<u16>(
             backend,
             &pred0,
             &pred1,
@@ -1192,7 +1192,7 @@ fn scaled_compound_references_disable_implicit_mask_blending() {
     .expect("scaled compound blend");
     let mut expected = vec![0; pred0.len()];
     crate::test_support::with_auto_backend!(backend => {
-        blend::weighted_row::<_, u16>(
+        blend::weighted_row::<u16>(
             backend,
             &pred0,
             &pred1,
@@ -1607,7 +1607,13 @@ fn band_surface(
         u.map(|u| band(u, rows, shift)),
         v.map(|v| band(v, rows, shift)),
     ];
-    splot_recon::CurrentFrameRect::from_bands(info, luma, planes).expect("band surface")
+    splot_recon::CurrentFrameRect::from_bands(
+        info,
+        splot_recon::KernelSelection::default(),
+        luma,
+        planes,
+    )
+    .expect("band surface")
 }
 
 fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> Vec<T> {

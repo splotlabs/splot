@@ -170,9 +170,9 @@ impl IntrabcReconCommand {
         }
     }
 
-    pub(super) fn reconstruct<B: splot_core::simd::SimdBackend, T: ReconSample>(
+    pub(super) fn reconstruct<T: ReconSample>(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,

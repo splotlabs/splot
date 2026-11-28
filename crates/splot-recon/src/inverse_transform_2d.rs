@@ -126,8 +126,9 @@ pub fn inverse_transform_2d(
 /// # Errors
 /// Returns the same shape and buffer validation errors as
 /// [`inverse_transform_2d`].
-pub fn inverse_transform_2d_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn inverse_transform_2d_with(
+    backend: SimdBackend,
     params: &InverseTransform2d,
     dequant: &[i32],
     residual: &mut [i32],
@@ -181,9 +182,9 @@ impl Transform2dRunner for BaselineTransform2d {
 }
 
 #[derive(Clone, Copy)]
-struct TypedTransform2d<B: SimdBackend>(B);
+struct TypedTransform2d(SimdBackend);
 
-impl<B: SimdBackend> Transform2dRunner for TypedTransform2d<B> {
+impl Transform2dRunner for TypedTransform2d {
     #[inline]
     fn walsh(self, dequant: &[i32], residual: &mut [i32]) {
         splot_core::with_simd!(self.0, simd => walsh_hadamard_4x4(simd, dequant, residual));
@@ -283,15 +284,16 @@ pub(super) fn inverse_transform_2d_with_scratch(
     run_inverse_transform_2d(BaselineTransform2d, params, dequant, residual, intermediate)
 }
 
-pub(super) fn inverse_transform_2d_with_scratch_and_backend<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub(super) fn inverse_transform_2d_with_scratch_and_backend(
+    backend: SimdBackend,
     params: &InverseTransform2d,
     dequant: &[i32],
     residual: &mut [i32],
     intermediate: &mut [i32; MAX_DIM * MAX_DIM],
 ) -> Result<()> {
     run_inverse_transform_2d(
-        TypedTransform2d(backend.narrow()),
+        TypedTransform2d(backend),
         params,
         dequant,
         residual,
@@ -1089,18 +1091,11 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_route() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdPolicy, resolve_backend};
 
-        struct Check<'a>(&'a InverseTransform2d, &'a [i32], &'a [i32]);
-        impl SimdScope<()> for Check<'_> {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let mut got = vec![0i32; self.2.len()];
-                inverse_transform_2d_with(backend, self.0, self.1, &mut got).unwrap();
-                assert_eq!(got, self.2);
-            }
-        }
-
-        let backend = resolve_backend(SimdPolicy::Auto).expect("auto backend");
+        let backend = resolve_backend(SimdPolicy::Auto)
+            .expect("auto backend")
+            .backend();
         let cases = [
             (
                 params(2, 2, true, dct(), dct(), 0, 0),
@@ -1116,7 +1111,9 @@ mod tests {
         for (tx, dequant, out_len) in cases {
             let mut expected = vec![0i32; out_len];
             inverse_transform_2d(&tx, &dequant, &mut expected).unwrap();
-            backend.enter(Check(&tx, &dequant, &expected));
+            let mut got = vec![0i32; out_len];
+            inverse_transform_2d_with(backend, &tx, &dequant, &mut got).unwrap();
+            assert_eq!(got, expected);
         }
     }
 }

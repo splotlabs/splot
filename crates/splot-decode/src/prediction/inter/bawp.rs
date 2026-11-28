@@ -136,11 +136,10 @@ impl TemplatePairs {
     /// zeroed, `u16` lanes for the sample sums and `u32` lanes for the
     /// products.
     #[inline]
-    fn stats<B: SimdBackend>(&self, backend: B) -> TemplateStats {
+    fn stats(&self, backend: SimdBackend) -> TemplateStats {
         const LANE: [u16; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
         let (len, step) = self.up;
-        let narrow = backend.narrow();
-        splot_core::with_simd!(narrow, simd => {
+        splot_core::with_simd!(backend, simd => {
             let lane = u16x16::load_array(simd, LANE);
             let keep = lane.simd_lt(u16x16::splat(simd, len as u16))
                 & (lane & u16x16::splat(simd, step.wrapping_sub(1) as u16))
@@ -236,8 +235,8 @@ impl<'a, T: ReconSample> CurrentTemplate<'a, T> {
 /// the block from its first column, `left_ref(i)` the reference sample left
 /// of block row `i`.
 #[inline]
-fn collect_template_stats<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn collect_template_stats<T: ReconSample>(
+    backend: SimdBackend,
     current: &CurrentTemplate<'_, T>,
     (width, height, num_up, num_left): (usize, usize, usize, usize),
     above_ref: &[T],
@@ -258,8 +257,8 @@ fn collect_template_stats<B: SimdBackend, T: ReconSample>(
     Some(pairs.stats(backend))
 }
 
-pub(crate) fn apply_bawp<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn apply_bawp<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
@@ -289,8 +288,8 @@ pub(crate) fn apply_bawp<B: SimdBackend, T: ReconSample>(
     Ok(())
 }
 
-pub(crate) fn apply_intrabc_morph_pred<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
     (avail_up, avail_left): (bool, bool),
@@ -365,8 +364,8 @@ pub(crate) fn apply_intrabc_morph_pred<B: SimdBackend, T: ReconSample>(
 }
 
 #[expect(clippy::too_many_arguments)]
-fn apply_bawp_plane<B: SimdBackend, T: ReconSample>(
-    backend: B,
+fn apply_bawp_plane<T: ReconSample>(
+    backend: SimdBackend,
     workspace: &mut CurrentFrameWorkspace<T>,
     reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,

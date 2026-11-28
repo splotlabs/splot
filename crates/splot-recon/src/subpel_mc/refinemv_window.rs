@@ -109,10 +109,10 @@ pub fn refinemv_search_windows<T: ReconSample, P: WindowSample>(
     )
 }
 
-/// Typed [`refinemv_search_windows`] using caller-selected `backend`.
+/// [`refinemv_search_windows`] using caller-selected `backend`.
 #[must_use]
-pub fn refinemv_search_windows_with<B: SimdBackend, T: ReconSample, P: WindowSample>(
-    backend: B,
+pub fn refinemv_search_windows_with<T: ReconSample, P: WindowSample>(
+    backend: SimdBackend,
     views: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
     allow_center: bool,

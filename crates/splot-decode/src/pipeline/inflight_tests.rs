@@ -15,11 +15,15 @@ use crate::test_support::decoded_frame;
 fn next_luma(ring: &InflightRing, info: DecodedFrameInfo) -> *const u8 {
     let mut planes =
         splot_recon::FramePlaneSamples::default().with_pool(Some(ring.buffers.planes()));
-    splot_recon::CurrentFrameWorkspace::<u8>::new_recycled_from(info, &mut planes)
-        .expect("workspace")
-        .samples(splot_recon::PlaneId::Y)
-        .expect("luma")
-        .as_ptr()
+    splot_recon::CurrentFrameWorkspace::<u8>::new_recycled_from(
+        info,
+        ring.buffers.kernels(),
+        &mut planes,
+    )
+    .expect("workspace")
+    .samples(splot_recon::PlaneId::Y)
+    .expect("luma")
+    .as_ptr()
 }
 
 #[test]
@@ -483,7 +487,12 @@ fn retired_publications_keep_their_identity_and_exclude_direct_readers() {
     let info = decoded_frame(8, 8).info();
     let mut planes = splot_recon::FramePlaneSamples::default();
     let workspace = |planes: &mut splot_recon::FramePlaneSamples<u8>| {
-        splot_recon::CurrentFrameWorkspace::new_recycled_from(info, planes).unwrap()
+        splot_recon::CurrentFrameWorkspace::new_recycled_from(
+            info,
+            splot_recon::KernelSelection::default(),
+            planes,
+        )
+        .unwrap()
     };
     let (mut slot, writer) =
         RefFrameSlot::<u8>::pending_recycled(workspace(&mut planes), Some(&buffers)).unwrap();

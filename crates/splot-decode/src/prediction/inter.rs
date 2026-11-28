@@ -81,8 +81,8 @@ fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> 
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn walk_inter_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: SourceBytes<'_>,
@@ -166,8 +166,11 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
     )?;
     scratch.payload = payload_scratch;
     let mut recycled = scratch.pooled_planes();
-    let workspace =
-        splot_recon::CurrentFrameWorkspace::new_recycled_from(geometry.info(), &mut recycled)?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
+    let workspace = splot_recon::CurrentFrameWorkspace::new_recycled_from(
+        geometry.info(),
+        scratch.kernels(),
+        &mut recycled,
+    )?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let InterBlockDecodeOutput {
         workspace,
@@ -198,8 +201,8 @@ pub(crate) fn walk_inter_frame<B: splot_core::simd::SimdBackend, T: ReconSample>
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn decode_tip_output_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn decode_tip_output_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     candidate: &DecodePlannedObu,
@@ -255,8 +258,8 @@ pub(crate) fn tip_output_products(
 
 /// Predicts a TIP output frame's samples and its stored motion field.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_tip_output<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn reconstruct_tip_output<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut InterDecodeScratch<T>,
     planes: splot_recon::FramePlaneSamples<T>,
     core: &FrameHeaderCore,
@@ -271,8 +274,8 @@ pub(crate) fn reconstruct_tip_output<B: splot_core::simd::SimdBackend, T: ReconS
 }
 
 #[expect(clippy::too_many_arguments)]
-fn decode_bridge_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn decode_bridge_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: Arc<FrameHeaderCore>,
@@ -816,9 +819,9 @@ impl<'a, T: ReconSample> HeldInterBlockReferences<'a, T> {
     ///
     /// As [`mc::motion_compensate_single_block_into`] and
     /// [`mc::predict_inter_block`].
-    pub(in crate::prediction::inter) fn predict_into<B: splot_core::simd::SimdBackend>(
+    pub(in crate::prediction::inter) fn predict_into(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         sink: &mut CurrentFrameSurface<'_, '_, T>,
         placed: &PlacedInterBlock,
         rect: mc::McBlockRect,
@@ -985,11 +988,8 @@ fn compound_is_joint_context_from_order_hints(
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
 #[expect(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
->(
-    backend: B,
+pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     residual: &InterResidual,
     residual_blocks: &[InterResidualBlock],
@@ -1113,8 +1113,8 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 
 #[expect(clippy::too_many_arguments)]
 #[inline(never)]
-fn reconstruct_inter_residual_chroma_cctx_pair<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     scratch: &mut ResidualScratch,
     [u, v]: [&InterResidualBlock; 2],

@@ -296,9 +296,9 @@ impl EncoderInterTile {
     /// Predicts the leaf at `frontier` by intra block copy with the block
     /// vector `mv` from the reconstruction in `workspace` (§ 7.11.4), with
     /// the § 7.13.3.26 morphological prediction of its luma when `morph`.
-    pub(crate) fn predict_intrabc<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn predict_intrabc(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         frontier: &DecodeBlockFrontier,
         mv: MotionVector,
         morph: bool,

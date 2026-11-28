@@ -55,7 +55,7 @@ fn decode_intra_fixture_with_core(
     let mut products =
         crate::prediction::inter::FrameProductWriters::fresh().expect("fresh product writers");
     let walk = crate::test_support::with_auto_backend!(backend => {
-        crate::pipeline::frame_engine::walk_frame::<_, u8>(
+        crate::pipeline::frame_engine::walk_frame::<u8>(
             backend,
             &mut crate::prediction::inter::InterDecodeScratch::default(),
             &candidate,

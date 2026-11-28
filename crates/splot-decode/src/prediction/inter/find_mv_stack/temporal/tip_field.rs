@@ -11,8 +11,8 @@ use super::{
     REFMVS_LIMIT, TipReferencePair, fill_temporal_sampling_gaps,
 };
 
-pub(super) fn prepare_tip_field<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(super) fn prepare_tip_field(
+    backend: splot_core::simd::SimdBackend,
     field: &mut ProjectedTemporalMotionField,
     references: TipReferencePair,
     projection_step: usize,
@@ -20,8 +20,7 @@ pub(super) fn prepare_tip_field<B: splot_core::simd::SimdBackend>(
     fill_holes: bool,
 ) -> crate::Result<()> {
     let (unit, holes) = (tmvp_unit_size8, fill_holes);
-    let narrow = backend.narrow();
-    splot_core::with_simd!(narrow, simd => match projection_step {
+    splot_core::with_simd!(backend, simd => match projection_step {
         1 if unit <= 8 => prepare_tip_units::<_, 1, 1>(simd, field, references, unit, holes),
         1 => prepare_tip_units::<_, 2, 1>(simd, field, references, unit, holes),
         2 => prepare_tip_units::<_, 1, 2>(simd, field, references, unit, holes),
@@ -219,40 +218,53 @@ fn round2_signed<S: Simd>(value: i32x8<S>, shift: u32) -> i32x8<S> {
 /// both components are clamped to `REFMVS_LIMIT`, so they fit 12 bits, and
 /// only an invalid sample packs to zero.
 fn fill_tip_holes<S: Simd>(simd: S, planes: &mut TipPlanes, rows: usize, cols: usize) {
-    let zero = i32x16::splat(simd, 0);
-    let lane = i32x16::load_array(simd, core::array::from_fn(|lane| lane as i32));
-    let inside = lane.simd_lt(i32x16::splat(simd, cols as i32));
-    let pick = |a: i32x16<S>, b: i32x16<S>| a.simd_ne(zero).select(a, b);
-    let load = |planes: &TipPlanes, at: usize| {
-        let [valid, row, col] = planes.each_ref().map(|plane| {
-            plane
-                .get(at..)
-                .and_then(<[i32]>::first_chunk::<MAX_TIP_UNIT8>)
-                .map_or(zero, |lanes| i32x16::from_slice(simd, lanes))
-        });
-        (row << 20) | ((col & 0xfff) << 8) | valid
+    splot_core::in_scope!(simd => {
+        let zero = i32x16::splat(simd, 0);
+        let lane = i32x16::load_array(simd, core::array::from_fn(|lane| lane as i32));
+        let inside = lane.simd_lt(i32x16::splat(simd, cols as i32));
+        let pick = {
+        #[inline(always)]
+        |a: i32x16<S>, b: i32x16<S>| a.simd_ne(zero).select(a, b)
     };
-    let (mut swept_above, mut held_above) = (zero, zero);
-    for row in 1..=rows {
-        let at = row * TIP_GRID + 1;
-        let own = pick(load(planes, at), swept_above);
-        let mut swept = own;
-        if (own.simd_eq(zero) & inside).any_true() {
-            swept = pick(swept, zero.slide::<15>(swept));
-            swept = pick(swept, zero.slide::<14>(swept));
-            swept = pick(swept, zero.slide::<12>(swept));
-            swept = inside.select(pick(swept, zero.slide::<8>(swept)), zero);
+        let load = {
+        #[inline(always)]
+        |planes: &TipPlanes, at: usize| {
+            let [valid, row, col] = planes.each_ref().map(|plane| {
+                plane
+                    .get(at..)
+                    .and_then(<[i32]>::first_chunk::<MAX_TIP_UNIT8>)
+                    .map_or(zero, |lanes| i32x16::from_slice(simd, lanes))
+            });
+            (row << 20) | ((col & 0xfff) << 8) | valid
         }
-        let held = pick(swept, own.slide::<1>(zero));
-        if row > 1 {
-            store_tip_lanes(planes, at - TIP_GRID, pick(held_above, swept));
+    };
+        let (mut swept_above, mut held_above) = (zero, zero);
+        for row in 1..=rows {
+            let at = row * TIP_GRID + 1;
+            let own = pick(load(planes, at), swept_above);
+            let mut swept = own;
+            if (own.simd_eq(zero) & inside).any_true() {
+                swept = pick(swept, zero.slide::<15>(swept));
+                swept = pick(swept, zero.slide::<14>(swept));
+                swept = pick(swept, zero.slide::<12>(swept));
+                swept = inside.select(pick(swept, zero.slide::<8>(swept)), zero);
+            }
+            let held = pick(swept, own.slide::<1>(zero));
+            if row > 1 {
+                store_tip_lanes(planes, at - TIP_GRID, pick(held_above, swept));
+            }
+            (swept_above, held_above) = (swept, held);
         }
-        (swept_above, held_above) = (swept, held);
-    }
-    store_tip_lanes(planes, rows * TIP_GRID + 1, held_above);
+        store_tip_lanes(planes, rows * TIP_GRID + 1, held_above);
+    });
 }
 
 /// Unpacks a row of [`fill_tip_holes`] samples into the planes at `at`.
+#[expect(
+    clippy::inline_always,
+    reason = "a lane step of its caller's SIMD loop"
+)]
+#[inline(always)]
 fn store_tip_lanes<S: Simd>(planes: &mut TipPlanes, at: usize, packed: i32x16<S>) {
     let lanes = [packed & 1, packed >> 20, (packed << 12) >> 20];
     for (plane, value) in planes.iter_mut().zip(lanes) {

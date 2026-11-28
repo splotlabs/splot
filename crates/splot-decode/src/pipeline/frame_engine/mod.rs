@@ -39,8 +39,8 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 /// Returns the walk's own diagnostic when the header, tile plan, or block walk
 /// fails.
 #[expect(clippy::too_many_arguments)]
-pub(crate) fn walk_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(crate) fn walk_frame<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: &mut inter::InterDecodeScratch<T>,
     candidate: &DecodePlannedObu,
     bytes: crate::bitstream::byte_stream::SourceBytes<'_>,
@@ -66,7 +66,7 @@ pub(crate) fn walk_frame<B: splot_core::simd::SimdBackend, T: ReconSample>(
             bit_depth,
             products,
         ),
-        FrameSetup::Intra => intra::walk_intra_frame::<B, T>(
+        FrameSetup::Intra => intra::walk_intra_frame::<T>(
             backend,
             scratch,
             candidate,

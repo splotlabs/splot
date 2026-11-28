@@ -27,7 +27,7 @@ pub(crate) const INTRA_EDGE_KERNEL: [[i32; INTRA_EDGE_TAPS]; INTRA_EDGE_KERNELS]
 struct BaselineEdgeFilter;
 
 #[derive(Clone, Copy)]
-struct TypedEdgeFilter<B: SimdBackend>(B);
+struct TypedEdgeFilter(SimdBackend);
 
 trait EdgeFilterRunner: Copy {
     fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]);
@@ -46,17 +46,15 @@ impl EdgeFilterRunner for BaselineEdgeFilter {
     }
 }
 
-impl<B: SimdBackend> EdgeFilterRunner for TypedEdgeFilter<B> {
+impl EdgeFilterRunner for TypedEdgeFilter {
     #[inline]
     fn filter_u8(self, samples: &mut [u8], kernel: &[i32; INTRA_EDGE_TAPS]) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => filter_rolling::<_, _, false>(simd, samples, kernel));
+        splot_core::with_simd!(self.0, simd => filter_rolling::<_, _, false>(simd, samples, kernel));
     }
 
     #[inline]
     fn filter_u16(self, samples: &mut [u16], kernel: &[i32; INTRA_EDGE_TAPS]) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => filter_u16_edge_simd(simd, samples, kernel));
+        splot_core::with_simd!(self.0, simd => filter_u16_edge_simd(simd, samples, kernel));
     }
 }
 
@@ -126,12 +124,12 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
     apply_intra_edge_filter_with_runner(BaselineEdgeFilter, edge, sz, strength)
 }
 
-/// Typed [`apply_intra_edge_filter`] using caller-selected `backend`.
+/// [`apply_intra_edge_filter`] using caller-selected `backend`.
 ///
 /// # Errors
 /// Returns the same validation errors as [`apply_intra_edge_filter`].
-pub fn apply_intra_edge_filter_with<B: SimdBackend, T: ReconSample>(
-    backend: B,
+pub fn apply_intra_edge_filter_with<T: ReconSample>(
+    backend: SimdBackend,
     edge: &mut [T],
     sz: usize,
     strength: u8,
@@ -250,44 +248,42 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_route() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                for strength in 0..=3u8 {
-                    for sz in [1usize, 5, 17, 37] {
-                        let base8: Vec<u8> = (0..sz).map(|i| ((i * 29 + 7) % 256) as u8).collect();
-                        let (mut compat8, mut typed8) =
-                            (Vec::from(base8.as_slice()), Vec::from(base8.as_slice()));
-                        apply_intra_edge_filter(&mut compat8, sz, strength).unwrap();
-                        apply_intra_edge_filter_with(backend, &mut typed8, sz, strength).unwrap();
-                        assert_eq!(typed8, compat8);
+        fn check(backend: SimdBackend) {
+            for strength in 0..=3u8 {
+                for sz in [1usize, 5, 17, 37] {
+                    let base8: Vec<u8> = (0..sz).map(|i| ((i * 29 + 7) % 256) as u8).collect();
+                    let (mut compat8, mut typed8) =
+                        (Vec::from(base8.as_slice()), Vec::from(base8.as_slice()));
+                    apply_intra_edge_filter(&mut compat8, sz, strength).unwrap();
+                    apply_intra_edge_filter_with(backend, &mut typed8, sz, strength).unwrap();
+                    assert_eq!(typed8, compat8);
 
-                        let narrow10: Vec<u16> =
-                            (0..sz).map(|i| (i as u16 * 61 + 11) % 1024).collect();
-                        let (mut compat10, mut typed10) = (
-                            Vec::from(narrow10.as_slice()),
-                            Vec::from(narrow10.as_slice()),
-                        );
-                        apply_intra_edge_filter(&mut compat10, sz, strength).unwrap();
-                        apply_intra_edge_filter_with(backend, &mut typed10, sz, strength).unwrap();
-                        assert_eq!(typed10, compat10);
+                    let narrow10: Vec<u16> = (0..sz).map(|i| (i as u16 * 61 + 11) % 1024).collect();
+                    let (mut compat10, mut typed10) = (
+                        Vec::from(narrow10.as_slice()),
+                        Vec::from(narrow10.as_slice()),
+                    );
+                    apply_intra_edge_filter(&mut compat10, sz, strength).unwrap();
+                    apply_intra_edge_filter_with(backend, &mut typed10, sz, strength).unwrap();
+                    assert_eq!(typed10, compat10);
 
-                        let wide10: Vec<u16> =
-                            (0..sz).map(|i| (i as u16 * 509 + 4090) % 8192).collect();
-                        let (mut wcompat, mut wtyped) =
-                            (Vec::from(wide10.as_slice()), Vec::from(wide10.as_slice()));
-                        apply_intra_edge_filter(&mut wcompat, sz, strength).unwrap();
-                        apply_intra_edge_filter_with(backend, &mut wtyped, sz, strength).unwrap();
-                        assert_eq!(wtyped, wcompat);
-                    }
+                    let wide10: Vec<u16> =
+                        (0..sz).map(|i| (i as u16 * 509 + 4090) % 8192).collect();
+                    let (mut wcompat, mut wtyped) =
+                        (Vec::from(wide10.as_slice()), Vec::from(wide10.as_slice()));
+                    apply_intra_edge_filter(&mut wcompat, sz, strength).unwrap();
+                    apply_intra_edge_filter_with(backend, &mut wtyped, sz, strength).unwrap();
+                    assert_eq!(wtyped, wcompat);
                 }
             }
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }

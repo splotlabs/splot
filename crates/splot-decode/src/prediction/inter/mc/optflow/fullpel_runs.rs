@@ -18,12 +18,8 @@ use super::*;
 /// identically.
 #[expect(clippy::too_many_arguments)]
 #[inline(never)]
-pub(super) fn predict_fullpel_runs<
-    B: splot_core::simd::SimdBackend,
-    T: ReconSample,
-    O: CompoundAverageOutput,
->(
-    backend: B,
+pub(super) fn predict_fullpel_runs<T: ReconSample, O: CompoundAverageOutput>(
+    backend: splot_core::simd::SimdBackend,
     prediction: &CompoundSubpelPlane<'_, T>,
     cells: &[MotionCell],
     refine: (&[[MotionVector; 2]], usize, usize),

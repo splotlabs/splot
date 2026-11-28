@@ -13,7 +13,7 @@ use super::{
     EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, rule,
     tile_ranges,
 };
-use splot_recon::{BitDepth, DecodedFrame};
+use splot_recon::DecodedFrame;
 
 use crate::filters::gdf::{GDF_ERROR_BASE, GdfBlockGrid, GdfReferenceContext, gdf_stripe_row};
 use crate::filters::source::{FramePlane, StripePlane};
@@ -220,68 +220,30 @@ pub fn gdf_errors(
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
     let mut errors = vec![0i16; width * height];
-    {
-        struct StripeScope<'a> {
-            core: &'a FrameHeaderCore,
-            width: usize,
-            height: usize,
-            deblocked_plane: FramePlane<'a, u16>,
-            cdef_y: &'a [u16],
-            cdef_frame: &'a [StripePlane<u16>],
-            grid: Option<&'a GdfBlockGrid>,
-            bit_depth: BitDepth,
-            disable_across_tiles: bool,
-            reference: Option<GdfReferenceContext>,
-            errors: &'a mut [i16],
+    let backend = splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
+        .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?
+        .backend();
+    for range in crate::filters::gdf::stripe_ranges(core, height) {
+        let (start, end) = range.map_err(rule("GDF stripe"))?;
+        let rows = start * width..end * width;
+        let separate = stripe(cdef_y[rows.clone()].to_vec(), start)?;
+        let mut output = stripe(vec![GDF_ERROR_BASE; rows.len()], start)?;
+        crate::filters::gdf::error_stripe(
+            backend,
+            core,
+            deblocked_plane,
+            Some(&separate),
+            &cdef_frame,
+            &mut output,
+            grid.as_ref(),
+            cdef.bit_depth(),
+            disable_across_tiles,
+            reference,
+        )
+        .map_err(rule("GDF"))?;
+        for (error, &sample) in errors[rows].iter_mut().zip(output.samples()) {
+            *error = sample as i16 - GDF_ERROR_BASE as i16;
         }
-        impl splot_core::simd::SimdScope<Result<()>> for StripeScope<'_> {
-            fn run<B: splot_core::simd::SimdBackend>(self, backend: B) -> Result<()> {
-                let narrow = backend.narrow();
-                let stripe = |samples: Vec<u16>, start: usize| {
-                    StripePlane::from_samples(self.width, self.height, start, samples)
-                        .ok_or(EncoderSyntaxError::Unsupported("GDF stripe shape"))
-                };
-                for range in crate::filters::gdf::stripe_ranges(self.core, self.height) {
-                    let (start, end) = range.map_err(rule("GDF stripe"))?;
-                    let rows = start * self.width..end * self.width;
-                    let separate = stripe(self.cdef_y[rows.clone()].to_vec(), start)?;
-                    let base = vec![GDF_ERROR_BASE; rows.len()];
-                    let mut output = stripe(base, start)?;
-                    crate::filters::gdf::error_stripe(
-                        narrow,
-                        self.core,
-                        self.deblocked_plane,
-                        Some(&separate),
-                        self.cdef_frame,
-                        &mut output,
-                        self.grid,
-                        self.bit_depth,
-                        self.disable_across_tiles,
-                        self.reference,
-                    )
-                    .map_err(rule("GDF"))?;
-                    for (error, &sample) in self.errors[rows].iter_mut().zip(output.samples()) {
-                        *error = sample as i16 - GDF_ERROR_BASE as i16;
-                    }
-                }
-                Ok(())
-            }
-        }
-        splot_core::simd::resolve_backend(splot_core::simd::SimdPolicy::Auto)
-            .map_err(|_| EncoderSyntaxError::Unsupported("SIMD backend"))?
-            .enter(StripeScope {
-                core,
-                width,
-                height,
-                deblocked_plane,
-                cdef_y: &cdef_y,
-                cdef_frame: &cdef_frame,
-                grid: grid.as_ref(),
-                bit_depth: cdef.bit_depth(),
-                disable_across_tiles,
-                reference,
-                errors: &mut errors,
-            })?;
     }
     Ok((width, errors))
 }

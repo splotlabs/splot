@@ -1195,9 +1195,9 @@ fn assert_passes_match_every_edge(
             let mut ctx = PlaneCtx::new(band).unwrap();
             crate::test_support::with_auto_backend!(backend => {
                 if plane_pass.pass == 0 {
-                    edges.apply::<_, u8, 0>(backend, &mut ctx, BitDepth::Eight)
+                    edges.apply::<u8, 0>(backend, &mut ctx, BitDepth::Eight)
                 } else {
-                    edges.apply::<_, u8, 1>(backend, &mut ctx, BitDepth::Eight)
+                    edges.apply::<u8, 1>(backend, &mut ctx, BitDepth::Eight)
                 }
             })
             .unwrap();

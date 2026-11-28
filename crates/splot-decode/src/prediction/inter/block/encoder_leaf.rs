@@ -558,9 +558,9 @@ impl EncoderInterTile {
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
     /// returns its motion vectors.
-    pub(crate) fn predict<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn predict(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -627,9 +627,9 @@ impl EncoderInterTile {
 
     /// Adds `residual` to the predicted samples of `frontier` in `workspace`;
     /// an IntraBC block (`use_intrabc`) transforms without DDT.
-    pub(crate) fn add_residual<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn add_residual(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         residual: &EncoderInterResidual,
         use_intrabc: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -652,9 +652,9 @@ impl EncoderInterTile {
 
     /// Publishes a coded inter leaf: its flags, then its § 7.12 resolution.
     /// Returns the motion vectors the decoder resolves.
-    pub(crate) fn publish<B: splot_core::simd::SimdBackend>(
+    pub(crate) fn publish(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         skip: bool,
@@ -709,9 +709,9 @@ impl EncoderInterTile {
     }
 
     /// Appends the § 7.22 temporal records of a refined or wedge compound block.
-    fn append_compound_records<B: splot_core::simd::SimdBackend>(
+    fn append_compound_records(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         placed: &PlacedInterBlock,
         motion: Option<&mc::RefinedUnits>,
     ) -> Result<()> {
@@ -739,9 +739,9 @@ impl EncoderInterTile {
     /// The decoder's refined motion of the compound block `placed` with
     /// `(use_refinemv, refinemv_switchable, _)` into `units`; with `predict`,
     /// also its prediction into `workspace`.
-    fn predict_refined<B: splot_core::simd::SimdBackend>(
+    fn predict_refined(
         &self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         placed: &PlacedInterBlock,
         (use_refinemv, switchable, _): (bool, bool, bool),
         workspace: &mut CurrentFrameWorkspace<u16>,
@@ -767,9 +767,9 @@ impl EncoderInterTile {
     /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
     /// appends to `records`; with `predict`, also its prediction into
     /// `workspace`.
-    fn tip_motion<B: splot_core::simd::SimdBackend>(
+    fn tip_motion(
         &mut self,
-        backend: B,
+        backend: splot_core::simd::SimdBackend,
         placed: &PlacedInterBlock,
         workspace: &mut CurrentFrameWorkspace<u16>,
         records: &mut Vec<TemporalMotionBlock>,
@@ -1225,8 +1225,8 @@ impl EncoderInterTile {
 /// The § 7.9 projected motion field of frame `core` of `sequence` over
 /// `reference`, which every tile of the frame shares; `None` without
 /// `use_ref_frame_mvs`.
-pub(crate) fn encoder_temporal_context<B: splot_core::simd::SimdBackend>(
-    backend: B,
+pub(crate) fn encoder_temporal_context(
+    backend: splot_core::simd::SimdBackend,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &ReferenceMetadata,

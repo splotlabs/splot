@@ -65,7 +65,7 @@ trait WorkspaceRunner: Copy {
 struct BaselineWorkspace;
 
 #[derive(Clone, Copy)]
-struct TypedWorkspace<B>(B);
+struct TypedWorkspace(SimdBackend);
 
 #[inline]
 fn copy_u16_narrow_simd<S: fearless_simd::Simd>(simd: S, target: &mut [u8], samples: &[u16]) {
@@ -125,7 +125,7 @@ impl WorkspaceRunner for BaselineWorkspace {
     }
 }
 
-impl<B: SimdBackend> WorkspaceRunner for TypedWorkspace<B> {
+impl WorkspaceRunner for TypedWorkspace {
     #[inline]
     fn u16_samples_exceed(self, samples: &[u16], max_sample: u16) -> bool {
         crate::sample_range::u16_samples_exceed_with(self.0, samples, max_sample)
@@ -138,8 +138,7 @@ impl<B: SimdBackend> WorkspaceRunner for TypedWorkspace<B> {
 
     #[inline]
     fn copy_u16_to_u8(self, target: &mut [u8], samples: &[u16]) {
-        let narrow = self.0.narrow();
-        splot_core::with_simd!(narrow, simd => copy_u16_narrow_simd(simd, target, samples));
+        splot_core::with_simd!(self.0, simd => copy_u16_narrow_simd(simd, target, samples));
     }
 
     #[inline]
@@ -211,6 +210,7 @@ pub struct CurrentFrameWorkspace<T: ReconSample> {
     u: Option<CurrentFramePlane<T>>,
     v: Option<CurrentFramePlane<T>>,
     intra_prediction_scratch: IntraPredictionScratch<T>,
+    kernels: crate::KernelSelection,
 }
 
 /// Selects one of the two reusable current-frame intra-prediction buffers.
@@ -414,6 +414,7 @@ fn ensure_surface_rect(plane: PlaneId, band: PlaneRect, rect: PlaneRect) -> Resu
 #[derive(Debug)]
 pub struct CurrentFrameRect<'a, T: ReconSample> {
     info: DecodedFrameInfo,
+    kernels: crate::KernelSelection,
     y: CurrentFramePlaneRect<'a, T>,
     u: Option<CurrentFramePlaneRect<'a, T>>,
     v: Option<CurrentFramePlaneRect<'a, T>>,
@@ -482,6 +483,15 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             Self::Frame(workspace) => workspace.info(),
             Self::Rect(rect) => rect.info(),
             Self::OwnedRect(rect) => rect.info(),
+        }
+    }
+
+    /// The kernels of the decode this target reconstructs for.
+    pub fn kernels(&self) -> crate::KernelSelection {
+        match self {
+            Self::Frame(workspace) => workspace.kernels(),
+            Self::Rect(rect) => rect.kernels,
+            Self::OwnedRect(rect) => rect.kernels(),
         }
     }
 
@@ -564,20 +574,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.write_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
     }
 
-    /// Typed [`Self::write_rect`] using caller-selected `backend`.
+    /// [`Self::write_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::write_rect`].
-    pub fn write_rect_with<B: SimdBackend>(
+    pub fn write_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         rect: PlaneRect,
         samples: &[T],
         row_stride_samples: usize,
     ) -> Result<()> {
         self.write_rect_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             rect,
             samples,
@@ -691,20 +701,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.write_u16_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
     }
 
-    /// Typed [`Self::write_u16_rect`] using caller-selected `backend`.
+    /// [`Self::write_u16_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::write_u16_rect`].
-    pub fn write_u16_rect_with<B: SimdBackend>(
+    pub fn write_u16_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         rect: PlaneRect,
         samples: &[u16],
         row_stride_samples: usize,
     ) -> Result<()> {
         self.write_u16_rect_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             rect,
             samples,
@@ -810,13 +820,13 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.write_rect(plane, rect, samples, size.width())
     }
 
-    /// Typed [`Self::write_rect_block`] using caller-selected `backend`.
+    /// [`Self::write_rect_block`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::write_rect_block`].
-    pub fn write_rect_block_with<B: SimdBackend>(
+    pub fn write_rect_block_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -871,14 +881,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         self.add_residual_rect_block_with_runner(BaselineWorkspace, plane, x, y, size, residual)
     }
 
-    /// Typed [`Self::add_residual_rect_block`] using caller-selected `backend`.
+    /// [`Self::add_residual_rect_block`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::add_residual_rect_block`].
     #[inline]
-    pub fn add_residual_rect_block_with<B: SimdBackend>(
+    pub fn add_residual_rect_block_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -886,7 +896,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: &[i32],
     ) -> Result<()> {
         self.add_residual_rect_block_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             x,
             y,
@@ -996,14 +1006,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         )
     }
 
-    /// Typed [`Self::add_adjusted_residual_rect_block`] using caller-selected `backend`.
+    /// [`Self::add_adjusted_residual_rect_block`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::add_adjusted_residual_rect_block`].
     #[inline]
-    pub fn add_adjusted_residual_rect_block_with<B: SimdBackend>(
+    pub fn add_adjusted_residual_rect_block_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -1011,7 +1021,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: &[i32],
     ) -> Result<()> {
         self.add_adjusted_residual_rect_block_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             x,
             y,
@@ -1075,14 +1085,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         )
     }
 
-    /// Typed [`Self::add_constant_residual_rect_block`] using caller-selected `backend`.
+    /// [`Self::add_constant_residual_rect_block`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::add_constant_residual_rect_block`].
     #[inline]
-    pub fn add_constant_residual_rect_block_with<B: SimdBackend>(
+    pub fn add_constant_residual_rect_block_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,
@@ -1090,7 +1100,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: i32,
     ) -> Result<()> {
         self.add_constant_residual_rect_block_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             x,
             y,
@@ -1200,11 +1210,19 @@ pub(crate) fn subsampled_rect(
 const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// The kernels the decoder of this frame selected.
+    #[must_use]
+    pub fn kernels(&self) -> crate::KernelSelection {
+        self.kernels
+    }
+
     /// Creates a workspace from decoded-frame metadata and an initial fill.
     ///
     /// Plane geometry is derived from [`DecodedFrameInfo`]. Y storage uses the
     /// reconstruction luma size, chroma storage follows AV2 §6.4.1 subsampling,
-    /// and monochrome workspaces allocate only Y.
+    /// and monochrome workspaces allocate only Y. It selects no kernels; a
+    /// decode opens its workspaces with the constructors that take its
+    /// [`KernelSelection`](crate::KernelSelection).
     ///
     /// # Errors
     /// Returns [`ReconError`] if the sample type cannot represent the frame bit
@@ -1212,15 +1230,17 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// overflows, or plane allocation fails.
     pub fn new(info: DecodedFrameInfo, fill: T) -> Result<Self> {
         validate_sample_value(PlaneId::Y, 0, fill, info.bit_depth().max_sample())?;
-        Self::with_fill(info, Some(fill))
-    }
-
-    pub(crate) fn with_fill(info: DecodedFrameInfo, fill: Option<T>) -> Result<Self> {
-        Self::with_planes(info, fill, &mut FramePlaneSamples::default())
+        Self::with_planes(
+            info,
+            crate::KernelSelection::default(),
+            Some(fill),
+            &mut FramePlaneSamples::default(),
+        )
     }
 
     fn with_planes(
         info: DecodedFrameInfo,
+        kernels: crate::KernelSelection,
         fill: Option<T>,
         recycled: &mut FramePlaneSamples<T>,
     ) -> Result<Self> {
@@ -1264,6 +1284,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             u,
             v,
             intra_prediction_scratch: IntraPredictionScratch::new(),
+            kernels,
         })
     }
 
@@ -1443,20 +1464,20 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.write_rect_with_runner(BaselineWorkspace, plane, rect, samples, row_stride_samples)
     }
 
-    /// Typed [`Self::write_rect`] using caller-selected `backend`.
+    /// [`Self::write_rect`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::write_rect`].
-    pub fn write_rect_with<B: SimdBackend>(
+    pub fn write_rect_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         rect: PlaneRect,
         samples: &[T],
         row_stride_samples: usize,
     ) -> Result<()> {
         self.write_rect_with_runner(
-            TypedWorkspace(backend.narrow()),
+            TypedWorkspace(backend),
             plane,
             rect,
             samples,
@@ -1554,13 +1575,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         self.write_rect(plane, rect, samples, size.width())
     }
 
-    /// Typed [`Self::write_rect_block`] using caller-selected `backend`.
+    /// [`Self::write_rect_block`] using caller-selected `backend`.
     ///
     /// # Errors
     /// Returns the same validation errors as [`Self::write_rect_block`].
-    pub fn write_rect_block_with<B: SimdBackend>(
+    pub fn write_rect_block_with(
         &mut self,
-        backend: B,
+        backend: SimdBackend,
         plane: PlaneId,
         x: usize,
         y: usize,

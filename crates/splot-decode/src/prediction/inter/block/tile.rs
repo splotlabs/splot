@@ -1403,8 +1403,8 @@ fn poison_reused_surface<T: ReconSample>(surface: &mut splot_recon::OwnedFrameRe
 fn poison_reused_surface<T: ReconSample>(_surface: &mut splot_recon::OwnedFrameRect<T>) {}
 
 #[expect(clippy::too_many_arguments)]
-fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn precompute_recon_row<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     mut ready: ReadyReconRow<T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
@@ -1457,8 +1457,8 @@ fn precompute_recon_row<B: splot_core::simd::SimdBackend, T: ReconSample>(
 /// (mixed-region chroma residual) before it instead of after, reading
 /// prepublish samples as its residual base.
 #[expect(clippy::too_many_arguments)]
-fn precompute_recon_row_on_surface<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+fn precompute_recon_row_on_surface<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     row: &mut ReconRow,
     tile_offset: ByteOffset,
     surface: &mut CurrentFrameSurface<'_, '_, T>,
@@ -1999,6 +1999,11 @@ impl ParseProgress {
         })
     }
 
+    /// The kernels this decode selected, for the bands it opens.
+    pub(crate) fn kernels(&self) -> splot_recon::KernelSelection {
+        crate::support::decode_buffers::DecodeBuffers::kernels_of(self.buffers.as_ref())
+    }
+
     pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
         if let Some(shared) = &self.buffers {
             buffers.fit(shared.note_unit_lengths(buffers.lengths));
@@ -2292,8 +2297,8 @@ pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn decode_tiles<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn decode_tiles<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     scratch: TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     payload: &[u8],

@@ -279,13 +279,15 @@ pub(super) fn fullpel_u16_simd<S: Simd>(
     output: &mut [u16],
     stride: usize,
 ) {
-    let (forward, max) = clip;
-    match (size, forward) {
-        (4, 8) => fullpel_cell_u16::<_, 4>(simd, sources, origins, (8, max), output, stride),
-        (4, _) => fullpel_cell_u16::<_, 4>(simd, sources, origins, clip, output, stride),
-        (_, 8) => fullpel_cell_u16::<_, 8>(simd, sources, origins, (8, max), output, stride),
-        _ => fullpel_cell_u16::<_, 8>(simd, sources, origins, clip, output, stride),
-    }
+    splot_core::in_scope!(simd => {
+        let (forward, max) = clip;
+        match (size, forward) {
+            (4, 8) => fullpel_cell_u16::<_, 4>(simd, sources, origins, (8, max), output, stride),
+            (4, _) => fullpel_cell_u16::<_, 4>(simd, sources, origins, clip, output, stride),
+            (_, 8) => fullpel_cell_u16::<_, 8>(simd, sources, origins, (8, max), output, stride),
+            _ => fullpel_cell_u16::<_, 8>(simd, sources, origins, clip, output, stride),
+        }
+    });
 }
 
 /// The most cells one [`CompoundCells`] program holds.
@@ -409,11 +411,11 @@ pub fn subpel_compound_cells<T: ReconSample, O: ReconSample>(
     subpel_compound_cells_with_runner(super::BaselineSubpel, planes, interp, size, cells, clip)
 }
 
-/// Typed [`subpel_compound_cells`] using caller-selected `backend`.
+/// [`subpel_compound_cells`] using caller-selected `backend`.
 #[doc(hidden)]
 #[inline]
-pub fn subpel_compound_cells_with<B: SimdBackend, T: ReconSample, O: ReconSample>(
-    backend: B,
+pub fn subpel_compound_cells_with<T: ReconSample, O: ReconSample>(
+    backend: SimdBackend,
     planes: [Option<CellPlane<'_, '_, T, O>>; 2],
     interp: InterpolationFilter,
     size: usize,
@@ -421,7 +423,7 @@ pub fn subpel_compound_cells_with<B: SimdBackend, T: ReconSample, O: ReconSample
     clip: (i16, crate::format::BitDepth),
 ) -> Written {
     subpel_compound_cells_with_runner(
-        super::TypedSubpel(backend.narrow()),
+        super::TypedSubpel(backend),
         planes,
         interp,
         size,

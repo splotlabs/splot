@@ -45,6 +45,12 @@ jobs:
         run: |
           cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
             film_grain::tests::wide_
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            intra_basic::wide_tests::wide_
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            intra::wide_tests::wide_
+          cargo test -p splot-recon --profile "$SPLOT_TEST_PROFILE" --locked --lib \
+            secondary_transform::wide_tests::wide_
 
       - name: Fetch and verify the frozen EwoutH streams
         run: python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
@@ -65,9 +71,15 @@ jobs:
           cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity \
             frozen_ewouth_streaming_parity -- --ignored --exact --nocapture
 
-      - name: Measure AVX2 and AVX-512 grain rows on the same core
+      - name: Measure AVX2 and AVX-512 grain rows, PAETH, palette and secondary-transform sums on the same core
         if: ${{ inputs.timing }}
         run: |
           core=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
             film_grain::tests::measure_wide_grain_noise_rows -- --ignored --exact --nocapture
+          taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+            intra_basic::wide_tests::measure_wide_paeth_blocks -- --ignored --exact --nocapture
+          taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+            intra::wide_tests::measure_wide_palette_blocks -- --ignored --exact --nocapture
+          taskset -c "$core" cargo test -p splot-recon --release --locked --lib \
+            secondary_transform::wide_tests::measure_wide_secondary_sums -- --ignored --exact --nocapture

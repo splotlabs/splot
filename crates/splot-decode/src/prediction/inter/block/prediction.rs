@@ -82,8 +82,8 @@ pub(super) fn placed_inter_block_at<B>(
 }
 
 #[expect(clippy::too_many_arguments)]
-pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
@@ -184,8 +184,8 @@ pub(super) fn reconstruct_placed_inter_block<B: splot_core::simd::SimdBackend, T
 /// current-frame reads, no refined motion) into `sink`: motion compensation,
 /// then residual add.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     placed: &PlacedInterBlock,
     residual_blocks: &[InterResidualBlock],
@@ -229,8 +229,8 @@ pub(super) fn reconstruct_pure_inter_block<B: splot_core::simd::SimdBackend, T: 
 /// unit into `units`, then `records` from it (§ 7.22), then with `predict`
 /// every plane from it into `sink`.
 #[expect(clippy::too_many_arguments)]
-pub(super) fn predict_refined_inter_block<B: splot_core::simd::SimdBackend, T: ReconSample>(
-    backend: B,
+pub(super) fn predict_refined_inter_block<T: ReconSample>(
+    backend: splot_core::simd::SimdBackend,
     sink: &mut CurrentFrameSurface<'_, '_, T>,
     units: &mut mc::RefinedUnits,
     placed: &PlacedInterBlock,

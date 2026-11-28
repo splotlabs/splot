@@ -435,11 +435,11 @@ fn trusted_read<const L: usize>(
 
 #[cfg(target_arch = "x86_64")]
 fn test_lane_token() -> Option<LaneToken> {
-    use crate::simd::{ResolvedBackend, SimdBackend, SimdPolicy, resolve_backend};
-    match resolve_backend(SimdPolicy::Avx2).ok()? {
-        ResolvedBackend::Avx2(backend) => Some(backend.token()),
-        _ => None,
-    }
+    use crate::simd::{SimdPolicy, resolve_backend};
+    resolve_backend(SimdPolicy::Avx2)
+        .ok()?
+        .backend()
+        .avx2_token()
 }
 
 #[cfg(target_arch = "aarch64")]

@@ -22,7 +22,7 @@
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
 use fearless_simd::{Simd, SimdBase as _, i32x4};
-use splot_core::{simd::SimdBackend, with_simd};
+use splot_core::simd::SimdBackend;
 
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
@@ -240,8 +240,9 @@ pub fn inverse_transform_2d_outer(
 /// # Errors
 /// Returns the same shape and buffer validation errors as
 /// [`inverse_transform_2d_outer`].
-pub fn inverse_transform_2d_outer_with<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn inverse_transform_2d_outer_with(
+    backend: SimdBackend,
     params: &InverseTransform2dOuter,
     dequant: &[i32],
     residual: &mut [i32],
@@ -279,15 +280,16 @@ pub fn inverse_transform_2d_outer_with_scratch(
 ///
 /// # Errors
 /// Returns the [`inverse_transform_2d_outer`] errors.
-pub fn inverse_transform_2d_outer_with_scratch_and_backend<B: SimdBackend>(
-    backend: B,
+#[inline]
+pub fn inverse_transform_2d_outer_with_scratch_and_backend(
+    backend: SimdBackend,
     params: &InverseTransform2dOuter,
     dequant: &[i32],
     residual: &mut [i32],
     transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
 ) -> Result<()> {
     inverse_transform_2d_outer_with_scratch_and_runner(
-        TypedOuter(backend.narrow()),
+        TypedOuter(backend),
         params,
         dequant,
         residual,
@@ -384,15 +386,15 @@ pub fn inverse_transform_2d_outer_adjusted(
 /// Returns the same shape, buffer, and transform errors as
 /// [`inverse_transform_2d_outer_adjusted`].
 #[inline]
-pub fn inverse_transform_2d_outer_adjusted_with<B: SimdBackend>(
-    backend: B,
+pub fn inverse_transform_2d_outer_adjusted_with(
+    backend: SimdBackend,
     params: &InverseTransform2dOuter,
     dequant: &[i32],
     residual: &mut [i32],
     transform_scratch: &mut [i32; 32 * 32],
 ) -> Result<()> {
     inverse_transform_2d_outer_adjusted_with_runner(
-        TypedOuter(backend.narrow()),
+        TypedOuter(backend),
         params,
         dequant,
         residual,
@@ -485,9 +487,9 @@ impl OuterRunner for BaselineOuter {
 }
 
 #[derive(Clone, Copy)]
-struct TypedOuter<B: SimdBackend>(B);
+struct TypedOuter(SimdBackend);
 
-impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
+impl OuterRunner for TypedOuter {
     #[inline]
     fn inner_transform(
         self,
@@ -505,7 +507,7 @@ impl<B: SimdBackend> OuterRunner for TypedOuter<B> {
         )
     }
 
-    outer_runner_methods!(self, typed(with_simd, self.0));
+    outer_runner_methods!(self, typed(self.0));
 }
 
 fn inverse_transform_2d_outer_adjusted_inner<R: OuterRunner>(
@@ -646,8 +648,9 @@ pub(crate) fn duplicate_columns(src: &[i32], dst: &mut [i32]) {
     not(test),
     expect(dead_code, reason = "wired in follow-up intra/inter PR")
 )]
-pub(crate) fn duplicate_columns_with<B: SimdBackend>(backend: B, src: &[i32], dst: &mut [i32]) {
-    TypedOuter(backend.narrow()).duplicate_columns(src, dst);
+#[inline]
+pub(crate) fn duplicate_columns_with(backend: SimdBackend, src: &[i32], dst: &mut [i32]) {
+    TypedOuter(backend).duplicate_columns(src, dst);
 }
 
 #[cfg(test)]
@@ -1313,93 +1316,92 @@ mod tests {
 
     #[test]
     fn typed_backend_matches_compatibility_routes() {
-        use splot_core::simd::{SimdBackend, SimdPolicy, SimdScope, resolve_backend};
+        use splot_core::simd::{SimdBackend, SimdPolicy, resolve_backend};
 
-        struct Check;
-        impl SimdScope<()> for Check {
-            fn run<B: SimdBackend>(self, backend: B) {
-                let idtx = InverseTransform2dDim::Identity;
-                let cases = [
-                    (
-                        params(3, 3, false, false, dct(), dct(), 7, 10, None),
-                        (0..64).map(|i| (i * 19) % 121 - 60).collect::<Vec<_>>(),
-                        64usize,
+        fn check(backend: SimdBackend) {
+            let idtx = InverseTransform2dDim::Identity;
+            let cases = [
+                (
+                    params(3, 3, false, false, dct(), dct(), 7, 10, None),
+                    (0..64).map(|i| (i * 19) % 121 - 60).collect::<Vec<_>>(),
+                    64usize,
+                ),
+                (
+                    params(
+                        3,
+                        3,
+                        true,
+                        true,
+                        idtx,
+                        idtx,
+                        0,
+                        0,
+                        Some(DpcmDirection::Horizontal),
                     ),
-                    (
-                        params(
-                            3,
-                            3,
-                            true,
-                            true,
-                            idtx,
-                            idtx,
-                            0,
-                            0,
-                            Some(DpcmDirection::Horizontal),
-                        ),
-                        (0..64).map(|i| (i * 23) % 80 - 40).collect::<Vec<_>>(),
-                        64usize,
+                    (0..64).map(|i| (i * 23) % 80 - 40).collect::<Vec<_>>(),
+                    64usize,
+                ),
+                (
+                    params(
+                        3,
+                        3,
+                        true,
+                        true,
+                        idtx,
+                        idtx,
+                        0,
+                        0,
+                        Some(DpcmDirection::Vertical),
                     ),
-                    (
-                        params(
-                            3,
-                            3,
-                            true,
-                            true,
-                            idtx,
-                            idtx,
-                            0,
-                            0,
-                            Some(DpcmDirection::Vertical),
-                        ),
-                        (0..64).map(|i| (i * 31) % 80 - 40).collect::<Vec<_>>(),
-                        64usize,
-                    ),
-                    (
-                        params(6, 6, false, false, dct(), dct(), 7, 10, None),
-                        (0..1024).map(|i| (i * 13) % 101 - 50).collect::<Vec<_>>(),
-                        4096usize,
-                    ),
-                ];
+                    (0..64).map(|i| (i * 31) % 80 - 40).collect::<Vec<_>>(),
+                    64usize,
+                ),
+                (
+                    params(6, 6, false, false, dct(), dct(), 7, 10, None),
+                    (0..1024).map(|i| (i * 13) % 101 - 50).collect::<Vec<_>>(),
+                    4096usize,
+                ),
+            ];
 
-                for (tx, dequant, out_len) in &cases {
-                    let mut compat = vec![0i32; *out_len];
-                    let mut typed = vec![0i32; *out_len];
-                    inverse_transform_2d_outer(tx, dequant, &mut compat).unwrap();
-                    inverse_transform_2d_outer_with(backend, tx, dequant, &mut typed).unwrap();
-                    assert_eq!(typed, compat);
-                }
-
-                let tx64 = &cases[3].0;
-                let deq64 = &cases[3].1;
-                let mut adj_compat = [0i32; 1024];
-                let mut adj_typed = [0i32; 1024];
-                let mut scratch_a = [0i32; 32 * 32];
-                let mut scratch_b = [0i32; 32 * 32];
-                inverse_transform_2d_outer_adjusted(tx64, deq64, &mut adj_compat, &mut scratch_a)
-                    .unwrap();
-                inverse_transform_2d_outer_adjusted_with(
-                    backend,
-                    tx64,
-                    deq64,
-                    &mut adj_typed,
-                    &mut scratch_b,
-                )
-                .unwrap();
-                assert_eq!(adj_typed, adj_compat);
-
-                let src: Vec<i32> = (0..32).map(|i| i * 3 - 40).collect();
-                let mut dup_compat = [0i32; 64];
-                let mut dup_typed = [0i32; 64];
-                duplicate_columns(&src, &mut dup_compat);
-                duplicate_columns_with(backend, &src, &mut dup_typed);
-                assert_eq!(dup_typed, dup_compat);
+            for (tx, dequant, out_len) in &cases {
+                let mut compat = vec![0i32; *out_len];
+                let mut typed = vec![0i32; *out_len];
+                inverse_transform_2d_outer(tx, dequant, &mut compat).unwrap();
+                inverse_transform_2d_outer_with(backend, tx, dequant, &mut typed).unwrap();
+                assert_eq!(typed, compat);
             }
+
+            let tx64 = &cases[3].0;
+            let deq64 = &cases[3].1;
+            let mut adj_compat = [0i32; 1024];
+            let mut adj_typed = [0i32; 1024];
+            let mut scratch_a = [0i32; 32 * 32];
+            let mut scratch_b = [0i32; 32 * 32];
+            inverse_transform_2d_outer_adjusted(tx64, deq64, &mut adj_compat, &mut scratch_a)
+                .unwrap();
+            inverse_transform_2d_outer_adjusted_with(
+                backend,
+                tx64,
+                deq64,
+                &mut adj_typed,
+                &mut scratch_b,
+            )
+            .unwrap();
+            assert_eq!(adj_typed, adj_compat);
+
+            let src: Vec<i32> = (0..32).map(|i| i * 3 - 40).collect();
+            let mut dup_compat = [0i32; 64];
+            let mut dup_typed = [0i32; 64];
+            duplicate_columns(&src, &mut dup_compat);
+            duplicate_columns_with(backend, &src, &mut dup_typed);
+            assert_eq!(dup_typed, dup_compat);
         }
 
-        resolve_backend(SimdPolicy::Auto)
-            .expect("auto backend")
-            .enter(Check);
+        check(
+            resolve_backend(SimdPolicy::Auto)
+                .expect("auto backend")
+                .backend(),
+        );
     }
 }
 
