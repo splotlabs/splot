@@ -463,6 +463,9 @@ impl<B: SimdBackend> IntraRunner for TypedIntra<B> {
         if map.len().is_multiple_of(64)
             && let Some(wide) = self.1.wide()
         {
+            if std::env::var_os("SPLOT_PROBE_WIDE").is_some() {
+                eprintln!("PROBE: wide palette reached, {} samples", map.len());
+            }
             return P::wide_palette(wide)(low, high, map, output);
         }
         let narrow = self.0.narrow();

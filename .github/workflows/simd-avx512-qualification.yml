@@ -38,6 +38,17 @@ jobs:
           lscpu
           grep -qw avx512f /proc/cpuinfo
 
+      - name: Probe that an Auto decode on this host reaches the wide kernels
+        run: |
+          python3 scripts/prepare-simd-ewouth.py "$RUNNER_TEMP/ewouth"
+          cargo build --release --locked -p splot-cli
+          for stream in Slides1_1920x1080_30fps_8bit_420_screen_qp135_130f DOTA2_1920x1080_60_8bit_420_qp135_130f RitualDance_1920x1080_60fps_10bit_420_qp135_600f; do
+            file=$(find "$RUNNER_TEMP/ewouth" -name "$stream.ivf" | head -1)
+            echo "== $stream ($file)"
+            SPLOT_PROBE_WIDE=1 target/release/splot decode --threads 2 --limit 8 --output-format null "$file" 2>&1 | grep PROBE | sort | uniq -c | head -8 || true
+          done
+          exit 1
+
       - name: Require and exercise the forced AVX-512 backend
         run: cargo test -p splot-decode --profile "$SPLOT_TEST_PROFILE" --locked --test simd_backend_parity
 

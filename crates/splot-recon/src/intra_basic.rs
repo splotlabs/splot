@@ -143,6 +143,9 @@ impl<B: SimdBackend> PaethRunner for TypedPaeth<B> {
         if size.width() >= 32
             && let Some(wide) = self.1.wide()
         {
+            if std::env::var_os("SPLOT_PROBE_WIDE").is_some() {
+                eprintln!("PROBE: wide paeth reached, width {}", size.width());
+            }
             return O::wide_paeth(wide)(size, (left, above, top_left), output, stride_samples);
         }
         let narrow = self.0.narrow();
